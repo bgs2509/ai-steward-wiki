@@ -10,9 +10,9 @@
 
   <RunState>
     <Status>in-progress</Status>
-    <CurrentChunk>4</CurrentChunk>
-    <ClosedChunks>1,2,3</ClosedChunks>
-    <Notes>Chunk 3 closed 2026-05-10: bd_id=aisw-hnl; commit b694c0a; 22 unit tests pass; lint+mypy clean. Soft-delete via sessions.users.enabled column added.</Notes>
+    <CurrentChunk>5</CurrentChunk>
+    <ClosedChunks>1,2,3,4</ClosedChunks>
+    <Notes>Chunk 4 closed 2026-05-10: bd_id=aisw-kty; M-SCHEDULER (queue/locks/failure/dlq/core); 26 unit tests pass; full suite 65/65; ruff+format+mypy strict clean.</Notes>
   </RunState>
 
   <Decisions>
