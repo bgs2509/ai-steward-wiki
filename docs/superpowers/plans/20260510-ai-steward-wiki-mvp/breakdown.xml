@@ -10,9 +10,9 @@
 
   <RunState>
     <Status>in-progress</Status>
-    <CurrentChunk>5</CurrentChunk>
-    <ClosedChunks>1,2,3,4</ClosedChunks>
-    <Notes>Chunk 4 closed 2026-05-10: bd_id=aisw-kty; M-SCHEDULER (queue/locks/failure/dlq/core); 26 unit tests pass; full suite 65/65; ruff+format+mypy strict clean.</Notes>
+    <CurrentChunk>6</CurrentChunk>
+    <ClosedChunks>1,2,3,4,5</ClosedChunks>
+    <Notes>Chunk 5 closed 2026-05-10: bd_id=aisw-5; M-CLASSIFIER-STAGE0 (schema/backend/stage0/time_parse + 2 prompts); 24 chunk-5 tests pass; full unit suite 89/89; ruff+format+mypy+grace lint clean; total-test gate green.</Notes>
   </RunState>
 
   <Decisions>
