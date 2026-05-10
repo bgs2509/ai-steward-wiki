@@ -1,7 +1,7 @@
 # D-018: ingest idempotency — двухслойный dedup без LLM (TG `update_id` + content hash)
 
 **Статус:** accepted
-**Дата:** 2026-05-08
+**Дата:** 2026-05-08 (amended 2026-05-10 — `seen_files` перенесён `jobs.db` → `audit.db` для консистентности bounded contexts; см. §"Уточнение 2026-05-10")
 **Контекст:** [Q-B-11](../questions/Q-B-11-ingest-idempotency.md), overview §9.11, [D-002](D-002-job-model-storage.md), [D-006](D-006-state-storage-layout.md)
 
 ## Проблема
@@ -28,7 +28,7 @@
 
 ### Layer 2 — content hash (forward / copypaste защита)
 
-1. **Storage:** `jobs.db.seen_files(hash TEXT PK, wiki TEXT, first_seen INTEGER, tg_message_id INTEGER, tg_chat_id INTEGER, content_kind TEXT)`; TTL 30d.
+1. **Storage:** `audit.db.seen_files(hash TEXT PK, wiki TEXT, first_seen INTEGER, tg_message_id INTEGER, tg_chat_id INTEGER, content_kind TEXT)`; TTL 30d. Bounded context: observability/dedup (см. [D-006](D-006-state-storage-layout.md)) — оба dedup-слоя (L1 `tg_updates`, L2 `seen_files`) живут в `audit.db`, не в `jobs.db`.
 2. **Hash вычисление** (нормализация перед SHA-256):
    1. **Текст:** `unicode-NFKC + strip + lower + collapse whitespace`.
    2. **Файл:** raw bytes (без перекодирования).
@@ -56,6 +56,15 @@
    1. **Не использовать L1 для контент-дедупа** — `update_id` ≠ identity контента.
    2. **Не блокировать ингест L2 автоматически** — всегда давать выбор юзеру (UX > strict).
 4. Расширение до L3 (LLM) — без переделки L1/L2.
+
+## Уточнение 2026-05-10
+
+`seen_files` изначально был размечен в `jobs.db` (исходная редакция D-018). При cross-review tech-spec'а 2026-05-10 обнаружено противоречие [D-006](D-006-state-storage-layout.md) §"Раскладка таблиц": `jobs.db` — горячая операционная зона (jobs + APScheduler jobstore), а dedup-state по своей природе observability/audit. L1 (`tg_updates`) уже жил в `audit.db` — L2 (`seen_files`) переезжает туда же. Эффект:
+
+1. Оба dedup-слоя в одном bounded context — упрощается retention-policy и cleanup-jobs (см. [D-019](D-019-cron-failure-mode.md) `silent`).
+2. `jobs.db` write-lock не конкурирует с dedup-INSERT'ами на каждом TG-update.
+3. GDPR hard-delete ([D-034](D-034-pii-redactor.md)) — `seen_files` теперь под общей `audit.db`-purge (через `/admin gdpr_purge`).
+4. Миграция: для уже стоящих инсталляций — Alembic-step `move_seen_files_to_audit` в `alembic/audit/` (CREATE + copy + DROP в `alembic/jobs/`); MVP-инсталляций ещё нет, поэтому миграция пишется превентивно, но в первый release не запускается.
 
 ## Перенос в ADR
 

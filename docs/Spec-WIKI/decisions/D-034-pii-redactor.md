@@ -49,6 +49,18 @@
 3. **Read-time** — НЕ применяется. Redactor только write-time. Read-time post-redaction усложняет debug и не даёт реального gain (если plaintext попал в БД — уже compromise).
 4. **Performance:** регексы pre-compile module-level; ожидаемый latency <1ms на typical TG-сообщение (≤4096 chars).
 
+### Trash sweep (soft-delete WIKI / page → `_trash/`)
+
+Дополнительная точка применения redactor'а на soft-delete операциях ([D-041](D-041-no-direct-wiki-commands.md) intent'ы `delete_wiki`, `page-delete`):
+
+1. **Trigger:** atomic move `<Domain>-WIKI/` → `_trash/<Domain>-WIKI-<ts>/` (или page-level move).
+2. **Sweep**: post-move hook рекурсивно проходит `*.md` файлы перенесённой ветки и применяет к содержимому write-time-ный pipeline (Tier-1 DROP, Tier-2 MASK in-place — `tmp + os.replace` per [D-012](D-012-wiki-lock.md) atomic-write convention; pre-compile regex те же).
+3. **Tier-3 plaintext** не трогается (имена/адреса/free-text) — он защищён общей retention-политикой `_trash/` (30d, [D-041](D-041-no-direct-wiki-commands.md)) + unix-перм 0700 на родительском `_trash/`.
+4. **Media (`raw/media/`)** sweep'ом не сканируется (immutable бинари per [D-022](D-022-voice-photo-input.md)) — на hard-delete (см. п.6) сносится `shred -u` для содержимого `raw/media/`.
+5. **Audit:** sweep пишет `audit_events` `{event_type='trash_sweep', wiki, files_processed, redactions_count_by_tier}`.
+6. **Hard-delete по истечении 30d** (`trash_purge` APScheduler-job per [D-041](D-041-no-direct-wiki-commands.md)): `shred -u` для media, `unlink` для `*.md`, audit-event `trash_purged`.
+7. **Rationale:** soft-delete — *user-visible* момент «удалил». Если в страницах был tier-1/tier-2 PII, который попал туда in time когда regex-pack был слабее — это последний шанс убрать его до hard-delete. Дёшево (редкая операция, < single-digit раз в месяц per user) и closes loophole.
+
 ### At-rest crypto
 
 1. **Не вводится в MVP.** Причины: single-tenant Henry-N ([D-013](D-013-claude-cli-auth.md)) — subject = owner данных; SQLCipher passphrase в `.env` рядом с БД = security theatre если VPS взломан; +зависимость `pysqlcipher3` усложняет backup/migration.

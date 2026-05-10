@@ -189,10 +189,18 @@ D-029 ввёл явные команды `/wiki_init`, `/wiki_delete`, `/wiki_re
 
 Все механизмы D-029 сохраняются, **но активируются на стороне Claude**, а не команды:
 
-1. **Soft limit 20 WIKI/user** — Claude отказывает в create при достижении и предлагает удалить.
-2. **Two-layer duplicate protection** — Layer-1 Levenshtein + Layer-2 AI semantic-match, оба обязательны (см. шаг 4 сценария create). Layer-2 — load-bearing: typo-protection без семантики пропустит «новая вики для подработки» при существующей `Freelance-WIKI`.
+1. **Soft limit 20 WIKI/user** (наследник [D-029](D-029-wiki-init-auth.md), числа явно зафиксированы здесь как нового SSoT после supersede):
+   1. **Hard cap = 20** active WIKI per user. `_trash/` **не** учитывается в счётчике.
+   2. **Warning at 16/20** — Claude в ответе на create-intent добавляет ремарку: «осталось 4 слота».
+   3. **Hard reject at 20/20** — Claude отказывает в create и предлагает удалить ненужные через NL-промпт («удали Y-WIKI»). Bypass только через `/admin` ([D-028](D-028-admin-access.md)).
+   4. **Counting rule:** scan `USERS/<USER>/*-WIKI/` regex ([D-008](D-008-wiki-marker-format.md)), исключая `_trash/`.
+2. **Two-layer duplicate protection** — Layer-1 Levenshtein ≤2 по нормализованному имени домена ([D-008](D-008-wiki-marker-format.md)) + Layer-2 AI semantic-match, оба обязательны (см. шаг 4 сценария create). Layer-2 — load-bearing: typo-protection без семантики пропустит «новая вики для подработки» при существующей `Freelance-WIKI`.
 3. **Intent-grounding с blind-spot scan** — обязателен **до** duplicate-check (см. шаг 3 сценария create). Claude читает профиль юзера (`USERS/<USER>/CLAUDE.md`) + последние 20/24h `chat_log` ([D-033](D-033-chat-history.md)), извлекает real intention, перечисляет blind spots (persona, cron, PII-tier, recipients, overlap с известными интересами) и задаёт 1–3 clarification-вопроса если что-то критичное не покрыто. Цель: setup новой WIKI с правильными правилами с первого раза, без последующих миграций ([D-039](D-039-claude-md-evolution.md)).
-3. **Reversible delete 30d** — без изменений.
+4. **Reversible delete `_trash/` retention 30d** (наследник D-029):
+   1. Soft-delete переносит `<Domain>-WIKI/` → `USERS/<USER>/_trash/<Domain>-WIKI-<ISO8601-ts>/`.
+   2. **30d** rolling — housekeeping APScheduler-job `trash_purge` daily ([D-020](D-020-cron-result-routing.md) `silent`), по истечении — hard-delete (см. PII-sweep в [D-034](D-034-pii-redactor.md) §"Trash sweep").
+   3. `_trash/` исключается из autodiscover, soft-limit-counter, anti-nesting walk ([D-027](D-027-anti-nesting-admin-boundary.md)).
+   4. Restore-окно — через NL `intent=restore_wiki` (см. сценарий выше); по истечении 30d — restore невозможен.
 
 ## Последствия
 
