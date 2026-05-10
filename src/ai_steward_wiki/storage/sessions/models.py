@@ -23,6 +23,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     ForeignKey,
     Index,
     Integer,
@@ -45,6 +46,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="user")
     display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     tz: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at_utc: Mapped[datetime] = mapped_column(nullable=False)
     updated_at_utc: Mapped[datetime] = mapped_column(nullable=False)
 
