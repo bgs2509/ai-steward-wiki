@@ -9,8 +9,10 @@
   </Meta>
 
   <RunState>
-    <Status>awaiting-approval</Status>
-    <CurrentChunk>0</CurrentChunk>
+    <Status>in-progress</Status>
+    <CurrentChunk>3</CurrentChunk>
+    <ClosedChunks>1,2</ClosedChunks>
+    <Notes>Chunk 2 closed 2026-05-10: bd_id=aisw-ewa; 18 unit tests pass; ruff/format/mypy clean.</Notes>
   </RunState>
 
   <Decisions>
