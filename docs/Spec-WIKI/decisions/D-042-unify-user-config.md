@@ -27,13 +27,27 @@ User как aggregate root имеет несколько атрибутов: aut
 ```toml
 [users.henry_n]
 telegram_id = 123456789
+telegram_username = "henry_n"
+display_name = "Henry (phone)"
 role = "admin"              # admin | user
 lang = "ru"                 # ru | en
 timezone = "Europe/Moscow"  # IANA, обязательное (per D-010)
 persona = "default"         # ключ persona-пресета
 enabled = true
+unix_user = "aisw-henry1"   # per D-038, создаётся при первом WIKI
+unix_uid = 901              # optional до provisioning
+unix_gid = 901              # optional до provisioning
 created_at = "2026-05-10T12:00:00Z"
 ```
+
+### Canonical identity vocabulary
+
+1. `telegram_id` — canonical external user identifier в `users.toml`, auth checks, onboarding и allowlist.
+2. `telegram_username` — optional display/routing metadata, не identity key.
+3. `user_key` / TOML key (`henry_n`) — стабильный локальный slug для путей `USERS/<NAME>/` и ссылок.
+4. `owner_telegram_id` разрешён только как column name внутри `jobs.db.jobs`, где он означает owner scheduled job'а.
+5. `chat_id` разрешён только когда речь именно о Telegram delivery target, а не о user identity.
+6. `user_id` разрешён только как internal DB surrogate key. В prose без явной DB-схемы использовать `telegram_id`.
 
 ### Обоснование
 
@@ -46,16 +60,18 @@ created_at = "2026-05-10T12:00:00Z"
 
 1. `roles.toml` **удаляется** из дизайна (никогда не существовал в коде — оба упоминания только в spec).
 2. **D-010** требует patch: `roles.toml[<user>].timezone` → `users.toml[<user>].timezone`. Семантика идентична, поведение не меняется.
-3. **D-030** (onboarding) — schema добавления юзера расширяется полями `timezone`, `persona`. `/start` от unknown собирает их в pending-flow до admin approve.
-4. **D-031** (hot-reload) — без изменений, механизм уже на `users.toml`.
+3. **D-030** (onboarding) — schema добавления юзера расширяется полями `timezone`, `persona`, `display_name` и `enabled`. `/start` от unknown собирает их в pending-flow до admin approve.
+4. **D-031** (hot-reload) — механизм остаётся тем же, но DB-sync должен переносить полный D-042 record.
 5. **tech-spec-draft.md §6** — упоминание `roles.toml` исправляется на `users.toml`.
-6. **Future:** при появлении shared role-templates — отдельный D-NNN, ре-вводящий `roles.toml` в роли C.
+6. **D-038** (per-user systemd) — `unix_user`, `unix_uid`, `unix_gid` живут в этом же user-record, а не в отдельном provisioning-файле.
+7. **Future:** при появлении shared role-templates — отдельный D-NNN, ре-вводящий `roles.toml` в роли C.
 
 ## Запреты
 
 1. **Не создавать `roles.toml`** — единый SSoT.
 2. **Не вводить per-attribute hot-reload** — атомарность на уровне всего user-record.
 3. **Не делать TZ optional** — D-010 строго запрещает default-fallback.
+4. **Не смешивать `chat_id`, `telegram_id` и `user_id`** в prose и schemas. Название выбирается по словарю выше.
 
 ## Перенос в ADR
 

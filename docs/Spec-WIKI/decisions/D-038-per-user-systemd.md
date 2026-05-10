@@ -1,7 +1,7 @@
 # D-038: Per-user hard isolation — `systemd-run` MVP
 
 **Статус:** accepted
-**Дата:** 2026-05-09
+**Дата:** 2026-05-09 (amended 2026-05-10 — shared Claude auth dir, permission profile, aggregate slices)
 **Контекст:** [Q-E-31](../questions/Q-E-31-per-user-systemd.md), [D-007](D-007-add-dir-scope.md), [D-012](D-012-wiki-lock.md), [D-013](D-013-claude-cli-auth.md), [D-027](D-027-anti-nesting-admin-boundary.md), [D-028](D-028-admin-access.md), [D-030](D-030-onboarding.md), [D-037](D-037-git-in-wiki.md)
 
 ## Проблема
@@ -31,36 +31,57 @@ systemd-run \
   --quiet \
   --uid=<per-user-uid> \
   --gid=<per-user-gid> \
+  --property=SupplementaryGroups=aisw-claude \
+  --unit=cli-<job_id> \
+  --wait \
   --property=ProtectSystem=strict \
   --property=ProtectHome=tmpfs \
   --property=ReadWritePaths=<wiki-абсолютный-путь> \
   --property=ReadOnlyPaths=<service>/prompts \
+  --property=ReadOnlyPaths=/var/lib/ai-steward-wiki/claude-code \
   --property=PrivateTmp=true \
   --property=PrivateDevices=true \
   --property=NoNewPrivileges=true \
   --property=MemoryMax=2G \
   --property=TasksMax=64 \
+  --property=StandardOutput=journal \
+  --property=StandardError=journal \
+  --setenv=CLAUDE_CONFIG_DIR=/var/lib/ai-steward-wiki/claude-code \
   -- \
-  claude --print --add-dir <wiki> ...
+  claude -p ... --add-dir <wiki> \
+    --allowedTools "Read" "Write" "Edit" "Glob" "Grep" \
+    --disallowedTools "Bash" "WebFetch" "Read(/var/lib/ai-steward-wiki/claude-code/**)" \
+    --permission-mode dontAsk ...
 ```
+
+`--user` флаг **не используется**: он выбирает user unit manager, а не target UID. Нужен system scope с `--uid/--gid`, иначе kernel isolation не соответствует модели.
 
 ### Per-user UID provisioning
 
-1. На `wiki init <Domain>` для **первого** WIKI юзера — создаётся unix-юзер `aisw-<userN>` (например `aisw-henry1`):
+1. На `wiki init <Domain>` для **первого** WIKI юзера — создаётся unix-юзер `aisw-<userN>` (например `aisw-henry1`).
+2. Preferred provisioning — idempotent `systemd-sysusers` drop-in, потому что он декларативен и повторяем при redeploy:
+   ```conf
+   u aisw-henry1 - "ai-steward-wiki runtime user Henry-1" /nonexistent /usr/sbin/nologin
+   m aisw-henry1 aisw-claude
+   ```
+3. Fallback для ручной dev-машины:
    ```bash
    useradd --system --no-create-home --shell /usr/sbin/nologin aisw-<userN>
+   usermod -aG aisw-claude aisw-<userN>
    chown -R aisw-<userN>:aisw-<userN> <user_dir>/
    chmod 0700 <user_dir>/
    ```
-2. UID хранится в `users.toml` ([D-030](D-030-onboarding.md)) рядом с `tg_user_id`:
+4. UID хранится в `users.toml` ([D-030](D-030-onboarding.md), [D-042](D-042-unify-user-config.md)) рядом с `telegram_id`:
    ```toml
-   [users.henry-1]
-   tg_user_id = 123456
+   [users.henry_1]
+   telegram_id = 123456
+   unix_user = "aisw-henry1"
    unix_uid = 901
+   unix_gid = 901
    created_at = "2026-05-09T..."
    ```
-3. Бот (`ai-steward-wiki`) бежит под dedicated UID `aisw-bot` с `CAP_SETUID` capability (через systemd unit `AmbientCapabilities=CAP_SETUID`) **либо** под root (less preferred). `CAP_SETUID` — preferred (минимум привилегий, blast-radius меньше).
-4. Hard-delete юзера ([D-031](D-031-allowlist-hot-reload.md)): после soft-delete + grace period — `userdel aisw-<userN>` + cleanup home (если есть).
+5. Бот (`ai-steward-wiki`) бежит под dedicated UID `aisw-bot` с `CAP_SETUID` capability (через systemd unit `AmbientCapabilities=CAP_SETUID`) **либо** под root (less preferred). `CAP_SETUID` — preferred (минимум привилегий, blast-radius меньше).
+6. Hard-delete юзера ([D-031](D-031-allowlist-hot-reload.md)): после soft-delete + grace period — `userdel aisw-<userN>` + cleanup home (если есть).
 
 ### Service systemd unit
 
@@ -86,23 +107,34 @@ Restart=on-failure
 | `<wiki>/` | `aisw-<userN>` | 0700 | RW (через `ReadWritePaths`) |
 | `<other-user>/` | `aisw-<other>` | 0700 | **нет** (kernel deny) |
 | `<service>/prompts/` | `aisw-bot` | 0755 | RO (через `ReadOnlyPaths`) |
+| `/var/lib/ai-steward-wiki/claude-code/` | `aisw-bot:aisw-claude` | 0750/0640 | RO для CLI auth internals |
 | `state/*.db` | `aisw-bot` | 0600 | **нет** (kernel deny) |
 | `users.toml` | `aisw-bot` | 0600 | **нет** |
 | `.env` | `aisw-bot` | 0600 | **нет** |
 | `/etc`, `/usr` | root | 0755 | RO (`ProtectSystem=strict`) |
 | `$HOME` любого юзера | — | — | tmpfs (`ProtectHome=tmpfs`) |
 
+`/var/lib/ai-steward-wiki/claude-code/` — единственное намеренное исключение из «runtime user не читает secrets». Claude Code CLI должен прочитать auth state, иначе subscription mode не работает. Mitigation:
+
+1. Directory read-only внутри scope.
+2. Path вне `<wiki>` и вне `--add-dir`.
+3. Runtime CLI запускается с `--allowedTools "Read" "Write" "Edit" "Glob" "Grep"` и `--disallowedTools "Bash" "WebFetch" "Read(/var/lib/ai-steward-wiki/claude-code/**)"`.
+4. Permission profile добавляет deny-rule на `Read(/var/lib/ai-steward-wiki/claude-code/**)`.
+5. `--permission-mode dontAsk`; unlisted tools denied, не prompted.
+
 ### Resource limits
 
 1. `MemoryMax=2G` — kill-on-OOM защищает от runaway Claude (важно при vision на большом фото).
 2. `TasksMax=64` — limit на forked/threaded subprocess (Claude может вызвать `Bash`).
-3. CPU: не лимитируется в MVP; `CPUQuota=200%` опционально позже.
+3. CPU per CLI: `CPUWeight=100`, `IOWeight=100`; hard `CPUQuota` не ставится в MVP.
+4. Aggregate cap: родительский `aisw-bot.slice` получает `MemoryHigh=12G`, `MemoryMax=16G`, `TasksMax=512`. Это держит 4 конкурентных CLI из [D-011](D-011-concurrent-claude.md) в общем budget.
+5. STT (`faster-whisper`) и vision pre-processing бегут в отдельной `aisw-stt.slice` (`MemoryMax=4G`, `CPUQuota=200%`), вне CLI scopes.
 
 ### Lifecycle
 
 1. Бот acquire'ит [D-011](D-011-concurrent-claude.md) semaphore + [D-012](D-012-wiki-lock.md) lock.
 2. Бот вызывает `systemd-run --scope ... claude ...` — это форк +setuid +setup namespaces, потом execve `claude`.
-3. Бот ждёт exit code через `subprocess.wait()` или `--wait` flag systemd-run; timeouts ([D-021](D-021-timeouts-kill-policy.md)) — kill через `systemctl stop <scope-name>` (kill всю scope-группу, включая Claude tool subprocess'ы).
+3. Бот ждёт exit code через `subprocess.wait()` или `--wait` flag systemd-run; timeouts ([D-021](D-021-timeouts-kill-policy.md)) — kill через `systemctl stop <scope-name>` (kill всю scope-группу, включая Claude tool subprocess'ы). Это реализация той же SIGTERM → grace → SIGKILL семантики на уровне scope.
 4. Logs Claude'а — в journald (наследует stdout родителя? нет — scope имеет свой output; настраиваем `--property=StandardOutput=journal --property=StandardError=journal`).
 5. Cleanup: scope умирает с процессом (ephemeral); никаких persistent unit-файлов.
 
@@ -117,6 +149,7 @@ Restart=on-failure
 2. **Operational complexity:** `useradd` на каждого юзера, debug сложнее (каждый CLI run — отдельная scope-unit). Принято — выигрыш в isolation важнее.
 3. **Single-tenant Henry-N сейчас не получает практического gain**, но (а) rehearsal для multi-tenant без late-stage refactor, (б) защита от self-inflicted prompt-injection (Claude через injection не сможет читать `state/*.db`), (в) defense-in-depth.
 4. **Linux-only.** macOS/WSL не support'ят `systemd-run` — dev-окружение Henry должно быть Linux VPS или VM. Для local dev опционально fallback (см. ниже).
+5. **Shared Claude auth dir readable для CLI** — осознанный trade-off subscription mode. Без этого Stage-1 не стартует под per-user UID. Риск снижается через no-Bash tool profile и deny `Read` rule на credential path.
 
 ### Local dev fallback
 
@@ -135,8 +168,8 @@ Restart=on-failure
 1. Hard kernel-isolation per Claude CLI; `--add-dir` ([D-007](D-007-add-dir-scope.md)) теперь **defense-in-depth**, а не единственный механизм.
 2. Бот требует `CAP_SETUID` (или root); systemd unit обязателен; macOS dev требует fallback flag.
 3. UID provisioning встроен в `wiki init` flow — связь с [D-030](D-030-onboarding.md).
-4. `state/*.db`, `users.toml`, `.env` физически недоступны Claude.
-5. Resource limits (`MemoryMax`, `TasksMax`) защищают от runaway.
+4. `state/*.db`, `users.toml`, `.env` физически недоступны Claude. Shared Claude Code auth dir доступен только read-only и защищён tool permissions.
+5. Resource limits (`MemoryMax`, `TasksMax`, aggregate slice) защищают от runaway.
 6. Multi-tenant ready с MVP — никаких будущих breaking-migrations.
 7. Запреты:
    1. **Не запускать Claude CLI напрямую через `subprocess.exec`** — только через `systemd-run --scope` wrapper.
@@ -145,6 +178,8 @@ Restart=on-failure
    4. **Не shared UID** между юзерами — один tenant = один unix-uid.
    5. **Не писать `state/*.db` от Claude UID** — kernel block; failure = bug в коде, не в политике.
    6. **Не пропускать `userdel`** при hard-delete — orphan UID создаёт security debt.
+   7. **Не включать `Bash`** в runtime WIKI-agent tool profile без отдельного security decision.
+   8. **Не запускать CLI scope без `CLAUDE_CONFIG_DIR`** — auth случайно начнёт зависеть от `$HOME`, который закрыт `ProtectHome=tmpfs`.
 
 ## Перенос в ADR
 

@@ -1,7 +1,7 @@
 # D-030: Onboarding нового юзера — hybrid `users.toml` SSoT + `/start`-flow за config-флагом
 
 **Статус:** accepted
-**Дата:** 2026-05-09
+**Дата:** 2026-05-09 (amended 2026-05-10 — `users.toml` schema aligned with D-042)
 **Контекст:** [Q-D-27](../questions/Q-D-27-onboarding.md), overview §9.27, [D-013](D-013-claude-cli-auth.md), [D-016](D-016-inbox-claude-md-template.md), [D-020](D-020-cron-result-routing.md), [D-028](D-028-admin-access.md), [D-031](D-031-allowlist-hot-reload.md), [D-041](D-041-no-direct-wiki-commands.md)
 
 ## Проблема
@@ -23,32 +23,39 @@ Onboarding нового юзера: TG-flow (`/start` → admin /approve) даё
 
 1. **`users.toml`** в repo сервиса, git-tracked.
 2. View-таблица `sessions.db.users` синхронизируется при hot-reload (см. [D-031](D-031-allowlist-hot-reload.md)).
-3. Структура `users.toml`:
+3. Структура `users.toml` следует [D-042](D-042-unify-user-config.md):
    ```toml
-   [[users]]
-   chat_id = 123456789
-   tg_username = "henry_n"
-   role = "admin"  # admin | user
+   [users.henry_1]
+   telegram_id = 123456789
+   telegram_username = "henry_n"
+   display_name = "Henry (phone)"
+   role = "admin"              # admin | user
    lang = "ru"
+   timezone = "Europe/Moscow"
+   persona = "default"
+   enabled = true  # true только после onboarding completion
+   unix_user = "aisw-henry1"
+   unix_uid = 901
+   unix_gid = 901
    added_at = "2026-05-09T12:00:00"
    ```
 
 ### Single-tenant phase (current Henry-N)
 
 1. Только manual edits `users.toml` на VPS.
-2. `/start` от unknown chat_id → ответ «доступа нет, обратись к admin».
+2. `/start` от unknown `telegram_id` → ответ «доступа нет, обратись к admin».
 3. `ENABLE_SELF_SIGNUP = false` (default).
 
 ### Multi-tenant phase (`ENABLE_SELF_SIGNUP=true`)
 
-1. **`/start` от unknown** → запись в `sessions.db.pending_users(chat_id PK, tg_username, ts, requested_lang, source_msg)`.
+1. **`/start` от unknown** → запись в `sessions.db.pending_users(telegram_id PK, telegram_username, ts, requested_lang, requested_timezone, requested_persona, source_msg)`.
 2. **Admin shadow channel** ([D-020](D-020-cron-result-routing.md)) получает msg с inline-кнопками:
    ```
    👤 Новый: @new_user (ru)
    [✅ Approve] [❌ Reject]
    ```
 3. **Approve** →
-   1. Atomic append в `users.toml` (write tmp + `os.replace`); commit message-style: `chore(users): add @<username>`.
+   1. Atomic append complete D-042 user-record в `users.toml` (write tmp + `os.replace`); commit message-style: `chore(users): add @<username>`.
    2. SIGHUP reload trigger ([D-031](D-031-allowlist-hot-reload.md)) → sync DB.
    3. Ack юзеру: «доступ открыт, начнём знакомство».
 4. **Reject** → `pending_users.status='rejected'`, ack юзеру: «admin не одобрил».
@@ -101,7 +108,7 @@ Onboarding нового юзера: TG-flow (`/start` → admin /approve) даё
 4. `onboarding` → (Q&A complete) → `active`
 5. `active` → (admin remove) → `revoked`
 
-**`USERS/<NAME>/`** создаётся **только** после успешного onboarding completion; до того — pending state в DB.
+**`USERS/<NAME>/`** создаётся **только** после успешного onboarding completion; до того — pending/intro/onboarding state в DB. `users.toml` может уже содержать approved user-record, но `enabled=false` до completion, чтобы allowlist и filesystem lifecycle не расходились.
 
 ## Последствия
 

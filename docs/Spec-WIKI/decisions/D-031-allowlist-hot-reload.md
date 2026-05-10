@@ -1,7 +1,7 @@
 # D-031: Allowlist hot-reload — SIGHUP primary + watchdog secondary + validate-before-swap
 
 **Статус:** accepted
-**Дата:** 2026-05-09
+**Дата:** 2026-05-09 (amended 2026-05-10 — sync fields aligned with D-042)
 **Контекст:** [Q-D-28](../questions/Q-D-28-allowlist-hot-reload.md), overview §9.28, [D-006](D-006-state-storage-layout.md), [D-020](D-020-cron-result-routing.md), [D-030](D-030-onboarding.md)
 
 ## Проблема
@@ -42,9 +42,20 @@
 
 ### DB sync (`sessions.db.users`)
 
-1. **Added** (в TOML, нет в DB): `INSERT OR REPLACE` (chat_id, tg_username, lang, role, added_at, is_active=1).
+1. **Added** (в TOML, нет в DB): `INSERT OR REPLACE` canonical D-042 fields:
+   1. `telegram_id`;
+   2. `telegram_username`;
+   3. `display_name`;
+   4. `role`;
+   5. `lang`;
+   6. `timezone`;
+   7. `persona`;
+   8. `enabled`;
+   9. `unix_user`, `unix_uid`, `unix_gid`;
+   10. `added_at`;
+   11. `is_active=enabled`.
 2. **Removed** (есть в DB, нет в TOML): soft-delete `is_active=0` — preserves FK от `audit.db` events ([D-006](D-006-state-storage-layout.md)).
-3. **Updated** (lang/role change): `UPDATE`.
+3. **Updated** (role/lang/timezone/persona/enabled/unix fields change): `UPDATE`.
 
 ### Active session handling
 

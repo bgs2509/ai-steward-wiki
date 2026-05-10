@@ -1,7 +1,7 @@
 # D-017: domain-WIKI `CLAUDE.md` — per-domain пресеты + fallback `_default`
 
 **Статус:** accepted
-**Дата:** 2026-05-08
+**Дата:** 2026-05-08 (amended 2026-05-10 — preset slug aliases clarified)
 **Контекст:** [Q-B-10](../questions/Q-B-10-domain-claude-md-template.md), overview §9.10, §8.4, [D-004](D-004-inbox-wiki-scope.md), [D-016](D-016-inbox-claude-md-template.md), [D-041](D-041-no-direct-wiki-commands.md)
 
 > **Update ([D-041](D-041-no-direct-wiki-commands.md), 2026-05-09):** упоминания `/wiki_init <Domain>` ниже — историческая команда; алгоритм пресет-выбора, fallback `_default` и auto-generation для unknown-домена применяются при NL-intent `create_wiki`. Pipeline без изменений.
@@ -27,6 +27,7 @@
 ai-steward-wiki/templates/
 ├── _default.md       # fallback для unknown доменов
 ├── health.md
+├── health-lite.md
 ├── investment.md
 ├── budget.md
 ├── family.md
@@ -39,8 +40,18 @@ ai-steward-wiki/templates/
 
 ### Алгоритм `/wiki_init <Domain>`
 
-1. Нормализация имени: `Health` / `health` / `HEALTH` → `health`.
-2. Lookup в `templates/`: если есть `<normalized>.md` — копировать; иначе — `_default.md`.
+1. Нормализация имени для **директории WIKI**:
+   1. свободный NL-ввод (`health`, `Health Lite`, `health-lite`, `здоровье`) превращается в candidate name;
+   2. Cyrillic → Latin transliteration для candidate proposal;
+   3. split по non-alphanumeric;
+   4. PascalCase join (`health lite` → `HealthLite`);
+   5. suffix `-WIKI`;
+   6. финальная директория обязана пройти regex [D-008](D-008-wiki-marker-format.md) `^[A-Z][A-Za-z0-9]*-WIKI$`.
+2. Нормализация имени для **lookup пресета**:
+   1. primary slug: lower-case alphanumeric (`HealthLite-WIKI` → `healthlite`);
+   2. alias slug: hyphenated variant из исходного NL-input (`health-lite`);
+   3. lookup order: `templates/<primary>.md` → `templates/<alias>.md` → `_default.md`.
+   Это позволяет template-файлам быть hyphenated (`health-lite.md`), не расширяя D-008 для runtime WIKI-директорий.
 3. Создать `USERS/<NAME>/<Domain>-WIKI/CLAUDE.md` с подставленным шаблоном.
 4. Создать стандартную структуру (`entities/`, `concepts/`, `raw/`, `index.md`, `log.md`) — общая для всех типов.
 5. Зафиксировать в `audit.db`: `(wiki, template_used, template_version, ts)`.
