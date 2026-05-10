@@ -1,7 +1,7 @@
 # D-016: Inbox-WIKI `CLAUDE.md` — hybrid autodiscover + per-domain `## Inbox hint`
 
 **Статус:** accepted
-**Дата:** 2026-05-08
+**Дата:** 2026-05-08 (amended 2026-05-10 — `sessions.db.inbox_hint_cache` contract clarified)
 **Контекст:** [Q-B-09](../questions/Q-B-09-inbox-claude-md-template.md), overview §9.9, §8.3.1, [D-004](D-004-inbox-wiki-scope.md), [D-009](D-009-classifier-engine.md), [D-015](D-015-system-prompt-inject.md), [D-041](D-041-no-direct-wiki-commands.md)
 
 > **Update ([D-041](D-041-no-direct-wiki-commands.md), 2026-05-09):** упоминание `wiki_init` ниже — генерация Inbox-`CLAUDE.md` происходит при NL-intent создания Inbox-WIKI; механика рендеринга шаблона не меняется.
@@ -95,7 +95,17 @@ USERS/<NAME>/Investment-WIKI/CLAUDE.md    # содержит ## Inbox hint
 
 ### Кэш
 
-Агрегированный каталог не материализуется на диск. Stage-0 Haiku кэшируется через prompt-cache Anthropic API (D-009), для Sonnet Stage-1 — single-shot чтение через CLI на каждый run (дёшево для 5–10 файлов).
+Агрегированный каталог не материализуется в WIKI-файлы. Runtime-cache живёт только в `sessions.db.inbox_hint_cache`, поэтому не становится новой SSoT и может быть дропнут без потери данных.
+
+1. Cache key: `(user_id, wiki_path)`.
+2. Metadata guards: `size_bytes`, `mtime_ns`, `ctime_ns`.
+3. Truth guard: `content_sha256`.
+4. Hot-path: если все metadata guards совпали с `stat(CLAUDE.md)`, router использует cached `hint_text` без чтения файла.
+5. На metadata mismatch router читает файл и считает sha256:
+   1. sha256 совпал → обновить только metadata guards;
+   2. sha256 изменился → re-parse `## Inbox hint` и atomic swap cache row.
+
+`ctime_ns` добавлен к `mtime_ns`, потому что rsync/editor могут сохранить mtime. Linux ctime пользователь вручную не выставляет, поэтому stale-cache риск ниже без полного hash-read на каждом сообщении.
 
 ## Последствия
 
@@ -105,7 +115,7 @@ USERS/<NAME>/Investment-WIKI/CLAUDE.md    # содержит ## Inbox hint
 4. Запреты:
    1. **Не дублировать список доменов** в Inbox `CLAUDE.md`.
    2. **Не писать `## Inbox hint`** в Inbox-WIKI самой (она не triage-target).
-5. Будущее (если доменов >20 или scan latency заметен) — добавить materialized cache (Вариант D) поверх контракта C, не ломая интерфейс.
+5. Будущее (если доменов >20 или scan latency заметен) — добавить TTL/metrics для `sessions.db.inbox_hint_cache`, не создавая WIKI-файловую SSoT.
 
 ## Перенос в ADR
 

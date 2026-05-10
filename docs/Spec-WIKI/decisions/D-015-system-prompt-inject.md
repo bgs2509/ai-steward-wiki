@@ -1,7 +1,7 @@
-# D-015: system prompt inject — hybrid (`--append-system-prompt` + per-WIKI `CLAUDE.md`)
+# D-015: system prompt inject — hybrid (SDK prompt file + CLI `--append-system-prompt` + per-WIKI `CLAUDE.md`)
 
 **Статус:** accepted
-**Дата:** 2026-05-08
+**Дата:** 2026-05-08 (amended 2026-05-10 — Stage-0 SDK prompt loading clarified)
 **Контекст:** [Q-C-21](../questions/Q-C-21-system-prompt-inject.md), overview §9.21, [D-007](D-007-add-dir-scope.md), [D-009](D-009-classifier-engine.md), [llm-wiki-method](../concepts/llm-wiki-method.md)
 
 ## Проблема
@@ -25,20 +25,21 @@
 ai-steward-wiki/prompts/
 ├── wiki.md          # Wiki-doctrine (Stage-1 Sonnet, любой WIKI)
 ├── classifier.md    # Stage-0 Haiku instructions (D-009)
-└── inbox.md         # extension для Inbox-WIKI (router-agent)
+├── inbox.md         # extension для Inbox-WIKI (router-agent)
+└── domain-<type>.md # optional extension для Stage-1b executor
 ```
 
 ### Inject mechanism
 
-1. **Stage-0 Haiku (classifier):** `--append-system-prompt @prompts/classifier.md`.
-2. **Stage-1 Sonnet (executor) в любой `<Domain>-WIKI`:** `--append-system-prompt @prompts/wiki.md`. Per-WIKI профиль приходит через CLAUDE.md auto-walk (D-007).
-3. **Stage-1 в Inbox-WIKI (router-agent):** `--append-system-prompt @prompts/wiki.md` + `@prompts/inbox.md` (наследование, DRY). Если CLI принимает только один файл — конкатенация в build-time через `cat wiki.md inbox.md > .build/inbox-system.md`.
-4. **`@file` reference**, не inline string — CLI перечитывает файл, дешевле логировать факт «использован prompt v1.2», нет проблем с экранированием.
+1. **Stage-0 Haiku (classifier):** прямой Anthropic SDK call читает `prompts/classifier.md` и передаёт его как system instructions. CLI-флаги на Stage-0 не используются.
+2. **Stage-1b Sonnet (executor) в `<Domain>-WIKI`:** `--append-system-prompt @prompts/wiki.md` + optional `@prompts/domain-<type>.md` если такой extension существует. Per-WIKI профиль приходит через CLAUDE.md auto-walk (D-007).
+3. **Stage-1a в Inbox-WIKI (router-agent):** `--append-system-prompt @prompts/wiki.md` + `@prompts/inbox.md` (наследование, DRY). Если CLI принимает только один файл — конкатенация в build-time через `cat wiki.md inbox.md > .build/inbox-system.md`. Для Stage-1b аналогично собирается `.build/domain-<type>-system.md`.
+4. **File-based prompt source**, не inline string: CLI Stage-1 использует `@file` reference, SDK Stage-0 читает тот же repo-файл перед вызовом. В обоих случаях логируется факт «использован prompt v1.2» и sha256.
 
 ### Версионирование
 
 1. Header в каждом prompt-файле: `# Wiki Doctrine v1.2.0` + `LAST_CHANGE: ...`.
-2. Версия логируется в audit.db на каждый CLI-запуск: `(call_id, prompt_name, prompt_version, prompt_sha256)`.
+2. Версия логируется в audit.db на каждый model-call: `(call_id, prompt_name, prompt_version, prompt_sha256, injection_mode)`, где `injection_mode ∈ {sdk_system, cli_append}`.
 3. Изменение doctrine = bump semver + commit; deploy → все WIKI используют новую версию автоматически.
 
 ### SoC
@@ -46,7 +47,7 @@ ai-steward-wiki/prompts/
 | Слой | SSoT | Что описывает |
 |------|------|---------------|
 | Anthropic defaults | CLI built-in | tools, safety, ground rules |
-| Service doctrine | `prompts/wiki.md` (`+inbox.md`) | Karpathy LLM Wiki method, ingest/query/lint operations |
+| Service doctrine | `prompts/wiki.md` (`+inbox.md`, `+domain-<type>.md`) | Karpathy LLM Wiki method, ingest/query/lint operations |
 | Per-WIKI profile | `<wiki>/CLAUDE.md` (auto-walk) | конкретные правила домена, schema, templates |
 | Per-call task | TG message → user prompt | задача юзера |
 

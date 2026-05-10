@@ -1,7 +1,7 @@
 # D-003: Scheduler backend — APScheduler AsyncIOScheduler + SQLAlchemyJobStore
 
 **Статус:** accepted
-**Дата:** 2026-05-08
+**Дата:** 2026-05-08 (amended 2026-05-10 — internal maintenance jobs clarified)
 **Контекст:** [Q-A-02](../questions/Q-A-02-scheduler-backend.md), [job-model](../entities/job-model.md), [D-002](D-002-job-model-storage.md)
 
 ## Проблема
@@ -33,8 +33,8 @@
    2. Таблицы APScheduler jobstore (служебные, схема владелец — APScheduler).
    Обе через один engine, общий connection pool.
 3. Misfire policy: APScheduler `misfire_grace_time` настраивается per-kind (короткий для `tracker_survey`, длинный для `digest_job`). Конкретные значения — отдельным решением при реализации.
-4. Долгие job'ы (Claude CLI) запускаются через `asyncio.create_subprocess_exec`, чтобы не блокировать event-loop. Лимиты конкуррентности — Q-A-07.
-5. Системные DevOps-задачи (бэкап БД, ротация логов) остаются в OS-cron — не часть `job-model`.
+4. Долгие job'ы (Claude CLI) запускаются через общий async runner (`cli_pool` → `systemd-run --scope` per D-038), чтобы не блокировать event-loop и не обходить isolation. Лимиты конкуррентности — Q-A-07.
+5. Full off-site backup, logrotate и host-level DevOps остаются в OS-cron/systemd timer — не часть user-facing `job-model`. Lightweight in-app maintenance (`retention`, `gc`, `db_snapshot`) может идти через APScheduler как `silent` system task, потому что использует те же DB paths и audit conventions.
 6. При падении процесса триггеры паузятся; mitigation — systemd `Restart=always` + misfire grace time.
 7. Q-A-02 закрывается этим решением.
 

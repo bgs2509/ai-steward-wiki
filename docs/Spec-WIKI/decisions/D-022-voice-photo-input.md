@@ -1,7 +1,7 @@
 # D-022: voice/photo input — voice-first (faster-whisper) + photo via Claude vision
 
 **Статус:** accepted
-**Дата:** 2026-05-09
+**Дата:** 2026-05-09 (amended 2026-05-10 — media staging before routing clarified)
 **Контекст:** [Q-B-14](../questions/Q-B-14-voice-photo-input.md), overview §9.14, §10, [D-013](D-013-claude-cli-auth.md), [D-018](D-018-ingest-idempotency.md), [D-021](D-021-timeouts-kill-policy.md)
 
 ## Проблема
@@ -26,7 +26,7 @@ Inbox-WIKI должен принимать voice memos и фото (билеты
 2. **Trigger:** TG `voice` / `audio` / `video_note` content type.
 3. **Pipeline:**
    1. Bot ack «🎙️ слушаю…» (placeholder msg для D-026 streaming).
-   2. Скачать file → save в `<wiki>/raw/media/<ts>_<hash>.<ext>`.
+   2. Скачать file → save в `Inbox-WIKI/raw/media/_staging/<run_id>_<hash>.<ext>` до routing.
    3. Транскрипт через `faster-whisper` (timeout 60s).
    4. Транскрипт идёт в обычный flow router → Stage-1.
 4. **Bench-критерий:** RTF (real-time factor) ≤ 0.5 на small model на текущем VPS; если не проходит — рассмотреть medium-int8 или Whisper-API fallback.
@@ -38,7 +38,7 @@ Inbox-WIKI должен принимать voice memos и фото (билеты
 3. **Trigger:** TG `photo` / `document` content type, если MIME — image.
 4. **Pipeline:**
    1. Bot ack «🖼️ смотрю…».
-   2. Скачать файл → `<wiki>/raw/media/<ts>_<hash>.<ext>`.
+   2. Скачать файл → `Inbox-WIKI/raw/media/_staging/<run_id>_<hash>.<ext>` до routing.
    3. Передать image content в Stage-1 prompt вместе с user caption (если есть).
    4. Vision-extract идёт в обычный flow router (timeout 30s).
 
@@ -61,6 +61,11 @@ Inbox-WIKI должен принимать voice memos и фото (билеты
 
 ### Storage
 
+Media ingest использует двухфазное хранение, потому что target Domain-WIKI неизвестен до Stage-1a routing.
+
+1. **Pre-routing staging:** `USERS/<NAME>/Inbox-WIKI/raw/media/_staging/<run_id>_<sha256[:8]>.<ext>`.
+2. **After resolution:** после Stage-1a resolution и нужного confirm runtime атомарно переносит файл в target WIKI:
+
 ```
 <wiki>/raw/media/
 ├── 2026-05-09T08-12-34_a1b2c3d4.ogg     # voice
@@ -68,7 +73,9 @@ Inbox-WIKI должен принимать voice memos и фото (билеты
 └── …
 ```
 
-Filename: `<ISO8601-with-dashes>_<sha256[:8]>.<ext>`. Immutable per Karpathy LLM Wiki method (`raw/` неизменяема).
+3. **No-WIKI flow:** если итоговый intent не пишет в WIKI (`reminder_job`, rejected confirm, read-only query), staging-файл очищается через 24h retention-job после audit-записи.
+
+Target filename: `<ISO8601-with-dashes>_<sha256[:8]>.<ext>`. Immutable per Karpathy LLM Wiki method (`raw/` неизменяема).
 
 ## Последствия
 

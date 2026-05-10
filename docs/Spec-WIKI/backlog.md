@@ -14,8 +14,8 @@
 **Дата частичного закрытия:** 2026-05-10 (review tech-spec-draft, critical finding по риску total data-loss в single-tenant SQLite-WAL)
 
 **MVP-объём** (реализационная деталь поверх [D-006](decisions/D-006-state-storage-layout.md) и [D-037](decisions/D-037-git-in-wiki.md), без отдельного D-файла — см. tech-spec §10):
-1. APScheduler-job `db_snapshot` daily 03:00 UTC, `VACUUM INTO state/snapshots/<UTC-date>/{jobs,audit,sessions}.db` (consistent SQLite hot-backup без остановки WAL), local retention 7 дней rolling, mode 0700.
-2. `git push <remote>` per-WIKI на каждый auto-commit (D-037), config `WIKI_GIT_REMOTE` per-user в `users.toml`, best-effort + retry, audit-event `wiki_push_failed` при отказе, не блокирует UX.
+1. Internal APScheduler maintenance job `db_snapshot` daily 03:00 UTC, `VACUUM INTO state/snapshots/<UTC-date>/{jobs,audit,sessions}.db` (consistent SQLite hot-backup без остановки WAL), local retention 7 дней rolling, mode 0700.
+2. Per-WIKI local git history на каждый auto-commit (D-037) для rollback от bad edit / случайной правки. Remote не настраивается в MVP: `git push` и `WIKI_GIT_REMOTE` остаются deferred, потому что D-037 запрещает использовать git remote как backup.
 3. Restore-test runbook `docs/runbook/restore.md` (`db_snapshot` → restore → `pytest tests/restore/`), обязателен перед каждым релизом.
 
 **Триггер пересмотра — расширения до полного off-site (любой из):**
