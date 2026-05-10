@@ -10,10 +10,11 @@
 
   <RunState>
     <Status>in-progress</Status>
-    <CurrentChunk>7</CurrentChunk>
-    <ClosedChunks>1,2,3,4,5,6</ClosedChunks>
+    <CurrentChunk>8</CurrentChunk>
+    <ClosedChunks>1,2,3,4,5,6,7</ClosedChunks>
     <Notes>Chunk 5 closed 2026-05-10: bd_id=aisw-5; M-CLASSIFIER-STAGE0 (schema/backend/stage0/time_parse + 2 prompts); 24 chunk-5 tests pass; full unit suite 89/89; ruff+format+mypy+grace lint clean; total-test gate green.
-Chunk 6 closed 2026-05-10: bd_id=aisw-qoi; M-INBOX (parser + hint_cache repo + get_or_refresh_hint hot-path + ensure_inbox_wiki + templates/inbox-wiki/CLAUDE.md per D-016); 17 chunk-6 tests pass; full unit suite 106/106; ruff+format+mypy clean; grace lint exit 0 (warnings only, baseline heuristic).</Notes>
+Chunk 6 closed 2026-05-10: bd_id=aisw-qoi; M-INBOX (parser + hint_cache repo + get_or_refresh_hint hot-path + ensure_inbox_wiki + templates/inbox-wiki/CLAUDE.md per D-016); 17 chunk-6 tests pass; full unit suite 106/106; ruff+format+mypy clean; grace lint exit 0 (warnings only, baseline heuristic).
+Chunk 7 closed 2026-05-10: bd_id=aisw-x30; M-WIKI-RUNNER (wiki/{__init__,acquire,streaming,runner}.py + 5 prompts wiki/inbox/domain-{health,finance,default}); 13 chunk-7 tests pass; full unit suite 119/119; ruff+format+mypy clean; grace lint 0 errors / 28 warnings (heuristic baseline); total-test gate green.</Notes>
   </RunState>
 
   <Decisions>
