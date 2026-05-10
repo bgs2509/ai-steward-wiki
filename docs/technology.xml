@@ -1,0 +1,49 @@
+<?xml version="1.0" ?>
+<Technology generated="auto" source="YAML frontmatter of markdown specs">
+  <Feature source="20260510-foundation-scaffold-design.md" bd_id="aisw-u99">
+    <title>Foundation scaffold — Design</title>
+    <feature>foundation-scaffold</feature>
+    <date>2026-05-10</date>
+    <status>draft</status>
+    <stack>
+      <python>3.11+</python>
+      <package_manager>uv</package_manager>
+      <lint>
+        <Item>ruff (check + format)</Item>
+        <Item>mypy --strict (src/ only)</Item>
+        <Item>gitleaks</Item>
+      </lint>
+      <config>pydantic-settings v2</config>
+      <logging>structlog (JSON renderer → stdout)</logging>
+      <test>pytest + pytest-asyncio (anyio mode auto)</test>
+    </stack>
+    <deps_pinned>
+      <runtime>
+        <Item>pydantic==2.9.2</Item>
+        <Item>pydantic-settings==2.6.1</Item>
+        <Item>structlog==24.4.0</Item>
+      </runtime>
+      <deferred_runtime>
+        <Item>aiogram==3.15.0</Item>
+        <Item>APScheduler==3.11.0</Item>
+        <Item>SQLAlchemy==2.0.36</Item>
+        <Item>aiosqlite==0.20.0</Item>
+        <Item>alembic==1.14.0</Item>
+        <Item>dateparser==1.2.0</Item>
+      </deferred_runtime>
+      <optional_extras>
+        <stt>
+          <Item>faster-whisper==1.1.0</Item>
+        </stt>
+      </optional_extras>
+      <dev>
+        <Item>pytest==8.3.4</Item>
+        <Item>pytest-asyncio==0.24.0</Item>
+        <Item>ruff==0.8.4</Item>
+        <Item>mypy==1.13.0</Item>
+        <Item>pre-commit==4.0.1</Item>
+      </dev>
+    </deps_pinned>
+    <adrs/>
+  </Feature>
+</Technology>

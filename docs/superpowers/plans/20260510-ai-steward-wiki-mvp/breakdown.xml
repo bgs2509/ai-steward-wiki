@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Breakdown epic="20260510-ai-steward-wiki-mvp" generated_at_utc="2026-05-10T00:00:00Z">
+  <Meta>
+    <TargetRepo>/home/bgs/ai-steward/Gena_Beeline_Local/ai-steward-wiki</TargetRepo>
+    <DraftPath>docs/Spec-WIKI/research/tech-spec-draft.md</DraftPath>
+    <Model>claude-opus-4-7</Model>
+    <BudgetPerChunk>0.6</BudgetPerChunk>
+    <PollInterval>30s</PollInterval>
+  </Meta>
+
+  <RunState>
+    <Status>awaiting-approval</Status>
+    <CurrentChunk>0</CurrentChunk>
+  </RunState>
+
+  <Decisions>
+    <Decision auto_applied="false" id="DEC-1">
+      <Question>Telegram framework</Question>
+      <Choice>aiogram 3.x</Choice>
+      <Source>tech-spec §8 + project CLAUDE.md stack</Source>
+    </Decision>
+    <Decision auto_applied="false" id="DEC-2">
+      <Question>Scheduler</Question>
+      <Choice>APScheduler AsyncIOScheduler + SQLAlchemyJobStore</Choice>
+      <Source>D-003 (already approved in spec)</Source>
+    </Decision>
+    <Decision auto_applied="false" id="DEC-3">
+      <Question>Storage</Question>
+      <Choice>3 × SQLite (jobs/audit/sessions) + Alembic per-DB</Choice>
+      <Source>D-006</Source>
+    </Decision>
+    <Decision auto_applied="false" id="DEC-4">
+      <Question>STT</Question>
+      <Choice>faster-whisper (CTranslate2 CPU)</Choice>
+      <Source>D-022</Source>
+    </Decision>
+  </Decisions>
+
+  <Chunks>
+    <Chunk id="1" bd_id="aisw-1" title="Foundation scaffold (pyproject, settings, structlog, pre-commit)" est_window="0.30" depends_on="" module_id="M-FOUNDATION">
+      <Inputs>pyproject.toml, .env.example, .pre-commit-config.yaml, Makefile, src/ai_steward_wiki/__init__.py, src/ai_steward_wiki/settings.py, src/ai_steward_wiki/logging_setup.py</Inputs>
+      <Outputs>uv-managed deps locked; ruff/mypy/format/grace-lint hooks pass; structlog JSON config; pydantic-settings .env loader</Outputs>
+      <Verification>uv sync; make lint; uv run python -c "import ai_steward_wiki"</Verification>
+    </Chunk>
+
+    <Chunk id="2" bd_id="aisw-2" title="Storage: 3 SQLite engines + Alembic per-DB + base models" est_window="0.55" depends_on="aisw-1" module_id="M-STORAGE">
+      <Inputs>src/ai_steward_wiki/storage/{jobs,audit,sessions}/{engine.py,models.py}; alembic/{jobs,audit,sessions}/</Inputs>
+      <Outputs>WAL+busy_timeout+foreign_keys engines; Alembic baselines; jobs.jobs (flat+JSON), tracker_answers, jobs_dlq; audit tables (chat_log, audit_events, admin_events, tg_updates, seen_files, dedup_hits, job_outputs, run_outputs, prompt_versions, onboarding_events); sessions tables (users, pending_users, pending_confirms, inbox_hint_cache, fsm); Pydantic discriminated union for job payloads</Outputs>
+      <Verification>alembic upgrade head per-DB; pytest tests/unit/storage; PRAGMA assertions</Verification>
+    </Chunk>
+
+    <Chunk id="3" bd_id="aisw-3" title="Identity & users.toml allowlist (SIGHUP + watchdog hot-reload)" est_window="0.40" depends_on="aisw-2" module_id="M-AUTH-USERS">
+      <Inputs>src/ai_steward_wiki/auth/{users_toml.py,allowlist.py,sighup.py}</Inputs>
+      <Outputs>users.toml SSoT loader; validate-before-swap; SIGHUP primary + watchdog 500ms debounce; sessions.users sync; admin-alert on parse-error</Outputs>
+      <Verification>pytest tests/unit/auth; manual SIGHUP smoke</Verification>
+    </Chunk>
+
+    <Chunk id="4" bd_id="aisw-4" title="Scheduler core: queue, semaphore, locks, DLQ, failure taxonomy" est_window="0.60" depends_on="aisw-2" module_id="M-SCHEDULER">
+      <Inputs>src/ai_steward_wiki/scheduler/{core.py,queue.py,locks.py,failure.py,dlq.py}</Inputs>
+      <Outputs>APScheduler+SQLAlchemyJobStore; PriorityQueue 5 lanes; Semaphore(MAX_CONCURRENT_CLI=4); per-WIKI in-memory Lock + on-disk fcntl.flock; SIGTERM→10s→SIGKILL kill-seq; Transient/Permanent/Unknown taxonomy; auto-disable after 3 strikes (timeout counted); jobs_dlq</Outputs>
+      <Verification>pytest tests/unit/scheduler; deadlock-order test; kill-sequence test</Verification>
+    </Chunk>
+
+    <Chunk id="5" bd_id="aisw-5" title="Classifier Stage-0 Haiku CLI + NL time parser" est_window="0.50" depends_on="aisw-2,aisw-1" module_id="M-CLASSIFIER-STAGE0">
+      <Inputs>src/ai_steward_wiki/classifier/{stage0.py,schema.py,time_parse.py,fake_runner.py}; prompts/classifier.md</Inputs>
+      <Outputs>Claude Haiku CLI subprocess with --json-schema, allowed/disallowedTools, dontAsk; FakeClaudeRunner Protocol; semver+sha256 → audit.prompt_versions; dateparser→Haiku-fallback→escalation; UTC storage</Outputs>
+      <Verification>pytest tests/unit/classifier with FakeRunner; integration nightly with real CLI</Verification>
+    </Chunk>
+
+    <Chunk id="6" bd_id="aisw-6" title="Inbox-WIKI materialize + Inbox-hint cache" est_window="0.45" depends_on="aisw-2,aisw-3" module_id="M-INBOX">
+      <Inputs>src/ai_steward_wiki/inbox/{materialize.py,hint_cache.py,parser.py}; templates/inbox-wiki/CLAUDE.md</Inputs>
+      <Outputs>Per-user Inbox-WIKI/ on first contact; ## Inbox hint regex parser; sessions.inbox_hint_cache with metadata+sha256 atomic swap; ~80% TTFB economy</Outputs>
+      <Verification>pytest tests/unit/inbox; cache-hit/miss/preserved-mtime cases</Verification>
+    </Chunk>
+
+    <Chunk id="7" bd_id="aisw-7" title="Wiki Stage-1a/1b runner (Sonnet CLI + streaming + locks)" est_window="0.55" depends_on="aisw-4,aisw-5,aisw-6" module_id="M-WIKI-RUNNER">
+      <Inputs>src/ai_steward_wiki/wiki/{runner.py,streaming.py,acquire.py}; prompts/{wiki.md,inbox.md,domain-*.md}</Inputs>
+      <Outputs>claude CLI subprocess with --add-dir, --append-system-prompt @file, --output-format stream-json; strict acquire-order semaphore→memlock→flock; stale-lock recovery by PID; atomic tmp+os.replace</Outputs>
+      <Verification>pytest tests/unit/wiki; integration single-shot; lock contention test</Verification>
+    </Chunk>
+
+    <Chunk id="8" bd_id="aisw-8" title="Wiki lifecycle (NL pre-flight, anti-spam, soft-delete, CLAUDE.md frontmatter)" est_window="0.55" depends_on="aisw-7" module_id="M-WIKI-LIFECYCLE">
+      <Inputs>src/ai_steward_wiki/wiki/{lifecycle.py,name.py,preflight.py,migration.py}</Inputs>
+      <Outputs>Cyrillic→Latin ISO9 + PascalCase + -WIKI suffix regex ^[A-Z][A-Za-z0-9]*-WIKI$; lookup primary/hyphenated; cap 20 + Levenshtein≤2 anti-spam; soft-delete to _trash/ 30d retention; 5-step pre-flight grounding; managed/user-zone CLAUDE.md frontmatter+linear migration v1→v2</Outputs>
+      <Verification>pytest tests/unit/wiki/lifecycle; INV-7 no direct command grep</Verification>
+    </Chunk>
+
+    <Chunk id="9" bd_id="aisw-9" title="Idempotency: tg_updates (24h) + seen_files (30d) dedup" est_window="0.25" depends_on="aisw-2" module_id="M-INGEST-IDEM">
+      <Inputs>src/ai_steward_wiki/inbox/idempotency.py</Inputs>
+      <Outputs>L1 TG update_id dedup; L2 SHA-256 content dedup with inline-confirm on collision; both layers in audit.db</Outputs>
+      <Verification>pytest tests/unit/inbox/idempotency</Verification>
+    </Chunk>
+
+    <Chunk id="10" bd_id="aisw-10" title="Telegram I/O text: aiogram bot + allowlist + confirmations + output-sizing + streaming edits" est_window="0.60" depends_on="aisw-3,aisw-7,aisw-9" module_id="M-TG-TEXT">
+      <Inputs>src/ai_steward_wiki/tg/{bot.py,middleware_auth.py,confirm.py,output.py,stream_edit.py}</Inputs>
+      <Outputs>aiogram 3 dispatcher; allowlist gate; graduated 3-tier confirmation (auto/implicit/explicit) + 10min TTL; size hybrid (≤3500/≤10000/>10000+Haiku-summary+document); HTML parse_mode + balancer; edit-throttle 1.5s/Δ50; chain-split 4000; final-flush guarantee; persist run_outputs</Outputs>
+      <Verification>pytest tests/unit/tg; integration with TG sandbox</Verification>
+    </Chunk>
+
+    <Chunk id="11" bd_id="aisw-11" title="Voice & photo input (faster-whisper + vision delegation + staging→raw)" est_window="0.40" depends_on="aisw-10" module_id="M-TG-MEDIA">
+      <Inputs>src/ai_steward_wiki/tg/{voice.py,photo.py}; src/ai_steward_wiki/inbox/staging.py</Inputs>
+      <Outputs>faster-whisper CTranslate2 CPU ru/en RTF≤0.5; photo→Sonnet vision; _staging/&lt;run_id&gt;_&lt;sha8&gt;.&lt;ext&gt; → atomic move to &lt;wiki&gt;/raw/media/; 24h staging retention</Outputs>
+      <Verification>pytest tests/unit/tg/voice with bundled wav fixtures</Verification>
+    </Chunk>
+
+    <Chunk id="12" bd_id="aisw-12" title="Onboarding + admin (pending_users, intro lint, /admin elevate, TENANCY_MODE)" est_window="0.45" depends_on="aisw-3,aisw-10" module_id="M-ONBOARD-ADMIN">
+      <Inputs>src/ai_steward_wiki/auth/{onboarding.py,admin.py}; templates/onboarding-intro.ru.md; scripts/lint_onboarding.py</Inputs>
+      <Outputs>/start unknown→pending_users 14d; admin inline-approve; mandatory 6-element intro with HTML markers; lint exit-1 on missing slug; TENANCY_MODE single|multi; /admin elevate 30min; admin_events audit; admin shadow channel (failures only, no content)</Outputs>
+      <Verification>pytest tests/unit/auth/onboarding; lint_onboarding.py CI gate</Verification>
+    </Chunk>
+
+    <Chunk id="13" bd_id="aisw-13" title="PII redactor + retention purge jobs" est_window="0.45" depends_on="aisw-2,aisw-4" module_id="M-OPS-PII">
+      <Inputs>src/ai_steward_wiki/ops/{pii.py,retention.py}</Inputs>
+      <Outputs>structlog processor; tier-1 DROP, tier-2 MASK with hash, tier-3 plaintext+0600; APScheduler maintenance jobs for every store per §10.4 retention-table; trash sweep (tier-1 DROP / tier-2 MASK)</Outputs>
+      <Verification>pytest tests/unit/ops/pii (NIST tier-1/2 fixtures); retention coverage matrix test against §10.4</Verification>
+    </Chunk>
+
+    <Chunk id="14" bd_id="aisw-14" title="Backup MVP + per-WIKI git + restore-test" est_window="0.35" depends_on="aisw-2,aisw-7" module_id="M-OPS-BACKUP">
+      <Inputs>src/ai_steward_wiki/ops/{snapshot.py,wiki_git.py}; docs/runbook/restore.md; tests/restore/</Inputs>
+      <Outputs>db_snapshot daily 03:00 UTC VACUUM INTO state/snapshots/&lt;UTC&gt;/, 7d rolling 0700; per-WIKI git init+auto-commit fmt &lt;job_id&gt;(&lt;cat&gt;): &lt;title&gt;; gitleaks pre-commit; .gitignore (.wiki.lock, data/runs/); restore runbook</Outputs>
+      <Verification>tests/restore smoke; manual runbook checklist</Verification>
+    </Chunk>
+
+    <Chunk id="15" bd_id="aisw-15" title="Templates: domain presets + inbox + onboarding + frontmatter migration" est_window="0.30" depends_on="aisw-8" module_id="M-TEMPLATES">
+      <Inputs>templates/{health,health-lite,investment,budget,family,study,career,home,hobby,recipes,_default}.md; templates/inbox-wiki/CLAUDE.md; templates/onboarding-intro.ru.md; src/ai_steward_wiki/wiki/migrations/v1_to_v2.py skeleton</Inputs>
+      <Outputs>10 domain presets + _default + inbox + onboarding-intro; frontmatter schema_version/template_id/last_migrated_at/template_sha256; managed/user-zone HTML markers; ## Inbox hint section per preset</Outputs>
+      <Verification>scripts/lint_templates.py; pytest tests/unit/wiki/migration</Verification>
+    </Chunk>
+
+    <Chunk id="16" bd_id="aisw-16" title="Deployment: systemd units, slices, sysusers, runbook" est_window="0.40" depends_on="aisw-1,aisw-13,aisw-14" module_id="M-DEPLOY">
+      <Inputs>deploy/systemd/{aisw-bot.service,aisw-bot.slice,aisw-stt.slice,aisw-sysusers.conf}; deploy/{staging,prod}/.env.example; docs/runbook/{deploy.md,operations.md}</Inputs>
+      <Outputs>aisw-bot service with CAP_SETUID/CAP_SETGID; per-CLI systemd-run --scope --uid=aisw-N --unit=cli-&lt;job_id&gt;; transient scope props (MemoryMax=2G, TasksMax=64, ProtectSystem=strict, ReadOnlyPaths=&lt;service&gt;/prompts and CLAUDE_CONFIG_DIR); aisw-bot.slice MemoryHigh=12G/Max=16G; aisw-stt.slice 4G/CPUQuota=200%; per-user UID via systemd-sysusers drop-in</Outputs>
+      <Verification>systemd-analyze verify; manual staging deploy</Verification>
+    </Chunk>
+
+    <Chunk id="17" bd_id="aisw-17" title="Verification suite + INV grep-lints + integration nightly" est_window="0.30" depends_on="all" module_id="M-VERIFICATION">
+      <Inputs>scripts/{lint_invariants.py,lint_onboarding.py,lint_templates.py}; tests/integration/; tests/e2e_checklist.md; .github/workflows/ci.yml (or Makefile-only if no GH)</Inputs>
+      <Outputs>14 INV grep-checks automated; RUN_INTEGRATION=1 nightly target; manual E2E checklist; coverage ≥80% core</Outputs>
+      <Verification>make qa; make lint; pytest --cov</Verification>
+    </Chunk>
+  </Chunks>
+</Breakdown>

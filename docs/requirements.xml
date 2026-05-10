@@ -1,0 +1,107 @@
+<?xml version="1.0" ?>
+<Requirements generated="auto" source="YAML frontmatter of markdown specs">
+  <Feature source="20260510-foundation-scaffold-discovery.md" bd_id="aisw-u99">
+    <title>Foundation scaffold — Discovery</title>
+    <feature>foundation-scaffold</feature>
+    <epic_bd_id>aisw-fm0</epic_bd_id>
+    <date>2026-05-10</date>
+    <status>draft</status>
+    <sources>
+      <Item>docs/Spec-WIKI/research/tech-spec-draft.md#10.3</Item>
+      <Item>CLAUDE.md (project stack)</Item>
+      <Item>~/.claude/CLAUDE.md (Pre-commit Policy, Plan Sizing)</Item>
+    </sources>
+    <fr>
+      <Item id="FR-1">
+        <title>Project bootstrappable via `uv sync`</title>
+        <desc>pyproject.toml declares Python 3.11+ and pinned deps; `uv sync` produces uv.lock and a working venv.</desc>
+      </Item>
+      <Item id="FR-2">
+        <title>Settings load from .env via pydantic-settings</title>
+        <desc>src/ai_steward_wiki/settings.py exposes Settings BaseSettings with frozen fields populated from .env / env vars.</desc>
+      </Item>
+      <Item id="FR-3">
+        <title>Structlog JSON-lines logger ready</title>
+        <desc>logging_setup.configure_logging() outputs structlog JSON to stdout (journald-friendly) with mandatory fields ts, event, correlation_id, user_id, wiki_id, job_id.</desc>
+      </Item>
+      <Item id="FR-4">
+        <title>correlation_id contextvar</title>
+        <desc>Public helper bind_correlation_id(value) sets a contextvar bound to every log line emitted within the async task.</desc>
+      </Item>
+      <Item id="FR-5">
+        <title>Lint/QA targets</title>
+        <desc>Makefile exposes `make lint` (ruff check + ruff format --check + mypy --strict src/) and `make qa` (lint + pytest).</desc>
+      </Item>
+      <Item id="FR-6">
+        <title>Pre-commit config</title>
+        <desc>.pre-commit-config.yaml runs ruff (check + format), mypy on staged src/, gitleaks. Hook installed via `pre-commit install`.</desc>
+      </Item>
+    </fr>
+    <nfr>
+      <Item id="NFR-1">
+        <title>mypy --strict clean for src/</title>
+      </Item>
+      <Item id="NFR-2">
+        <title>ruff lint+format clean</title>
+      </Item>
+      <Item id="NFR-3">
+        <title>Logger overhead negligible for hot-path (no per-line dict-merge cost beyond structlog defaults)</title>
+      </Item>
+      <Item id="NFR-4">
+        <title>No secrets in repo — gitleaks pre-commit + .env gitignored</title>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>Python 3.11+, uv only (no pip-tools, no Poetry)</Item>
+      <Item>Versions strictly pinned with `==` per ~/.claude/rules/python-dev.md</Item>
+      <Item>All code/comments/commits in English; user-facing strings in Russian (later chunks)</Item>
+      <Item>structlog JSON output, not human-readable; rendering belongs to journald/Loki</Item>
+    </constraints>
+    <risks>
+      <Item id="R-1">
+        <desc>Drift between pyproject pinned versions and uv.lock</desc>
+        <mitigation>uv.lock checked into git; CI/pre-commit verify lock consistency</mitigation>
+      </Item>
+      <Item id="R-2">
+        <desc>Bd-installed pre-commit hook conflicts with project hook</desc>
+        <mitigation>Use the `pre-commit` framework so hook installation is idempotent; bd's existing hook is preserved by bd itself</mitigation>
+      </Item>
+    </risks>
+    <scope_in>
+      <Item>pyproject.toml + uv.lock</Item>
+      <Item>.env.example with full settings list (skeleton — fields refined per chunk)</Item>
+      <Item>.pre-commit-config.yaml (ruff, mypy on staged, gitleaks)</Item>
+      <Item>Makefile (lint, qa, test, format targets)</Item>
+      <Item>src/ai_steward_wiki/__init__.py (version export)</Item>
+      <Item>src/ai_steward_wiki/settings.py (pydantic-settings BaseSettings)</Item>
+      <Item>src/ai_steward_wiki/logging_setup.py (structlog config + correlation_id contextvar)</Item>
+      <Item>tests/unit/test_settings.py (smoke)</Item>
+      <Item>tests/unit/test_logging_setup.py (correlation_id propagation)</Item>
+      <Item>.gitignore (extend for venv, .env, uv cache, .sentrux/{baselines,results})</Item>
+    </scope_in>
+    <scope_out>
+      <Item>DB engines / Alembic — Chunk 2</Item>
+      <Item>Any service modules (storage, scheduler, classifier, tg, …) — later chunks</Item>
+      <Item>Real systemd unit files — Chunk 16</Item>
+      <Item>CI workflow file (Makefile-only for MVP per spec §10.6)</Item>
+    </scope_out>
+    <deps>
+      <Item>aiogram==3.15 (deferred install; declare in pyproject for stability lock, used Chunk 10)</Item>
+      <Item>APScheduler (Chunk 4) — declare for lock</Item>
+      <Item>SQLAlchemy 2.x async + aiosqlite (Chunk 2)</Item>
+      <Item>alembic (Chunk 2)</Item>
+      <Item>pydantic v2, pydantic-settings (this chunk)</Item>
+      <Item>structlog (this chunk)</Item>
+      <Item>faster-whisper (Chunk 11) — heavy; declare optional extra `[stt]`</Item>
+      <Item>dateparser (Chunk 5) — declare</Item>
+    </deps>
+    <verification>
+      <Item>uv sync exits 0; uv.lock present</Item>
+      <Item>uv run python -c 'from ai_steward_wiki import __version__; print(__version__)' works</Item>
+      <Item>make lint passes (ruff + ruff format --check + mypy --strict src/)</Item>
+      <Item>uv run pytest tests/unit -q passes</Item>
+      <Item>bind_correlation_id('xyz') propagates through async tasks (asserted in test)</Item>
+      <Item>pre-commit run --all-files exits 0 (after install)</Item>
+    </verification>
+  </Feature>
+</Requirements>

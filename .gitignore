@@ -15,4 +15,24 @@ venv/
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
+*.db-wal
+*.db-shm
 .beads-credential-key
+
+# uv / lint / test caches
+.uv-cache/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# state / runtime
+state/
+*.wiki.lock
+
+# sentrux scratch
+.sentrux/baselines/
+.sentrux/results/
