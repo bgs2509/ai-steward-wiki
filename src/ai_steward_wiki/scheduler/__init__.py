@@ -21,6 +21,10 @@
 #   kill_with_sequence - SIGTERM→grace→SIGKILL (D-021)
 #   build_scheduler - APScheduler AsyncIOScheduler factory (D-003)
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.4 - chunk 4: scheduler core barrel exports
+# END_CHANGE_SUMMARY
 
 from ai_steward_wiki.scheduler.core import build_scheduler, kill_with_sequence
 from ai_steward_wiki.scheduler.dlq import move_to_dlq

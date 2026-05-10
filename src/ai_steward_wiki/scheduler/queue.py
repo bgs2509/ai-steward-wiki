@@ -14,6 +14,10 @@
 #   QueueItem - (lane, sequence, payload) ordered tuple
 #   PriorityJobQueue - asyncio.PriorityQueue[QueueItem] with auto-incrementing seq
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.4 - chunk 4: 5-lane PriorityJobQueue (D-011 §3)
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

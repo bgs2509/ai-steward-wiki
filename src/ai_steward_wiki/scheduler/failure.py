@@ -10,10 +10,15 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
+#   AUTO_DISABLE_STRIKES - threshold constant (D-019, 3 strikes)
 #   FailureClass - Transient | Permanent | Unknown
 #   classify_exception - exception → FailureClass heuristic
 #   FailureCounter - per-job consecutive-failure tracker; reset only on success
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.4 - chunk 4: failure taxonomy + 3-strikes counter (D-019, INV-12)
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

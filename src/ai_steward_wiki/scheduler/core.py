@@ -12,9 +12,14 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
+#   DEFAULT_TERM_GRACE_SECONDS - default SIGTERM grace before SIGKILL (D-021)
 #   build_scheduler - configured AsyncIOScheduler with SQLAlchemyJobStore
 #   kill_with_sequence - SIGTERM, wait grace seconds, SIGKILL fallback
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.4 - chunk 4: scheduler factory + kill-sequence (D-003, D-021)
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

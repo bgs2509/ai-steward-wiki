@@ -12,6 +12,10 @@
 # START_MODULE_MAP
 #   move_to_dlq - persist (job_id, reason, error_class, last_error) into jobs_dlq
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.4 - chunk 4: DLQ writer for jobs.db.jobs_dlq (D-019, INV-11)
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

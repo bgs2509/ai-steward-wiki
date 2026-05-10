@@ -12,8 +12,13 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
+#   LOCK_FILENAME - on-disk advisory lock file basename
 #   WikiLockManager - 3-tier acquire/release with stale-PID recovery
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.4 - chunk 4: 3-tier WikiLockManager (D-011, D-012)
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
