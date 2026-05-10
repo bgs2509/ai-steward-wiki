@@ -14,7 +14,7 @@
 #   ClassifierBackend - Protocol; async call(text, prompt_path, correlation_id) -> dict
 #   Spawner - Protocol; subprocess spawn primitive (chunk 16 injects systemd-run prefix)
 #   AsyncioSpawner - default Spawner using asyncio.create_subprocess_exec
-#   ClaudeCliBackend - default backend invoking `claude` CLI in JSON mode
+#   ClaudeCliBackend - default backend invoking `claude` CLI in JSON mode (resolves binary)
 #   AnthropicApiBackend - optional backend; activated only when STAGE0_BACKEND=anthropic_api
 #   FakeClaudeRunner - deterministic test double, records calls
 # END_MODULE_MAP
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -115,10 +116,23 @@ class ClaudeCliBackend:
             "dontAsk",
         ]
 
+    def _resolve_binary(self) -> str:
+        """Return absolute path to the `claude` binary, or the configured value as-is.
+
+        Resolved with the *outer* PATH (not the restricted PATH passed to the subprocess
+        env) so that callers can rely on Settings to point at any installation location.
+        """
+        if "/" in self.binary:
+            return self.binary
+        resolved = shutil.which(self.binary)
+        return resolved if resolved is not None else self.binary
+
     async def call(self, *, text: str, prompt_path: Path, correlation_id: str) -> dict[str, Any]:
         env = {"CLAUDE_CONFIG_DIR": str(self.claude_config_dir), "PATH": "/usr/bin:/bin"}
+        argv = self._argv(prompt_path)
+        argv[0] = self._resolve_binary()
         rc, stdout, stderr = await self.spawner.spawn(
-            self._argv(prompt_path),
+            argv,
             env=env,
             stdin=text.encode("utf-8"),
             timeout_s=self.timeout_s,
