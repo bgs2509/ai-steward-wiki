@@ -51,13 +51,83 @@ sources:
 
 # Tech Spec Draft — ai-steward-wiki
 
-> Сводное техническое описание, агрегирующее 42 артефакта-решения (D-001…D-042): 41 active + 1 superseded (D-029 → D-041). Источник истины по архитектурным выборам — соответствующие `decisions/D-NNN-*.md`. Этот документ — навигационная карта, не SSoT.
+> Сводное техническое описание, агрегирующее **42 артефакта-решения** (`D-001…D-042`):
+> - 41 active + 1 superseded (`D-029` → `D-041`).
+> - Источник истины по архитектурным выборам — соответствующие `decisions/D-NNN-*.md`.
+> - Этот документ — *навигационная карта*, не SSoT.
+
+## 0. Edit invariants (mandatory pre-commit checklist)
+
+> **Назначение:** этот блок — closed checklist, который ОБЯЗАН пройти каждый редактор `tech-spec-draft.md` (человек или агент) перед коммитом. Цель — превратить «не забыть про SSoT» в воспроизводимый ритуал и закрыть pattern повторяющихся drift-фиксов (см. git history 2026-05-09…2026-05-10, коммиты `7abeb0b`, `f0de8b2`, `3af9608`, `d85e3f5`, `30eb2fa`).
+>
+> Каждый item — *grep-проверяемый* (regex или явное перечисление). Если хоть один пункт нарушен — править доку перед commit.
+
+**INV-1. D-006 schema coverage.** Каждая таблица, перечисленная в `decisions/D-006-state-storage-layout.md` §"Структура трёх БД", ОБЯЗАНА иметь строку в §10.4 retention-таблице. Closed list (на 2026-05-10):
+1. `audit.db`: `chat_log`, `audit_events`, `admin_events`, `tg_updates`, `seen_files`, `dedup_hits`, `job_outputs`, `run_outputs`, `prompt_versions`, `onboarding_events`.
+2. `sessions.db`: `users`, `pending_users`, `pending_confirms`, `inbox_hint_cache`, `fsm`.
+3. `jobs.db`: `tracker_answers` (плюс служебные APScheduler — out of scope retention).
+4. Файловые store: `Inbox-WIKI/raw/media/_staging/`, `state/snapshots/`, `<wiki>/data/runs/`, `<wiki>/raw/media/`, `_trash/<Domain>-WIKI-<ts>`.
+
+**INV-2. Job kinds → priority lanes.** Каждый `kind` из §6 (fast-path и не-fast-path) и из `decisions/D-002-job-model-storage.md` ОБЯЗАН иметь явный mapping на priority-lane из §3 (`interactive=0`, `user_write=1`, `cron_write=2`, `digest=3`, `ingest=4`). Текущий closed set kinds: `reminder_job`, `wiki_job`, `ingest_job`, `digest_job`, плюс служебные `*_purge`/`db_snapshot`. Mapping для firing-pipeline см. §3 и §6 (fast-path: `reminder_job → user_write` lane без CLI-вызова).
+
+**INV-3. Backup §10 ↔ D-037 «git ≠ DR».** §10.2 НЕ ДОЛЖЕН утверждать, что git-remote-push является backup-механизмом. Любое упоминание `git push` в backup-контексте → нарушение. SSoT — `decisions/D-037-git-in-wiki.md` §"Remote push" п.1.
+
+**INV-4. seen_files / tg_updates location.** Оба слоя idempotency живут в `audit.db`, не в `jobs.db`. SSoT — `decisions/D-018-ingest-idempotency.md` §"Уточнение 2026-05-10".
+
+**INV-5. Identity vocabulary.** §2 правило строго:
+1. `telegram_id` — canonical external user id;
+2. `owner_telegram_id` — только колонка `jobs`;
+3. `chat_id` — только delivery target;
+4. `user_id` — только internal DB surrogate (`sessions.db`).
+
+Любое смешение (`user_id` как external, `chat_id` как identity) → нарушение. Cross-store mapping `sessions.users.user_id ↔ telegram_id` — invariant таблицы `sessions.users` (D-031/D-042).
+
+**INV-6. Auth isolation.** Stage-0 default — Claude CLI Haiku с shared `CLAUDE_CONFIG_DIR` (D-013). Любой direct Anthropic API backend (`STAGE0_BACKEND=anthropic_api`) ОБЯЗАН использовать ОТДЕЛЬНЫЙ credential через systemd-credentials/secret-manager — НЕ переиспользует Claude Code OAuth. SSoT — D-013 + `decisions/D-009-classifier-engine.md`.
+
+**INV-7. WIKI lifecycle = NL only.** В §4/§5/§11 НЕ ДОЛЖНО появляться явных команд `/wiki_init`, `/wiki_delete`, `/wiki_restore`, `/wiki_purge`, `/wiki_rename`, `/wiki_merge`, `/wiki_split`. Read-only `/wiki_list`, `/wiki_show` — допустимы. SSoT — `decisions/D-041-no-direct-wiki-commands.md` (D-029 superseded).
+
+**INV-8. Tech-spec ≠ SSoT.** Каждое числовое значение (timeout, retention, threshold, limit), кроме сводных таблиц, ОБЯЗАНО ссылаться на конкретный D-NNN. При расхождении число в D-файле побеждает — править tech-spec, не D-файл.
+
+**Verification ritual (перед commit):**
+1. Прочитать D-006 §"Структура трёх БД" → diff против §10.4 retention table → INV-1 ✅.
+2. Прочитать §6 список kinds → подтвердить mapping в §3 → INV-2 ✅.
+3. `grep -nE 'git push|remote push' research/tech-spec-draft.md` → ничего в backup-контексте → INV-3 ✅.
+4. `grep -n 'jobs.db.seen_files\|jobs.db.tg_updates' research/tech-spec-draft.md` → пусто → INV-4 ✅.
+5. `grep -nE '/wiki_(init|delete|restore|purge|rename|merge|split)' research/tech-spec-draft.md` → пусто → INV-7 ✅.
+6. Каждое число в §3/§5/§8/§10 имеет ссылку `(D-NNN)` или `(см. §X)` → INV-8 ✅.
+
+При нарушении любого INV — фикс tech-spec ИЛИ обновление этого checklist (если invariant перестал быть актуален из-за нового D-файла). Изменение самого checklist логируется в `log.md` как `refactor`.
+
+---
 
 ## 1. Executive Summary & Scope
 
-`ai-steward-wiki` — изолированный мультипользовательский Telegram-сервис на отдельной VPS, который превращает Claude Code CLI в персонального WIKI-ассистента в стиле метода Карпаты. Юзер общается с ботом естественным языком (текст, файл, фото, голос), без явного указания папок и команд: бот идентифицирует автора по `telegram_id`, классифицирует контент через Stage-0 Haiku → Stage-1a/1b Sonnet pipeline и запускает Claude в нужной `<Domain>-WIKI/`. Сервис **полностью изолирован** от существующего TG-бота `ai-steward` (см. CLAUDE.md §1.1): нет общего volume, нет миграции `planner.json`, нет cross-service чтений, нулевая связь по умолчанию. MVP-объём — single-tenant Henry-N, подписочный auth, классификатор + scheduler + per-WIKI lifecycle через NL-промпты, voice/photo input, streaming-ответы в TG.
+`ai-steward-wiki` — **изолированный мультипользовательский Telegram-сервис** на отдельной VPS, который превращает Claude Code CLI в персонального WIKI-ассистента в стиле метода Карпаты.
 
-Решения этого слоя:
+**Базовый поток:**
+
+1. Юзер общается с ботом естественным языком — *текст, файл, фото, голос*.
+2. Без явного указания папок и команд.
+3. Бот идентифицирует автора по `telegram_id`.
+4. Классифицирует контент через pipeline **Stage-0 Haiku → Stage-1a/1b Sonnet**.
+5. Запускает Claude в нужной `<Domain>-WIKI/`.
+
+**Изоляция от `ai-steward`** (см. CLAUDE.md §1.1):
+
+- Нет общего volume.
+- Нет миграции `planner.json`.
+- Нет cross-service чтений.
+- *Нулевая связь по умолчанию.*
+
+**MVP-объём:**
+
+1. **Single-tenant** Henry-N.
+2. **Subscription auth.**
+3. Классификатор + scheduler + per-WIKI lifecycle через NL-промпты.
+4. **Voice/photo input.**
+5. **Streaming-ответы** в TG.
+
+**Решения этого слоя:**
 
 - [overview §1–§1.1](../raw/20260507-ai-steward-wiki-only-overview.md) — назначение, граница с `ai-steward`, базовый поток.
 - [D-007](../decisions/D-007-add-dir-scope.md) — `--add-dir` scope: per-WIKI workspace, auto-walk `USERS/<USER>/CLAUDE.md` для профиля.
@@ -65,143 +135,666 @@ sources:
 - [D-027](../decisions/D-027-anti-nesting-admin-boundary.md) — `WORKSPACE_ROOT` как единый anchor всей файловой иерархии.
 - [D-041](../decisions/D-041-no-direct-wiki-commands.md) — lifecycle WIKI только через NL-промпт, прямых команд нет.
 
+---
+
 ## 2. Data Model & Storage
 
-State сервиса разнесён по трём SQLite-БД с разными bounded contexts: горячая операционная `jobs.db`, append-only `audit.db`, runtime-state `sessions.db`. Унифицированная таблица `jobs` использует Flat + typed JSON payload — общие колонки (`id, kind, owner_telegram_id, cron_expr, enabled, mandatory, follow_up_delay_min, ...`) индексируются, а kind-специфика валидируется Pydantic discriminated union на boundary без миграций на каждый новый kind. Identity vocabulary из [D-042](../decisions/D-042-unify-user-config.md): `telegram_id` — canonical external user id; `owner_telegram_id` допустим только как `jobs` owner column; `chat_id` — только delivery target; `user_id` — только internal DB surrogate. Tracker-память — append-only таблица в `jobs.db`, top-3 предсказания вычисляются on-the-fly SQL-запросом по 90-дневному окну. `audit.db` также держит `job_outputs` и `run_outputs`, чтобы routing/delivery metadata не терялась между D-020/D-025 и storage map. Все БД работают в WAL+NORMAL+foreign_keys с `busy_timeout=5000`; миграции — Alembic per-DB.
+State сервиса разнесён по **трём SQLite-БД** с разными bounded contexts:
+
+1. **`jobs.db`** — горячая операционная.
+2. **`audit.db`** — append-only.
+3. **`sessions.db`** — runtime-state.
+
+**Унифицированная таблица `jobs`** — Flat + typed JSON payload:
+
+- Общие колонки индексируются: `id`, `kind`, `owner_telegram_id`, `cron_expr`, `enabled`, `mandatory`, `follow_up_delay_min`, …
+- `kind`-специфика валидируется **Pydantic discriminated union** на boundary без миграций на каждый новый kind.
+
+**Identity vocabulary** (из [D-042](../decisions/D-042-unify-user-config.md)):
+
+- `telegram_id` — **canonical** external user id.
+- `owner_telegram_id` — допустим *только* как `jobs` owner column.
+- `chat_id` — *только* delivery target.
+- `user_id` — *только* internal DB surrogate.
+
+**Прочее:**
+
+- **Tracker-память** — append-only таблица в `jobs.db`; top-3 предсказания вычисляются *on-the-fly* SQL-запросом по 90-дневному окну.
+- `audit.db` также держит `job_outputs` и `run_outputs`, чтобы routing/delivery metadata не терялась между D-020/D-025 и storage map.
+- Все БД работают в **WAL + NORMAL + foreign_keys** с `busy_timeout=5000`.
+- Миграции — **Alembic per-DB**.
+
+**Решения:**
 
 - [D-002](../decisions/D-002-job-model-storage.md) — `jobs` = одна таблица, общие колонки + JSON `payload`, валидация Pydantic.
-- [D-006](../decisions/D-006-state-storage-layout.md) — три раздельных SQLite (`jobs.db`, `audit.db`, `sessions.db`), Alembic per-DB, WAL.
+- [D-006](../decisions/D-006-state-storage-layout.md) — три раздельных SQLite, Alembic per-DB, WAL.
 - [D-014](../decisions/D-014-tracker-memory-model.md) — `tracker_answers` append-only в `jobs.db`, top-3 on-the-fly SQL, retention 90д.
+
+---
 
 ## 3. Job / Scheduler Core
 
-Scheduler-ядро = APScheduler `AsyncIOScheduler` + `SQLAlchemyJobStore` в том же процессе бота, persistence в `jobs.db` через общий engine. APScheduler не запускает CLI напрямую — он `put`'ит задачу в `asyncio.PriorityQueue` с 5 уровнями приоритета (`interactive=0`, `user_write=1`, `cron_write=2`, `digest=3`, `ingest=4`), откуда worker'ы тянут под `Semaphore(MAX_CONCURRENT_CLI=4)` и per-WIKI lock'ом. Failure-handling — taxonomy Transient/Permanent/Unknown с exp.backoff retry (override per-category в payload), DLQ-таблица с manual `/retry`, auto-disable recurring job'а после 3 подряд провалов. Timeout'ы — per-category hard limits (Haiku 15s, wiki_job 120s, digest 600s — каноническая таблица в [D-021](../decisions/D-021-timeouts-kill-policy.md)) с graceful kill-sequence SIGTERM→10s→SIGKILL и UX-cancel через inline-кнопку.
+**Scheduler-ядро** = APScheduler `AsyncIOScheduler` + `SQLAlchemyJobStore` в том же процессе бота, persistence в `jobs.db` через общий engine.
 
-- [D-001](../decisions/D-001-time-tracker-vs-job-model.md) — time-tracker = надстройка над `job-model`, не отдельная подсистема.
-- [D-003](../decisions/D-003-scheduler-backend.md) — APScheduler `AsyncIOScheduler` + `SQLAlchemyJobStore` in-process, общий engine с `jobs.db`.
-- [D-019](../decisions/D-019-cron-failure-mode.md) — error taxonomy + retry exp.backoff + DLQ + auto-disable после 3 подряд fail.
+**Pipeline:**
+
+1. APScheduler **не запускает CLI напрямую** — он `put`'ит задачу в `asyncio.PriorityQueue`.
+2. Очередь имеет **5 уровней приоритета**:
+   1. `interactive=0`
+   2. `user_write=1`
+   3. `cron_write=2`
+   4. `digest=3`
+   5. `ingest=4`
+3. Worker'ы тянут задачи под `Semaphore(MAX_CONCURRENT_CLI=4)` и **per-WIKI lock**'ом.
+
+**Failure-handling:**
+
+- Taxonomy: `Transient` / `Permanent` / `Unknown`.
+- **Exp.backoff retry** (override per-category в payload).
+- **DLQ-таблица** с manual `/retry`.
+- **Auto-disable** recurring job'а после 3 подряд провалов.
+
+**Timeout'ы** (per-category hard limits, каноническая таблица в [D-021](../decisions/D-021-timeouts-kill-policy.md)):
+
+- `Haiku` — 15s
+- `wiki_job` — 120s
+- `digest` — 600s
+
+**Kill-sequence:** `SIGTERM → 10s → SIGKILL` + UX-cancel через inline-кнопку.
+
+**Решения:**
+
+- [D-001](../decisions/D-001-time-tracker-vs-job-model.md) — time-tracker = надстройка над `job-model`.
+- [D-003](../decisions/D-003-scheduler-backend.md) — APScheduler in-process, общий engine с `jobs.db`.
+- [D-019](../decisions/D-019-cron-failure-mode.md) — error taxonomy + retry + DLQ + auto-disable.
 - [D-020](../decisions/D-020-cron-result-routing.md) — `notify_policy` per-job (`always|on_output|silent`) + admin shadow channel.
-- [D-021](../decisions/D-021-timeouts-kill-policy.md) — per-category hard timeouts + SIGTERM→10s→SIGKILL + UX `/cancel`.
+- [D-021](../decisions/D-021-timeouts-kill-policy.md) — hard timeouts + kill-sequence + UX `/cancel`.
+
+---
 
 ## 4. Inbox & Routing
 
-Inbox-WIKI лежит per-user в `USERS/<NAME>/Inbox-WIKI/`, `CLAUDE.md` рендерится из shared template в репо при materialize. Каждая `<Domain>-WIKI/CLAUDE.md` обязана содержать секцию `## Inbox hint`, которую **router-Sonnet (Stage-1a, см. §6 терминологию)** читает для построения runtime-каталога доменов; сам Inbox-`CLAUDE.md` доменов не знает, только мета-правила, intent-таксономия и universal pre-flight. **Hint-cache:** runtime-каталог доменов кэшируется в `sessions.db.inbox_hint_cache` per-user, но не материализуется в WIKI-файлы. Cache-ключ — `(user_id, wiki_path)`, где `user_id` — internal sessions surrogate; metadata guards — `size_bytes`, `mtime_ns`, `ctime_ns`; truth guard — `content_sha256`. Hot-path: `stat(CLAUDE.md)` совпал по всем metadata guards → cache hit без чтения файла. На metadata mismatch — read+sha256; если `sha256 == cache.content_sha256`, обновить только metadata guards (touch/rsync без re-parse), иначе re-parse `## Inbox hint` секции (regex `^## Inbox hint\s*$` до следующего `^## ` или EOF) → atomic swap (`size_bytes, mtime_ns, ctime_ns, content_sha256, hint_text`). `ctime_ns` закрывает preserved-mtime сценарии: пользователь может сохранить `mtime`, но не может вручную выставить Linux `ctime`. Без cache — N×file-read + N×3500 tokens на каждое сообщение при 20 WIKI; с cache — 0 чтений в hot-path, ~80% TTFB-экономия. Idempotency двухслойная без LLM, оба слоя — в `audit.db` (общий bounded context observability/dedup, [D-006](../decisions/D-006-state-storage-layout.md), [D-018](../decisions/D-018-ingest-idempotency.md)): L1 TG-update dedup `audit.db.tg_updates` (24h TTL), L2 content-hash SHA-256 `audit.db.seen_files` (30d TTL) с inline-confirm на коллизии. Прямых lifecycle-команд для WIKI больше нет — все важные операции (create/delete/restore/rename/merge/split/edit-rules/edit-persona/purge + page-level) проходят 5-шаговый pre-flight (см. [D-041](../decisions/D-041-no-direct-wiki-commands.md)): intent-grounding → blind-spot scan → clarification → confirm → execute+audit.
+**Расположение:**
+
+- Inbox-WIKI лежит **per-user** в `USERS/<NAME>/Inbox-WIKI/`.
+- `CLAUDE.md` рендерится из shared template в репо при materialize.
+
+**Inbox hint:**
+
+1. Каждая `<Domain>-WIKI/CLAUDE.md` *обязана* содержать секцию `## Inbox hint`.
+2. Эту секцию читает **router-Sonnet** (Stage-1a) для построения runtime-каталога доменов.
+3. Сам Inbox-`CLAUDE.md` доменов *не знает* — только мета-правила, intent-таксономия и universal pre-flight.
+
+**Hint-cache:**
+
+- Runtime-каталог доменов кэшируется в `sessions.db.inbox_hint_cache` per-user.
+- В WIKI-файлы *не материализуется*.
+- **Cache-ключ:** `(user_id, wiki_path)`, где `user_id` — internal sessions surrogate.
+- **Metadata guards:** `size_bytes`, `mtime_ns`, `ctime_ns`.
+- **Truth guard:** `content_sha256`.
+
+**Hot-path алгоритм:**
+
+1. `stat(CLAUDE.md)` совпал по всем metadata guards → **cache hit** без чтения файла.
+2. На metadata mismatch — `read + sha256`:
+   1. Если `sha256 == cache.content_sha256` → обновить только metadata guards (touch/rsync без re-parse).
+   2. Иначе → re-parse `## Inbox hint` секции (regex `^## Inbox hint\s*$` до следующего `^## ` или EOF) → atomic swap (`size_bytes, mtime_ns, ctime_ns, content_sha256, hint_text`).
+3. `ctime_ns` закрывает preserved-mtime сценарии: пользователь *может* сохранить `mtime`, но *не может* вручную выставить Linux `ctime`.
+
+**Экономия cache:**
+
+- Без cache: `N×file-read + N×3500 tokens` на каждое сообщение при 20 WIKI.
+- С cache: **0 чтений** в hot-path, **~80% TTFB-экономия**.
+
+**Idempotency** — двухслойная без LLM, оба слоя в `audit.db`:
+
+1. **L1** — TG-update dedup: `audit.db.tg_updates`, **TTL 24h**.
+2. **L2** — content-hash SHA-256: `audit.db.seen_files`, **TTL 30d**, inline-confirm на коллизии.
+
+**Lifecycle WIKI:** прямых команд *нет* — все важные операции (create/delete/restore/rename/merge/split/edit-rules/edit-persona/purge + page-level) проходят **5-шаговый pre-flight** ([D-041](../decisions/D-041-no-direct-wiki-commands.md)):
+
+1. Intent-grounding.
+2. Blind-spot scan.
+3. Clarification.
+4. Confirm.
+5. Execute + audit.
+
+**Решения:**
 
 - [D-004](../decisions/D-004-inbox-wiki-scope.md) — Inbox per-user + shared template, materialize at init.
-- [D-016](../decisions/D-016-inbox-claude-md-template.md) — Inbox hint в каждой Domain-WIKI, closed intent vocabulary, universal pre-flight.
-- [D-018](../decisions/D-018-ingest-idempotency.md) — двухслойный dedup без LLM (L1 TG update_id, L2 content SHA-256); оба слоя в `audit.db` (D-018 amended 2026-05-10).
-- [D-041](../decisions/D-041-no-direct-wiki-commands.md) — нет `/wiki_init|delete|restore|purge`, только NL-промпт + read-only `/wiki_list`,`/wiki_show`.
+- [D-016](../decisions/D-016-inbox-claude-md-template.md) — Inbox hint, closed intent vocabulary, universal pre-flight.
+- [D-018](../decisions/D-018-ingest-idempotency.md) — двухслойный dedup; оба слоя в `audit.db` (amended 2026-05-10).
+- [D-041](../decisions/D-041-no-direct-wiki-commands.md) — нет `/wiki_init|delete|restore|purge`, только NL-промпт + read-only `/wiki_list`, `/wiki_show`.
+
+---
 
 ## 5. Wiki Lifecycle
 
-Жизненный цикл WIKI-папки управляется через NL-промпты в Inbox-WIKI router'у с обязательным graduated explicit confirm для destructive операций. **Нормализация имени:** свободное имя из NL-промпта (`health`, `Health Lite`, `health-lite`, `здоровье`) проходит pipeline: (1) транслитерация Cyrillic → Latin (single-strategy ISO 9), (2) split по non-alphanumeric, (3) PascalCase join (`health lite` → `HealthLite`), (4) suffix `-WIKI` (`HealthLite-WIKI`), (5) валидация regex `^[A-Z][A-Za-z0-9]*-WIKI$` (D-008). Lookup пресета (§11) — case-insensitive по slug `healthlite` ИЛИ по `health-lite`-варианту с восстановленным дефисом для имени файла шаблона; если `templates/healthlite.md` отсутствует и `templates/health-lite.md` существует — используется он, иначе `_default.md`. Mapping `slug → wiki-name` логируется в `audit.db` на create. Soft-delete переносит папку в `USERS/<NAME>/_trash/<Domain>-WIKI-<ts>/` с trash-retention 30 дней (отдельный механизм от PII tier-3 retention в §10, но **PII-redactor проходит и по `_trash/`** на soft-delete trigger — финальный tier-1 DROP / tier-2 MASK sweep, см. [D-034](../decisions/D-034-pii-redactor.md) §"Trash sweep"; tier-3 plaintext остаётся под общей retention 30d, по истечении — hard-delete с `shred -u` для media и `unlink` для md, audit-event `trash_purged`) и возможностью восстановления NL-промптом (intent `restore_wiki`, см. [D-041](../decisions/D-041-no-direct-wiki-commands.md)); `_trash/` исключается из autodiscover, soft limit (20 WIKI/user) и anti-nesting walk. Имя WIKI валидируется regex `^[A-Z][A-Za-z0-9]*-WIKI$` (strict whitelist) — единая convention WIKI-маркера, используется autodiscover, anti-nesting walk и lifecycle-операциями. Soft-limit: 20 WIKI/user (warn at 16, hard reject at 20, `_trash/` не учитывается). Каждый сгенерированный `CLAUDE.md` несёт YAML frontmatter (`schema_version`, `template_id`, `last_migrated_at`, `template_sha256`) и разделён на managed/user-zone секции через HTML-комменты — миграции применяют 3-way merge (declarative) или imperative `vN_to_vM.py` для нелинейных изменений.
+Жизненный цикл WIKI-папки управляется **через NL-промпты** в Inbox-WIKI router'у с обязательным graduated explicit confirm для destructive операций.
 
-- [D-005](../decisions/D-005-no-planner-json.md) — `planner.json` не существует нигде в дереве сервиса; единственный SSoT — `jobs.db`.
-- [D-008](../decisions/D-008-wiki-marker-format.md) — regex `^[A-Z][A-Za-z0-9]*-WIKI$` как единое правило WIKI-маркера.
-- [D-039](../decisions/D-039-claude-md-evolution.md) — frontmatter + managed/user-zone секции + linear migration chain.
-- *History:* [D-029](../decisions/D-029-wiki-init-auth.md) — исходный CRUD-design `/wiki_init|delete|restore|purge`, **полностью superseded D-041**. Числовые механизмы (soft-limit 20 / warn at 16 / hard reject 20, Levenshtein ≤2, `_trash/` retention 30d, `_trash/` exclusion из autodiscover/counter/anti-nesting) явно зафиксированы как новый SSoT в [D-041](../decisions/D-041-no-direct-wiki-commands.md) §"Anti-spam защита" — не наследуются неявно из superseded артефакта.
+**Нормализация имени** — pipeline свободного имени из NL-промпта (`health`, `Health Lite`, `health-lite`, `здоровье`):
+
+1. Транслитерация `Cyrillic → Latin` (single-strategy ISO 9).
+2. Split по non-alphanumeric.
+3. PascalCase join (`health lite` → `HealthLite`).
+4. Suffix `-WIKI` (`HealthLite-WIKI`).
+5. Валидация regex `^[A-Z][A-Za-z0-9]*-WIKI$` (D-008).
+
+**Lookup пресета** (§11) — case-insensitive:
+
+- По slug `healthlite`, **ИЛИ**
+- По `health-lite`-варианту с восстановленным дефисом для имени файла шаблона.
+- Если `templates/healthlite.md` отсутствует и `templates/health-lite.md` существует — используется он.
+- Иначе → `_default.md`.
+- Mapping `slug → wiki-name` логируется в `audit.db` на create.
+
+**Soft-delete:**
+
+1. Папка переносится в `USERS/<NAME>/_trash/<Domain>-WIKI-<ts>/`.
+2. **Trash-retention 30 дней** — отдельный механизм от PII tier-3 retention в §10.
+3. **PII-redactor проходит и по `_trash/`** на soft-delete trigger:
+   - Финальный tier-1 **DROP** / tier-2 **MASK** sweep ([D-034](../decisions/D-034-pii-redactor.md) §"Trash sweep").
+   - Tier-3 plaintext остаётся под общей retention 30d.
+   - По истечении — hard-delete: `shred -u` для media, `unlink` для md.
+   - Audit-event: `trash_purged`.
+4. Возможность восстановления — NL-промптом (intent `restore_wiki`).
+5. `_trash/` *исключается* из autodiscover, soft limit (20 WIKI/user) и anti-nesting walk.
+
+**Имя WIKI:** валидируется regex `^[A-Z][A-Za-z0-9]*-WIKI$` (strict whitelist) — единая convention WIKI-маркера.
+
+**Soft-limit:**
+
+- **20 WIKI/user.**
+- Warn at 16, hard reject at 20.
+- `_trash/` *не учитывается*.
+
+**`CLAUDE.md` versioning:** каждый сгенерированный `CLAUDE.md` несёт:
+
+- YAML frontmatter: `schema_version`, `template_id`, `last_migrated_at`, `template_sha256`.
+- Разделение на **managed/user-zone** секции через HTML-комменты.
+- Миграции применяют **3-way merge** (declarative) ИЛИ imperative `vN_to_vM.py` для нелинейных изменений.
+
+**Решения:**
+
+- [D-005](../decisions/D-005-no-planner-json.md) — `planner.json` *не существует* нигде в дереве; единственный SSoT — `jobs.db`.
+- [D-008](../decisions/D-008-wiki-marker-format.md) — regex как единое правило WIKI-маркера.
+- [D-039](../decisions/D-039-claude-md-evolution.md) — frontmatter + managed/user-zone + linear migration chain.
+- *History:* [D-029](../decisions/D-029-wiki-init-auth.md) — исходный CRUD-design, **полностью superseded** D-041. Числовые механизмы (soft-limit 20 / warn at 16, Levenshtein ≤2, retention 30d, exclusion из autodiscover) явно зафиксированы как новый SSoT в [D-041](../decisions/D-041-no-direct-wiki-commands.md) §"Anti-spam защита".
+
+---
 
 ## 6. Classifier & NLP
 
-Classifier — трёхступенчатый pipeline с **disambiguated терминологией** (refactor 2026-05-10):
+Classifier — **трёхступенчатый pipeline** с disambiguated терминологией (refactor 2026-05-10):
 
-1. **Stage-0 = classifier-Haiku.** Default backend в subscription-only MVP — headless Claude CLI Haiku (`claude --model claude-haiku-4-5 --output-format json --json-schema <classifier-json-schema> --max-turns 1 --disallowedTools "Bash" "Read" "Write" "Edit" "Glob" "Grep" "WebFetch" --permission-mode dontAsk`) с shared Claude Code auth из [D-013](../decisions/D-013-claude-cli-auth.md). Optional direct Anthropic SDK/API backend разрешён только при отдельном `STAGE0_BACKEND=anthropic_api` и отдельном API credential, не из Claude Code OAuth. Возвращает `{intent, confidence, distilled_payload}`.
-2. **Stage-1a = router-Sonnet (Inbox-context).** `claude --model sonnet -p ... --add-dir <Inbox-WIKI>` с подгруженным runtime-каталогом доменов из hint-cache (см. §4). Возвращает целевую `<Domain>-WIKI` + final intent после pre-flight clarification.
-3. **Stage-1b = executor-Sonnet (Domain-context).** `claude --model sonnet -p ... --add-dir <Domain-WIKI>` с domain-CLAUDE.md и Karpathy-режимом (ingest/query/lint). Производит side-effects на содержимое WIKI.
+1. **Stage-0 = `classifier-Haiku`.**
+   - Default backend в subscription-only MVP — headless Claude CLI Haiku:
+     ```
+     claude --model claude-haiku-4-5 \
+            --output-format json \
+            --json-schema <classifier-json-schema> \
+            --max-turns 1 \
+            --disallowedTools "Bash" "Read" "Write" "Edit" "Glob" "Grep" "WebFetch" \
+            --permission-mode dontAsk
+     ```
+   - Shared Claude Code auth из [D-013](../decisions/D-013-claude-cli-auth.md).
+   - **Optional** direct Anthropic SDK/API backend разрешён *только* при отдельном `STAGE0_BACKEND=anthropic_api` и отдельном API credential, *не* из Claude Code OAuth.
+   - Возвращает: `{intent, confidence, distilled_payload}`.
 
-Fast-path: `intent=reminder & confidence ≥ 0.85 & время распарсено` → прямая запись в `jobs` (`kind='reminder_job'`) без Stage-1a/1b. Reminder-job не привязан к WIKI: `owner_telegram_id` берётся из TG-update, `wiki_id` payload-поле = `null`, при срабатывании firing-handler доставляет TG-message напрямую без `<Domain>-WIKI` workspace и без CLI-вызова. Это сознательная asymmetry: `reminder_job` — pure scheduler→TG, `wiki_job`/`ingest_job`/`digest_job` требуют resolved WIKI и проходят полный pipeline. Иначе Stage-0 → Stage-1a → (опц.) Stage-1b. NL-парсинг времени двухступенчатый: сначала `dateparser` (rule-based, ~50ms, ru/en, user-TZ из `users.toml` per D-042), на промах — Haiku-fallback с узким system-промптом, на ambiguous — эскалация в Stage-1a «уточни время». Все datetime в `jobs.db` хранятся в UTC, user-TZ применяется только на input/output. System-prompt inject — Hybrid: `prompts/classifier.md` backend-independent для Stage-0; default CLI backend передаёт его через `--append-system-prompt @file`, optional API backend — как SDK/API system instructions. `prompts/wiki.md` передаётся CLI для всех Stage-1a/1b через `--append-system-prompt @file`; `prompts/inbox.md` добавляется к Stage-1a; `prompts/domain-<type>.md` добавляется к Stage-1b. Semver+sha256 всех prompt-файлов логируются в `audit.db.prompt_versions`.
+2. **Stage-1a = `router-Sonnet`** (Inbox-context).
+   - `claude --model sonnet -p ... --add-dir <Inbox-WIKI>` с подгруженным runtime-каталогом доменов из hint-cache (см. §4).
+   - Возвращает: целевую `<Domain>-WIKI` + final intent после pre-flight clarification.
 
-- [D-009](../decisions/D-009-classifier-engine.md) — Stage-0 Haiku (CLI default, API optional) → Stage-1 CLI Sonnet (action), threshold 0.85.
+3. **Stage-1b = `executor-Sonnet`** (Domain-context).
+   - `claude --model sonnet -p ... --add-dir <Domain-WIKI>` с domain-CLAUDE.md и Karpathy-режимом (ingest/query/lint).
+   - Производит side-effects на содержимое WIKI.
+
+**Fast-path** — прямая запись в `jobs` без Stage-1a/1b:
+
+- Условие: `intent=reminder` & `confidence ≥ 0.85` & время распарсено.
+- `kind='reminder_job'`.
+- **Reminder-job не привязан к WIKI:**
+  1. `owner_telegram_id` берётся из TG-update.
+  2. `wiki_id` payload-поле = `null`.
+  3. При срабатывании firing-handler доставляет TG-message *напрямую* без `<Domain>-WIKI` workspace и без CLI-вызова.
+- Это сознательная asymmetry:
+  - `reminder_job` — pure scheduler→TG.
+  - `wiki_job` / `ingest_job` / `digest_job` — требуют resolved WIKI и проходят полный pipeline.
+
+Иначе: `Stage-0 → Stage-1a → (опц.) Stage-1b`.
+
+**NL-парсинг времени** — двухступенчатый:
+
+1. `dateparser` (rule-based, ~50ms, ru/en, user-TZ из `users.toml` per D-042).
+2. На промах — **Haiku-fallback** с узким system-промптом.
+3. На ambiguous — эскалация в Stage-1a «уточни время».
+4. Все datetime в `jobs.db` хранятся в **UTC**, user-TZ применяется *только* на input/output.
+
+**System-prompt inject** — Hybrid:
+
+- `prompts/classifier.md` — backend-independent для Stage-0:
+  - Default CLI backend → `--append-system-prompt @file`.
+  - Optional API backend → SDK/API system instructions.
+- `prompts/wiki.md` — для всех Stage-1a/1b через `--append-system-prompt @file`.
+- `prompts/inbox.md` — добавляется к Stage-1a.
+- `prompts/domain-<type>.md` — добавляется к Stage-1b.
+- **Semver + sha256** всех prompt-файлов логируются в `audit.db.prompt_versions`.
+
+**Решения:**
+
+- [D-009](../decisions/D-009-classifier-engine.md) — Stage-0 Haiku → Stage-1 CLI Sonnet, threshold 0.85.
 - [D-010](../decisions/D-010-nl-time-parsing.md) — `dateparser` → Haiku fallback → Stage-1 escalation; UTC storage, user-TZ обязателен.
-- [D-015](../decisions/D-015-system-prompt-inject.md) — Hybrid `wiki.md` + `inbox.md` + `classifier.md`; backend-independent classifier prompt для Stage-0, CLI `--append-system-prompt @file` для Stage-1, semver+sha256 в audit.
+- [D-015](../decisions/D-015-system-prompt-inject.md) — Hybrid prompts; backend-independent classifier; semver+sha256 в audit.
+
+---
 
 ## 7. Concurrency & Locking
 
-Concurrency-модель трёхуровневая: `asyncio.Semaphore(MAX_CONCURRENT_CLI=4)` для capacity, in-memory `asyncio.Lock` per resolved WIKI path для correctness внутри процесса, on-disk `.wiki.lock` (`fcntl.flock` advisory) для durability через рестарты и совместимости с external writers. Acquire-порядок строгий: semaphore → in-memory lock → on-disk flock; нарушение порядка ведёт к deadlock'у. Stale-lock recovery — по PID (`os.kill(pid, 0)`), atomic write страниц через `tmp + os.replace`, append-only `log.md` под тем же `.wiki.lock`. External writers (Obsidian) advisory-блокировка не останавливает, но сервис детектит вторжение по `mtime` и инструктирует CLI-агента через CLAUDE.md re-read.
+**Concurrency-модель — трёхуровневая:**
+
+1. **`asyncio.Semaphore(MAX_CONCURRENT_CLI=4)`** — для capacity.
+2. **In-memory `asyncio.Lock`** per resolved WIKI path — для correctness внутри процесса.
+3. **On-disk `.wiki.lock`** (`fcntl.flock` advisory) — для durability через рестарты и совместимости с external writers.
+
+**Acquire-порядок** — *строгий* (нарушение → deadlock):
+
+1. Semaphore.
+2. In-memory lock.
+3. On-disk flock.
+
+**Прочее:**
+
+- **Stale-lock recovery** — по PID (`os.kill(pid, 0)`).
+- **Atomic write** страниц через `tmp + os.replace`.
+- Append-only `log.md` под тем же `.wiki.lock`.
+- **External writers** (Obsidian) advisory-блокировка не останавливает, но сервис детектит вторжение по `mtime` и инструктирует CLI-агента через CLAUDE.md re-read.
+
+**Решения:**
 
 - [D-011](../decisions/D-011-concurrent-claude.md) — Semaphore(4) + per-WIKI in-memory Lock + asyncio.PriorityQueue (5 уровней, см. §3).
-- [D-012](../decisions/D-012-wiki-lock.md) — on-disk `.wiki.lock` (flock advisory) + atomic `tmp+os.replace` + stale recovery по PID.
+- [D-012](../decisions/D-012-wiki-lock.md) — on-disk `.wiki.lock` + atomic `tmp+os.replace` + stale recovery по PID.
+
+---
 
 ## 8. Telegram I/O
 
-Telegram-слой строится вокруг aiogram 3.x с asyncio. Voice — `faster-whisper` (CTranslate2, local CPU, ru/en, RTF≤0.5), photo — Claude Sonnet vision. До routing оба файла сохраняются в `Inbox-WIKI/raw/media/_staging/<run_id>_<sha256[:8]>.<ext>`; после Stage-1a resolution и confirm runtime атомарно переносит их в `<Domain-WIKI>/raw/media/<ISO8601>_<sha256[:8]>.<ext>` immutable. Если WIKI не нужен (`reminder_job`, rejected confirm, read-only query), staging очищается retention-job'ом через 24h после audit-записи. Confirmations — graduated: auto-confirm для тривиального read-only, implicit ack для query/digest, explicit confirm с 3 inline-кнопками + free-form correction для writes/delete (TTL pending=10мин в `sessions.db`). Digest формат — HTML parse_mode (`<b>`, `<i>`, `<a>`; MarkdownV2 отвергнут из-за escape-hell вложенных entity и хрупкости при динамической сборке), TL;DR-секцией первой, actionable-кнопки только для items в окне ±2h. Output sizing: ≤3500 chars одним сообщением, ≤10000 — split на ≤3 части с `(N/M)` маркерами, >10000 — Haiku-summary (≤1500) + `send_document` `.md`; full output всегда сохраняется в `<wiki>/data/runs/<YYYY-MM-DD>/<run_id>.md` с frontmatter и индексом в `audit.db.run_outputs`. Streaming через `--output-format stream-json` с edit-throttle 1.5s/Δ50chars, chain-split на 4000 chars, HTML-balancer на каждом edit, final flush в `finally`.
+Telegram-слой строится вокруг **aiogram 3.x** с asyncio.
 
-- [D-022](../decisions/D-022-voice-photo-input.md) — `faster-whisper` для STT + Claude vision для photo, immutable `raw/media/`.
-- [D-023](../decisions/D-023-tg-confirmations.md) — graduated confirmation: auto / implicit ack / explicit (3 кнопки + free-form).
-- [D-024](../decisions/D-024-digest-format.md) — HTML parse_mode, TL;DR-секция, actionable-cards только для ±2h items.
-- [D-025](../decisions/D-025-output-size.md) — threshold hybrid: ≤3500 inline / ≤10000 split / >10000 summary+document; always-persist на диск.
-- [D-026](../decisions/D-026-tg-streaming.md) — hybrid edit + chain-split на 4000, throttle 1.5s, final-flush guarantee.
+**Voice / photo input:**
+
+1. **Voice** — `faster-whisper` (CTranslate2, local CPU, ru/en, RTF≤0.5).
+2. **Photo** — Claude Sonnet vision.
+3. До routing оба файла сохраняются в `Inbox-WIKI/raw/media/_staging/<run_id>_<sha256[:8]>.<ext>`.
+4. После Stage-1a resolution и confirm runtime *атомарно* переносит их в `<Domain-WIKI>/raw/media/<ISO8601>_<sha256[:8]>.<ext>` (immutable).
+5. Если WIKI не нужен (`reminder_job`, rejected confirm, read-only query) — staging очищается retention-job'ом через **24h** после audit-записи.
+
+**Confirmations** — **graduated**:
+
+1. **Auto-confirm** — для тривиального read-only.
+2. **Implicit ack** — для query/digest.
+3. **Explicit confirm** — для writes/delete:
+   - 3 inline-кнопки + free-form correction.
+   - **TTL pending = 10мин** в `sessions.db`.
+
+**Digest формат:**
+
+- **HTML parse_mode** (`<b>`, `<i>`, `<a>`).
+- *MarkdownV2 отвергнут* из-за escape-hell вложенных entity и хрупкости при динамической сборке.
+- TL;DR-секцией первой.
+- Actionable-кнопки только для items в окне ±2h.
+
+**Output sizing:**
+
+| Размер | Действие |
+|--------|----------|
+| ≤3500 chars | Одно сообщение |
+| ≤10000 chars | Split на ≤3 части с `(N/M)` маркерами |
+| >10000 chars | **Haiku-summary** (≤1500) + `send_document` `.md` |
+
+- Full output **всегда** сохраняется в `<wiki>/data/runs/<YYYY-MM-DD>/<run_id>.md` с frontmatter.
+- Индекс — в `audit.db.run_outputs`.
+
+**Streaming:**
+
+- Через `--output-format stream-json`.
+- **Edit-throttle:** 1.5s / Δ50 chars.
+- **Chain-split** на 4000 chars.
+- **HTML-balancer** на каждом edit.
+- **Final flush** в `finally`.
+
+**Решения:**
+
+- [D-022](../decisions/D-022-voice-photo-input.md) — `faster-whisper` STT + Claude vision, immutable `raw/media/`.
+- [D-023](../decisions/D-023-tg-confirmations.md) — graduated confirmation.
+- [D-024](../decisions/D-024-digest-format.md) — HTML parse_mode, TL;DR, actionable-cards только для ±2h.
+- [D-025](../decisions/D-025-output-size.md) — threshold hybrid; always-persist на диск.
+- [D-026](../decisions/D-026-tg-streaming.md) — hybrid edit + chain-split, throttle, final-flush guarantee.
 - [D-032](../decisions/D-032-multi-language.md) — все системные строки `ru` hardcoded, без i18n catalog в MVP.
 - [D-033](../decisions/D-033-chat-history.md) — `audit.db.chat_log` plaintext с 30d retention, last-20/24h окно для классификатора.
 
+---
+
 ## 9. Auth, Admin, Onboarding
 
-Auth — single-tenant subscription: `claude auth login` выполняется один раз с `CLAUDE_CONFIG_DIR=/var/lib/ai-steward-wiki/claude-code`; CLI scopes получают этот config dir read-only и тоже выставляют `CLAUDE_CONFIG_DIR`. `ANTHROPIC_API_KEY` не используется для CLI; optional Stage-0 direct API backend требует отдельный API credential через systemd credentials / secret manager, не `.env`, и не реиспользует Claude Code OAuth. Admin семантически = user с расширенным scope, единый `WORKSPACE_ROOT` walk, в `single` mode admin==owner без friction; `multi` mode (TENANCY_MODE config) активирует `/admin elevate <USER>` с временной 30-мин сессией, audit-событиями в `admin_events` и privacy boundary (admin shadow получает failures, не контент). Allowlist SSoT — `users.toml` git-tracked, sync в `sessions.db.users` через SIGHUP (primary) + watchdog (debounce 500ms, fallback) с validate-before-swap и admin-alert на parse-error. `users.toml` использует canonical `telegram_id`; `telegram_username` и `display_name` не являются identity key. `TENANCY_MODE` (single|multi) и `ENABLE_SELF_SIGNUP` (bool) ортогональны: допустимы все 4 комбинации (single+self-signup, multi+admin-only и т.д.). Onboarding — `ENABLE_SELF_SIGNUP=false` default; при включении `/start` от unknown пишет полный D-042 user candidate в `pending_users`, admin одобряет inline-кнопкой → atomic append `users.toml` с `enabled=false` до completion → SIGHUP. `USERS/<NAME>/` создаётся только после successful onboarding completion. Mandatory intro «Что такое WIKI» перед Q&A — шаблон `templates/onboarding-intro.<lang>.md`. **Lint-механика (детализация 2026-05-10):** каждый из 6 обязательных элементов помечен в шаблоне HTML-маркером вида `<!-- INTRO_ELEMENT_ID:<slug> -->` сразу после соответствующего абзаца. Lint-скрипт `scripts/lint_onboarding.py` (CI + pre-commit) парсит шаблон и проверяет наличие всех 6 ID из closed set: `ai-library-concept`, `no-lifecycle-commands`, `preflight-clarification-and-duplicate-check`, `explicit-confirm`, `retention-30d-and-restore`, `read-only-commands-list`. Отсутствие любого ID или дубль → exit 1 с указанием отсутствующего slug'а. Маркеры также используются runtime'ом для measure-показа: бот логирует `intro_element_shown:<slug>` в `audit.db.onboarding_events` per user.
+**Auth — single-tenant subscription:**
 
-- [D-013](../decisions/D-013-claude-cli-auth.md) — subscription mode, shared `CLAUDE_CONFIG_DIR`, CLI auth отдельно от optional Stage-0 API credential.
-- [D-027](../decisions/D-027-anti-nesting-admin-boundary.md) — `WORKSPACE_ROOT` единый anchor, admin = user с расширенным scope.
-- [D-028](../decisions/D-028-admin-access.md) — TENANCY_MODE single|multi, `/admin elevate` с 30мин сессией и audit trail.
-- [D-030](../decisions/D-030-onboarding.md) — `users.toml` SSoT + admin approve flow + mandatory WIKI-intro перед Q&A.
+1. `claude auth login` выполняется *один раз* с `CLAUDE_CONFIG_DIR=/var/lib/ai-steward-wiki/claude-code`.
+2. CLI scopes получают этот config dir **read-only** и тоже выставляют `CLAUDE_CONFIG_DIR`.
+3. `ANTHROPIC_API_KEY` **не используется** для CLI.
+4. Optional Stage-0 direct API backend — отдельный API credential через **systemd credentials / secret manager**, *не* `.env`, и *не реиспользует* Claude Code OAuth.
+
+**Admin:**
+
+- Семантически = user с расширенным scope.
+- Единый `WORKSPACE_ROOT` walk.
+- **`single` mode:** `admin == owner` без friction.
+- **`multi` mode** (`TENANCY_MODE` config):
+  1. Активирует `/admin elevate <USER>`.
+  2. Временная **30-мин** сессия.
+  3. Audit-события в `admin_events`.
+  4. **Privacy boundary:** admin shadow получает failures, *не* контент.
+
+**Allowlist:**
+
+- **SSoT** — `users.toml` git-tracked.
+- **Sync** в `sessions.db.users`:
+  1. SIGHUP (primary).
+  2. Watchdog (debounce 500ms, fallback).
+  3. Validate-before-swap.
+  4. Admin-alert на parse-error.
+- `users.toml` использует canonical `telegram_id`; `telegram_username` и `display_name` *не являются* identity key.
+
+**Конфиг-флаги** (ортогональны — допустимы все 4 комбинации):
+
+- `TENANCY_MODE`: `single` | `multi`.
+- `ENABLE_SELF_SIGNUP`: `bool`.
+
+**Onboarding:**
+
+1. `ENABLE_SELF_SIGNUP=false` — **default**.
+2. При включении `/start` от unknown:
+   1. Бот пишет полный D-042 user candidate в `pending_users`.
+   2. Admin одобряет inline-кнопкой.
+   3. Atomic append `users.toml` с `enabled=false` до completion.
+   4. SIGHUP.
+3. `USERS/<NAME>/` создаётся *только* после successful onboarding completion.
+4. **Mandatory intro** «Что такое WIKI» перед Q&A — шаблон `templates/onboarding-intro.<lang>.md`.
+
+**Lint-механика** (детализация 2026-05-10):
+
+1. Каждый из 6 обязательных элементов помечен в шаблоне HTML-маркером: `<!-- INTRO_ELEMENT_ID:<slug> -->` сразу после соответствующего абзаца.
+2. **Closed set** из 6 ID:
+   1. `ai-library-concept`
+   2. `no-lifecycle-commands`
+   3. `preflight-clarification-and-duplicate-check`
+   4. `explicit-confirm`
+   5. `retention-30d-and-restore`
+   6. `read-only-commands-list`
+3. Lint-скрипт `scripts/lint_onboarding.py` (CI + pre-commit) парсит шаблон.
+4. Отсутствие любого ID или дубль → **exit 1** с указанием отсутствующего slug'а.
+5. Маркеры используются runtime'ом для measure-показа: бот логирует `intro_element_shown:<slug>` в `audit.db.onboarding_events` per user.
+
+**Решения:**
+
+- [D-013](../decisions/D-013-claude-cli-auth.md) — subscription mode, shared `CLAUDE_CONFIG_DIR`.
+- [D-027](../decisions/D-027-anti-nesting-admin-boundary.md) — `WORKSPACE_ROOT` единый anchor.
+- [D-028](../decisions/D-028-admin-access.md) — `TENANCY_MODE`, `/admin elevate` 30мин + audit trail.
+- [D-030](../decisions/D-030-onboarding.md) — `users.toml` SSoT + admin approve flow + mandatory WIKI-intro.
 - [D-031](../decisions/D-031-allowlist-hot-reload.md) — SIGHUP primary + watchdog fallback, validate-before-swap, soft-delete юзера.
-- [D-042](../decisions/D-042-unify-user-config.md) — `users.toml` единый SSoT всех user-attributes (`telegram_id`, role, lang, timezone, persona, unix UID fields); `roles.toml` упразднён.
+- [D-042](../decisions/D-042-unify-user-config.md) — `users.toml` единый SSoT всех user-attributes; `roles.toml` упразднён.
+
+---
 
 ## 10. Ops: deployment, logging, PII, git, testing, backup
 
-**Process isolation (D-038 уточнён).** Бот бежит под non-root system user `aisw-bot` (`/opt/ai-steward-wiki`, dedicated home). Unit-файл даёт только нужные capability: `AmbientCapabilities=CAP_SETUID CAP_SETGID`, `CapabilityBoundingSet=CAP_SETUID CAP_SETGID`, `NoNewPrivileges=false` на уровне бота. Каждый CLI-вызов запускается системным `systemd-run --scope --uid=aisw-<N> --gid=aisw-<N> --property=SupplementaryGroups=aisw-claude --unit=cli-<job_id> --wait ...`; флаг `--user` не используется, потому что он выбирает user unit manager, а не target UID. Transient scope получает **per-process** лимиты `MemoryMax=2G`, `TasksMax=64`, `CPUWeight=100`, `IOWeight=100`, `ProtectSystem=strict`, `ProtectHome=tmpfs`, `PrivateTmp=yes`, `PrivateDevices=yes`, `NoNewPrivileges=yes`, `ReadWritePaths=<wiki>`, `ReadOnlyPaths=<service>/prompts`, `ReadOnlyPaths=/var/lib/ai-steward-wiki/claude-code`, `CLAUDE_CONFIG_DIR=/var/lib/ai-steward-wiki/claude-code`. Shared auth dir — намеренное read-only исключение: CLI должен прочитать subscription auth, но path вне `--add-dir`; runtime CLI использует `--allowedTools "Read" "Write" "Edit" "Glob" "Grep"` и `--disallowedTools "Bash" "WebFetch" "Read(/var/lib/ai-steward-wiki/claude-code/**)"`; `--permission-mode dontAsk` не позволяет fallback в prompt. Aggregate cap — родительский `aisw-bot.slice` с `MemoryHigh=12G MemoryMax=16G TasksMax=512`, гарантирует, что 4-конкурентные CLI (Semaphore из D-011) × 2G + bot overhead укладываются. STT (`faster-whisper`, CPU-bound) и vision pre-processing бегут в отдельной `aisw-stt.slice` (`MemoryMax=4G`, `CPUQuota=200%`) **вне** CLI-scope'ов, чтобы не конкурировать за память Sonnet-процессов. Per-user UID `aisw-<N>` создаётся idempotent через `systemd-sysusers` drop-in при первом WIKI юзера и сохраняется в `users.toml`.
+### 10.1. Process isolation (D-038 уточнён)
 
-**Backup (Q-E-36, MVP-partial — local safety net only).** В MVP реализуется минимальный in-app local safety net против software corruption / случайного удаления; **disaster-recovery (HW-failure, off-site) остаётся deferred**. Граница задана осознанно: D-037 §"Remote push" явно запрещает использовать git remote как backup (`git ≠ disaster-recovery`), поэтому WIKI content **не пушится** автоматически никуда — local-only до отдельного решения.
+**Бот:**
 
-1. **State-DB snapshots.** Internal APScheduler maintenance job `db_snapshot` ежедневно 03:00 UTC выполняет `VACUUM INTO state/snapshots/<UTC-date>/{jobs,audit,sessions}.db` (consistent SQLite hot-backup, без остановки WAL). Это silent system-maintenance task, не user-facing `job-model`. Local retention 7 дней (rolling), `state/snapshots/` mode 0700.
-2. **WIKI content — local git history.** Per-WIKI git auto-commit ([D-037](../decisions/D-037-git-in-wiki.md)) обеспечивает point-in-time recovery от bad Claude edit / случайной правки через `git revert` / `git checkout @{N}`. **Remote push не настраивается** (D-037 §"Remote push" п.1 — `No remote в MVP`). Opt-in per-WIKI remote — отдельным будущим решением, не в этой spec'е.
-3. **Restore-test.** Manual checklist в `docs/runbook/restore.md`: воспроизвести `db_snapshot` → восстановить в `state-restore-test/` → запустить `pytest tests/restore/` (smoke против snapshot'а). Прогон обязателен перед каждым релизом.
-4. **Off-site 3-2-1, borg/restic, GFS retention, remote git push** — все deferred (см. [backlog](../backlog.md#q-e-36--backup-wiki-и-state-db)); триггер расширения = переход в `TENANCY_MODE=multi`, размер state >1GB, либо явный запрос юзера на off-site.
+- Бежит под non-root system user `aisw-bot` (`/opt/ai-steward-wiki`, dedicated home).
+- Unit-файл даёт *только* нужные capability:
+  1. `AmbientCapabilities=CAP_SETUID CAP_SETGID`
+  2. `CapabilityBoundingSet=CAP_SETUID CAP_SETGID`
+  3. `NoNewPrivileges=false` на уровне бота.
 
-**Что MVP-partial backup НЕ покрывает (явно):** аппаратный сбой VPS-диска (полная потеря всех `*-WIKI/` + `state/`), ransomware, физическое уничтожение хоста. Эти классы остаются открытым риском и требуют отдельного решения (off-site target — borg/restic/rclone-to-S3/Backblaze) — за пределами MVP.
+**Каждый CLI-вызов:**
 
-**Остальной ops-слой.** Logging — `structlog` JSON-lines в stdout → journald, стабильный набор полей (`ts`, `event`, `correlation_id`, `user_id`, `wiki_id`, `job_id`), correlation context через `contextvars`, PII-redactor processor в pipeline. PII tier-классификация (NIST SP 800-122): Tier-1 DROP (tokens/passwords/keys/cards) → `[REDACTED:tier1:...]`, Tier-2 MASK (email/phone/IBAN) с shape preservation + hash для cross-ref, Tier-3 PLAINTEXT защищается per-store retention + unix-perm 0600. **Retention-таблица Tier-3** (явная разбивка по store'ам, refactor 2026-05-10):
+```
+systemd-run --scope --uid=aisw-<N> --gid=aisw-<N> \
+            --property=SupplementaryGroups=aisw-claude \
+            --unit=cli-<job_id> --wait ...
+```
+
+- Флаг `--user` *не используется* — он выбирает user unit manager, а не target UID.
+
+**Per-process лимиты transient scope:**
+
+1. `MemoryMax=2G`
+2. `TasksMax=64`
+3. `CPUWeight=100`, `IOWeight=100`
+4. `ProtectSystem=strict`
+5. `ProtectHome=tmpfs`
+6. `PrivateTmp=yes`, `PrivateDevices=yes`
+7. `NoNewPrivileges=yes`
+8. `ReadWritePaths=<wiki>`
+9. `ReadOnlyPaths=<service>/prompts`
+10. `ReadOnlyPaths=/var/lib/ai-steward-wiki/claude-code`
+11. `CLAUDE_CONFIG_DIR=/var/lib/ai-steward-wiki/claude-code`
+
+**Shared auth dir** — *намеренное* read-only исключение:
+
+- CLI должен прочитать subscription auth, но path вне `--add-dir`.
+- Runtime CLI: `--allowedTools "Read" "Write" "Edit" "Glob" "Grep"`.
+- `--disallowedTools "Bash" "WebFetch" "Read(/var/lib/ai-steward-wiki/claude-code/**)"`.
+- `--permission-mode dontAsk` — *не* позволяет fallback в prompt.
+
+**Aggregate cap** — родительский `aisw-bot.slice`:
+
+- `MemoryHigh=12G`, `MemoryMax=16G`, `TasksMax=512`.
+- Гарантирует, что `4-конкурентные CLI × 2G + bot overhead` укладываются.
+
+**STT / vision** — отдельная `aisw-stt.slice`:
+
+- `MemoryMax=4G`, `CPUQuota=200%`.
+- *Вне* CLI-scope'ов — чтобы не конкурировать за память Sonnet-процессов.
+
+**Per-user UID** `aisw-<N>`:
+
+- Создаётся idempotent через `systemd-sysusers` drop-in при первом WIKI юзера.
+- Сохраняется в `users.toml`.
+
+### 10.2. Backup (Q-E-36, MVP-partial — local safety net only)
+
+**Граница MVP:**
+
+- Реализуется минимальный *in-app local safety net* против software corruption / случайного удаления.
+- **Disaster-recovery (HW-failure, off-site) — deferred.**
+- D-037 §"Remote push" *явно запрещает* использовать git remote как backup (`git ≠ disaster-recovery`).
+- WIKI content **не пушится** автоматически никуда — **local-only** до отдельного решения.
+
+**Что входит в MVP:**
+
+1. **State-DB snapshots:**
+   1. Internal APScheduler maintenance job `db_snapshot` — ежедневно **03:00 UTC**.
+   2. `VACUUM INTO state/snapshots/<UTC-date>/{jobs,audit,sessions}.db` (consistent SQLite hot-backup, без остановки WAL).
+   3. *Silent system-maintenance task*, не user-facing `job-model`.
+   4. **Local retention 7 дней** (rolling), `state/snapshots/` mode `0700`.
+2. **WIKI content — local git history:**
+   1. Per-WIKI git auto-commit ([D-037](../decisions/D-037-git-in-wiki.md)).
+   2. Point-in-time recovery от bad Claude edit / случайной правки через `git revert` / `git checkout @{N}`.
+   3. **Remote push не настраивается** (D-037 §"Remote push" п.1 — `No remote в MVP`).
+   4. Opt-in per-WIKI remote — отдельным будущим решением.
+3. **Restore-test** — manual checklist в `docs/runbook/restore.md`:
+   1. Воспроизвести `db_snapshot`.
+   2. Восстановить в `state-restore-test/`.
+   3. Запустить `pytest tests/restore/` (smoke против snapshot'а).
+   4. *Прогон обязателен перед каждым релизом.*
+
+**Что MVP-partial backup НЕ покрывает** (явно):
+
+- Аппаратный сбой VPS-диска (полная потеря всех `*-WIKI/` + `state/`).
+- Ransomware.
+- Физическое уничтожение хоста.
+
+Эти классы — открытый риск, требуют отдельного решения (off-site target — `borg`/`restic`/`rclone-to-S3`/Backblaze) — за пределами MVP.
+
+**Все deferred:**
+
+- Off-site 3-2-1.
+- `borg`/`restic`.
+- GFS retention.
+- Remote git push.
+
+См. [backlog](../backlog.md#q-e-36--backup-wiki-и-state-db). **Триггер расширения:**
+
+- Переход в `TENANCY_MODE=multi`.
+- Размер state >1GB.
+- Явный запрос юзера на off-site.
+
+### 10.3. Logging
+
+- **`structlog`** JSON-lines в stdout → journald.
+- Стабильный набор полей: `ts`, `event`, `correlation_id`, `user_id`, `wiki_id`, `job_id`.
+- Correlation context через `contextvars`.
+- **PII-redactor processor** в pipeline.
+
+### 10.4. PII tier-классификация (NIST SP 800-122)
+
+1. **Tier-1 DROP** — tokens / passwords / keys / cards → `[REDACTED:tier1:...]`.
+2. **Tier-2 MASK** — email / phone / IBAN — с shape preservation + hash для cross-ref.
+3. **Tier-3 PLAINTEXT** — защищается per-store retention + unix-perm `0600`.
+
+**Retention-таблица Tier-3** (явная разбивка по store'ам, refactor 2026-05-10):
 
 | Store | Retention | Purge mechanism | Rationale |
 |-------|-----------|-----------------|-----------|
-| `audit.db.chat_log`        | 30d  | APScheduler `chat_log_purge` daily 04:00 UTC | last-20/24h окно классификатора + GDPR-минимум (D-033) |
-| `audit.db.tg_updates`      | 24h  | APScheduler `tg_updates_purge` hourly        | dedup TTL, дольше не нужен |
-| `audit.db.seen_files`      | 30d  | APScheduler `seen_files_purge` daily         | content-hash dedup window |
-| `audit.db.audit_events`    | 90d  | APScheduler `audit_purge` daily              | audit/forensics minimum по NIST SP 800-92 |
-| `audit.db.admin_events`    | 90d  | то же                                        | admin-elevate trail |
-| `jobs.db.tracker_answers`  | 90d  | APScheduler `tracker_purge` daily            | top-3 prediction window (D-014) |
-| `state/snapshots/`         | 7d   | inline в `db_snapshot` job (rolling)         | backup safety net (см. выше) |
-| `<wiki>/data/runs/`        | indefinite | no auto-GC in MVP; future retention needs separate decision | full-output replay/audit invariant (D-025) |
-| `<wiki>/raw/media/`        | indefinite | manual via NL `purge_wiki` / admin GDPR purge | user-uploaded, immutable per D-022 |
-| `_trash/<Domain>-WIKI-<ts>` | 30d | APScheduler `trash_purge` daily              | soft-delete restore window (D-041, см. §5) |
+| `audit.db.chat_log`        | **30d**  | APScheduler `chat_log_purge` daily 04:00 UTC | last-20/24h окно классификатора + GDPR-минимум (D-033) |
+| `audit.db.tg_updates`      | **24h**  | APScheduler `tg_updates_purge` hourly        | dedup TTL, дольше не нужен |
+| `audit.db.seen_files`      | **30d**  | APScheduler `seen_files_purge` daily         | content-hash dedup window |
+| `audit.db.dedup_hits`      | **90d**  | APScheduler `dedup_hits_purge` daily         | outcome совпадений content-hash (D-018) — forensics window выровнен с `audit_events` |
+| `audit.db.audit_events`    | **90d**  | APScheduler `audit_purge` daily              | audit/forensics minimum по NIST SP 800-92 |
+| `audit.db.admin_events`    | **90d**  | то же                                        | admin-elevate trail |
+| `audit.db.job_outputs`     | **90d**  | APScheduler `job_outputs_purge` daily        | routing/delivery metadata для cron-результатов (D-020) — сохраняем в окне audit |
+| `audit.db.run_outputs`     | **180d** | APScheduler `run_outputs_purge` daily        | индекс full-output файлов в `<wiki>/data/runs/` (D-025); content indefinite, индекс — bounded |
+| `audit.db.prompt_versions` | *indefinite* | no auto-GC | semver+sha256 системных промптов (D-015); компактен, нужен для full-replay любого исторического run |
+| `audit.db.onboarding_events` | **180d** | APScheduler `onboarding_purge` daily         | measure-показ intro-элементов per user (D-030) — нужно для повторных onboarding/audit |
+| `sessions.db.users`        | live     | заменяется sync'ом из `users.toml`           | snapshot allowlist (D-031/D-042); retention = жизнь сервиса |
+| `sessions.db.pending_users` | **14d** | APScheduler `pending_users_purge` daily      | заявки `/start` до admin-approve (D-030); просроченные удаляются |
+| `sessions.db.pending_confirms` | **10мин TTL** | inline на каждый confirm-cycle           | explicit-confirm window (D-023) |
+| `sessions.db.inbox_hint_cache` | live  | regen on cache-miss / service-restart        | runtime-каталог Inbox hint (см. §4); не PII, не имеет TTL |
+| `sessions.db.fsm`          | live     | aiogram FSM storage; cleared on dialog completion | runtime conversation state |
+| `jobs.db.tracker_answers`  | **90d**  | APScheduler `tracker_purge` daily            | top-3 prediction window (D-014) |
+| `Inbox-WIKI/raw/media/_staging/` | **24h** | APScheduler `staging_purge` hourly       | unrouted voice/photo upload (D-022, см. §8) |
+| `state/snapshots/`         | **7d**   | inline в `db_snapshot` job (rolling)         | backup safety net |
+| `<wiki>/data/runs/`        | *indefinite* | no auto-GC in MVP; future retention — separate decision | full-output replay/audit invariant (D-025) |
+| `<wiki>/raw/media/`        | *indefinite* | manual via NL `purge_wiki` / admin GDPR purge | user-uploaded, immutable per D-022 |
+| `_trash/<Domain>-WIKI-<ts>` | **30d** | APScheduler `trash_purge` daily              | soft-delete restore window (D-041, см. §5) |
 
-**At-rest crypto** не вводится в MVP (single-tenant); триггер пересмотра — переход в `TENANCY_MODE=multi` с реальными независимыми юзерами или появление Tier-1/Tier-2 PII вне redactor-контура.
+**At-rest crypto** — *не* вводится в MVP (single-tenant). Триггер пересмотра:
 
-**Git per-WIKI:** `git init` на materialize, auto-commit после успешного PostRun-write с `<job_id>(<category>): <title>` форматом, gitleaks pre-commit hook, `.wiki.lock` и `data/runs/` в `.gitignore`.
+- Переход в `TENANCY_MODE=multi` с реальными независимыми юзерами.
+- Появление Tier-1/Tier-2 PII вне redactor-контура.
 
-**Тестирование** трёхуровневое: unit с `FakeClaudeRunner` Protocol (coverage 80% core), integration `RUN_INTEGRATION=1` с реальным CLI subscription nightly, manual E2E checklist перед релизом.
+### 10.5. Git per-WIKI
 
-**Log-даты** в runtime WIKI `log.md` — ISO 8601 с TZ-offset до минуты (`## [YYYY-MM-DDTHH:MM±HH:MM] <op> | <title>`), TZ из per-WIKI frontmatter override → user-default → Europe/Moscow; машинные timestamp'ы (audit/chat_log/tracker) — UTC с миллисекундами.
+1. `git init` на materialize.
+2. Auto-commit после успешного PostRun-write с форматом `<job_id>(<category>): <title>`.
+3. `gitleaks` pre-commit hook.
+4. `.wiki.lock` и `data/runs/` — в `.gitignore`.
 
-- [D-034](../decisions/D-034-pii-redactor.md) — Tier-1 DROP / Tier-2 MASK / Tier-3 plaintext+retention; write-time hook; GDPR-purge через admin.
-- [D-035](../decisions/D-035-service-logging.md) — `structlog` JSON-lines → journald, стабильный набор полей, correlation_id через contextvars.
-- [D-036](../decisions/D-036-testing-strategy.md) — unit (FakeClaudeRunner) + integration (real CLI nightly) + manual E2E checklist.
-- [D-037](../decisions/D-037-git-in-wiki.md) — git init per-WIKI, auto-commit `<job_id>(<category>):`, gitleaks pre-commit, media в .gitignore.
-- [D-038](../decisions/D-038-per-user-systemd.md) — `systemd-run --scope` per CLI-invocation, shared auth dir RO mount, no-Bash tool profile, per-process limits, aggregate slices, `CAP_SETUID + CAP_SETGID`.
-- [D-040](../decisions/D-040-log-date-format.md) — runtime `log.md` ISO 8601 + TZ-offset; машинные timestamps UTC мс.
-- **Q-E-36 / backup (MVP-partial):** `db_snapshot` internal APScheduler maintenance job (`VACUUM INTO`, 7d local retention) + per-WIKI git history (local, no remote per [D-037](../decisions/D-037-git-in-wiki.md)) + restore-test runbook. Off-site 3-2-1, GFS, remote git push — все deferred ([backlog](../backlog.md#q-e-36--backup-wiki-и-state-db)).
+### 10.6. Тестирование (трёхуровневое)
+
+1. **Unit** — с `FakeClaudeRunner` Protocol (coverage **80% core**).
+2. **Integration** — `RUN_INTEGRATION=1` с реальным CLI subscription **nightly**.
+3. **Manual E2E** — checklist перед релизом.
+
+### 10.7. Log-даты
+
+- **Runtime WIKI `log.md`** — ISO 8601 с TZ-offset до минуты:
+  - Формат: `## [YYYY-MM-DDTHH:MM±HH:MM] <op> | <title>`.
+  - TZ из per-WIKI frontmatter override → user-default → `Europe/Moscow`.
+- **Машинные timestamp'ы** (audit / chat_log / tracker) — **UTC с миллисекундами**.
+
+**Решения:**
+
+- [D-034](../decisions/D-034-pii-redactor.md) — Tier-1/2/3 retention; write-time hook; GDPR-purge через admin.
+- [D-035](../decisions/D-035-service-logging.md) — `structlog` JSON-lines → journald, correlation_id через contextvars.
+- [D-036](../decisions/D-036-testing-strategy.md) — unit + integration nightly + manual E2E.
+- [D-037](../decisions/D-037-git-in-wiki.md) — git init per-WIKI, auto-commit, gitleaks, media в .gitignore.
+- [D-038](../decisions/D-038-per-user-systemd.md) — `systemd-run --scope` per CLI, RO auth, no-Bash, per-process limits, slices.
+- [D-040](../decisions/D-040-log-date-format.md) — runtime ISO 8601 + TZ-offset; машинные UTC мс.
+- **Q-E-36 / backup (MVP-partial):** `db_snapshot` + per-WIKI git history (local) + restore-test runbook. Off-site / GFS / remote — deferred.
+
+---
 
 ## 11. CLAUDE.md Templates
 
-Доменные пресеты лежат в `ai-steward-wiki/templates/<type>.md` (`health`, `health-lite`, `investment`, `budget`, `family`, `study`, `career`, `home`, `hobby`, `recipes` + `_default.md` fallback) и являются **локальной SSoT** этого репозитория. Никакой live-sync с parent-`CLAUDE.md` сервиса `ai-steward` (TG-бот) не существует — это нарушило бы границу изоляции (Spec-WIKI/CLAUDE.md §1.1). Один раз, при initial bootstrap репо, доменные знания могут быть скопированы из любого внешнего источника (включая parent ai-steward) как стартовая инспирация, после чего шаблоны эволюционируют только PR'ами в этот репозиторий. D-017 amended 2026-05-10: runtime-чтение parent-ai-steward запрещено, а template lookup поддерживает primary slug (`healthlite`) и hyphenated alias (`health-lite`) без расширения D-008 regex для WIKI-директорий. На NL-команду «давай заведём вики для X» (post D-041) router нормализует имя → lookup пресета → копирует с placeholder-substitution → создаёт стандартную структуру (`entities/`, `concepts/`, `raw/`, `index.md`, `log.md`). Inbox `CLAUDE.md` — отдельный shared template в `templates/inbox-wiki/`, содержит router-логику, intent vocabulary и universal pre-flight, без списка доменов (router читает их runtime'ом из `## Inbox hint` каждой Domain-WIKI). Каждый сгенерированный `CLAUDE.md` обязан содержать секцию `## Inbox hint` (1–3 строки, lint-checkable) и YAML frontmatter версионирования (D-039) для evolution через linear migration chain.
+**Расположение:** `ai-steward-wiki/templates/<type>.md`.
+
+**Доменные пресеты:**
+
+- `health`, `health-lite`, `investment`, `budget`, `family`, `study`, `career`, `home`, `hobby`, `recipes`.
+- `_default.md` — fallback.
+
+**Источник истины:**
+
+1. Шаблоны — **локальная SSoT** этого репозитория.
+2. **Никакой live-sync** с parent-`CLAUDE.md` сервиса `ai-steward` (TG-бот).
+3. Это нарушило бы границу изоляции (Spec-WIKI/CLAUDE.md §1.1).
+4. Один раз, при initial bootstrap репо, доменные знания *могут* быть скопированы из любого внешнего источника (включая parent ai-steward) как стартовая инспирация.
+5. После — шаблоны эволюционируют *только* PR'ами в этот репозиторий.
+
+**D-017 amended 2026-05-10:**
+
+- Runtime-чтение parent-ai-steward — **запрещено**.
+- Template lookup поддерживает primary slug (`healthlite`) и hyphenated alias (`health-lite`) без расширения D-008 regex для WIKI-директорий.
+
+**Workflow «давай заведём вики для X»** (post D-041):
+
+1. Router нормализует имя.
+2. Lookup пресета.
+3. Копирует с placeholder-substitution.
+4. Создаёт стандартную структуру: `entities/`, `concepts/`, `raw/`, `index.md`, `log.md`.
+
+**Inbox `CLAUDE.md`** — отдельный shared template в `templates/inbox-wiki/`:
+
+- Содержит router-логику, intent vocabulary и universal pre-flight.
+- *Без* списка доменов — router читает их runtime'ом из `## Inbox hint` каждой Domain-WIKI.
+
+**Каждый сгенерированный `CLAUDE.md` обязан содержать:**
+
+1. Секцию `## Inbox hint` (1–3 строки, lint-checkable).
+2. YAML frontmatter версионирования (D-039) для evolution через linear migration chain.
+
+**Решения:**
 
 - [D-016](../decisions/D-016-inbox-claude-md-template.md) — Inbox-template с intent vocabulary + universal pre-flight; per-domain `## Inbox hint`.
-- [D-017](../decisions/D-017-domain-claude-md-template.md) — per-domain пресеты + `_default.md`; локальная SSoT `templates/`, parent ai-steward только one-time bootstrap source.
-- [D-039](../decisions/D-039-claude-md-evolution.md) — frontmatter + managed/user-zone секции + linear migration chain v1→v2→…
+- [D-017](../decisions/D-017-domain-claude-md-template.md) — per-domain пресеты + `_default.md`; локальная SSoT `templates/`.
+- [D-039](../decisions/D-039-claude-md-evolution.md) — frontmatter + managed/user-zone + linear migration chain `v1→v2→…`.
+
+---
 
 ## 12. Coverage map & open backlog
 
-Overview §9 содержит **39 вопросов** (Tier A 1–8, B 9–19, C 20–24, D 25–30, E 31–39). Из 41 active D-файлов **38 — прямые ответы на Q1–Q39** (1:1), **3 — derived/meta** (`D-001` time-tracker как надстройка над job-model для Q1; `D-014` tracker-memory как sub-design над `D-001`; `D-042` `users.toml` unify как refactor над Q5/Q27/Q28). `D-029` superseded → `D-041` (оба покрывают Q26).
+**Overview §9** содержит **39 вопросов**:
 
-Прямой mapping Q→D (полная таблица):
+- Tier A: 1–8
+- Tier B: 9–19
+- Tier C: 20–24
+- Tier D: 25–30
+- Tier E: 31–39
+
+**Из 41 active D-файлов:**
+
+1. **38** — прямые ответы на Q1–Q39 (1:1).
+2. **3** — derived/meta:
+   - `D-001` — time-tracker как надстройка над job-model для Q1.
+   - `D-014` — tracker-memory как sub-design над `D-001`.
+   - `D-042` — `users.toml` unify как refactor над Q5/Q27/Q28.
+
+**Superseded:** `D-029 → D-041` (оба покрывают Q26).
+
+**Прямой mapping Q→D** (полная таблица):
 
 | Tier | Q | Тема | D | Tier | Q | Тема | D |
 |------|---|------|---|------|---|------|---|
@@ -221,9 +814,14 @@ Overview §9 содержит **39 вопросов** (Tier A 1–8, B 9–19, C
 | B | 14 | voice/photo input       | D-022 | E | 33 | audit PII           | D-034 |
 | B | 15 | streaming               | D-026 | E | 34 | service logging     | D-035 |
 | B | 16 | output size             | D-025 | E | 35 | testing strategy    | D-036 |
-| B | 17 | timeouts/kill           | D-021 | E | 36 | backup              | **MVP-partial / deferred-full** (см. §10, [../backlog.md](../backlog.md#q-e-36--backup-wiki-и-state-db)) |
+| B | 17 | timeouts/kill           | D-021 | E | 36 | backup              | **MVP-partial / deferred-full** (см. §10, [backlog](../backlog.md#q-e-36--backup-wiki-и-state-db)) |
 | B | 18 | cron result routing     | D-020 | E | 37 | git in WIKI         | D-037 |
 | B | 19 | cron failure mode       | D-019 | E | 38 | CLAUDE.md evolution | D-039 |
 |   |    |                         |       | E | 39 | log date format     | D-040 |
 
-Закрыто полностью: 38/39. Q36 покрыт частично (state-DB snapshots + local per-WIKI git history в MVP; git remote push, 3-2-1 / GFS / borg-restic — deferred).
+**Статус покрытия:**
+
+- ✅ **Закрыто полностью:** 38/39.
+- ⚠️ **Q36** — покрыт частично:
+  - В MVP: state-DB snapshots + local per-WIKI git history.
+  - **Deferred:** git remote push, 3-2-1 / GFS / borg-restic.
