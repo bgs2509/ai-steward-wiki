@@ -1,7 +1,7 @@
 # D-035: Service logging — structlog → stdout JSON → journald
 
 **Статус:** accepted
-**Дата:** 2026-05-09
+**Дата:** 2026-05-09 (amended 2026-05-10 — identity fields aligned with D-042)
 **Контекст:** [Q-E-34](../questions/Q-E-34-service-logging.md), [D-006](D-006-state-storage-layout.md), [D-019](D-019-cron-failure-mode.md), [D-021](D-021-timeouts-kill-policy.md), [D-034](D-034-pii-redactor.md)
 
 ## Проблема
@@ -32,7 +32,7 @@
 ```python
 structlog.configure(
     processors=[
-        structlog.contextvars.merge_contextvars,           # correlation_id, user_id
+        structlog.contextvars.merge_contextvars,           # correlation_id, telegram_id
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
@@ -53,15 +53,15 @@ structlog.configure(
 3. `event` — short event name (snake_case): `job_started`, `cli_timeout`, `dlq_pushed`, `redaction_applied`.
 4. `module` — Python module name.
 5. `correlation_id` — UUID4, биндится в начале каждого запроса/job-run через `contextvars`.
-6. `user_id` — TG user_id (если контекст связан с юзером).
+6. `telegram_id` — canonical external user id, если контекст связан с юзером ([D-042](D-042-unify-user-config.md)).
 7. `wiki_id` — активная WIKI (если есть).
 8. `job_id` / `run_id` — если контекст job-execution.
 
-Опциональные: `category` (job-category из D-019/D-021), `duration_ms`, `error_type`.
+Опциональные: `chat_id` (delivery target), `category` (job-category из D-019/D-021), `duration_ms`, `error_type`.
 
 ### Correlation context
 
-1. На входе TG-update: `bind_contextvars(correlation_id=uuid4(), user_id=update.from_user.id)`.
+1. На входе TG-update: `bind_contextvars(correlation_id=uuid4(), telegram_id=update.from_user.id, chat_id=update.effective_chat.id)`.
 2. На входе scheduled job: `bind_contextvars(correlation_id=uuid4(), job_id=job.id, category=job.category)`.
 3. `clear_contextvars()` в `finally` — защита от leak между requests.
 4. Async-safe: `structlog.contextvars` использует `contextvars.ContextVar` — корректная пропагация в `asyncio.Task`.

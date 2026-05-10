@@ -16,6 +16,7 @@
 ## Решение
 
 - [x] Вариант C (regex `^[A-Z][A-Za-z0-9]*-WIKI$`, fullmatch). Юзер подтвердил 2026-05-08. См. [D-008](../decisions/D-008-wiki-marker-format.md) (accepted).
+- [x] оформлено как [D-008](../decisions/D-008-wiki-marker-format.md)
 
 ## Связанные
 

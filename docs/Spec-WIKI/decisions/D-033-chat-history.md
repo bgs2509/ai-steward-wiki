@@ -1,12 +1,12 @@
 # D-033: Chat history — `chat_log` в audit.db, retention 30d, access классификатору
 
 **Статус:** accepted
-**Дата:** 2026-05-09
+**Дата:** 2026-05-09 (amended 2026-05-10 — identity vocabulary aligned with D-042)
 **Контекст:** [Q-D-30](../questions/Q-D-30-chat-history.md), overview §7.4 + §2.1 п.3, [D-006](D-006-state-storage-layout.md), [D-009](D-009-classifier-engine.md), [D-014](D-014-tracker-memory-model.md), [Q-E-33](../questions/Q-E-33-audit-pii.md)
 
 ## Проблема
 
-Audit-лог по [D-006](D-006-state-storage-layout.md) хранит metadata `(user_id, ts, command, cwd, prompt-hash)` без plaintext. Overview §2.1 п.3 упоминает «недавняя история промптов» как сигнал для классификатора Stage-1 ([D-009](D-009-classifier-engine.md)) — без plaintext этот сигнал недоступен. Дополнительно: Henry-admin захочет смотреть «что писал на той неделе» (debug-history). Решить: вводить ли chat_log сейчас или ждать Q-E-33 (audit PII).
+Audit-лог по [D-006](D-006-state-storage-layout.md) хранит metadata `(telegram_id, ts, command, cwd, prompt_hash)` без plaintext. Overview §2.1 п.3 упоминает «недавняя история промптов» как сигнал для классификатора Stage-1 ([D-009](D-009-classifier-engine.md)) — без plaintext этот сигнал недоступен. Дополнительно: Henry-admin захочет смотреть «что писал на той неделе» (debug-history). Решить: вводить ли chat_log сейчас или ждать Q-E-33 (audit PII).
 
 ## Варианты
 
@@ -27,7 +27,8 @@ Audit-лог по [D-006](D-006-state-storage-layout.md) хранит metadata `
 ```sql
 CREATE TABLE chat_log (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id     INTEGER NOT NULL,           -- TG chat_id
+  telegram_id INTEGER NOT NULL,           -- canonical external user id, per D-042
+  chat_id     INTEGER,                    -- Telegram delivery target, nullable
   ts          TEXT    NOT NULL,           -- ISO 8601 UTC
   direction   TEXT    NOT NULL CHECK (direction IN ('in', 'out')),
   text        TEXT    NOT NULL,           -- plaintext (subject to redaction per Q-E-33)
@@ -36,7 +37,7 @@ CREATE TABLE chat_log (
   wiki_id     TEXT                        -- nullable; идентификатор активной WIKI на момент сообщения
 );
 
-CREATE INDEX ix_chat_log_user_ts ON chat_log(user_id, ts DESC);
+CREATE INDEX ix_chat_log_telegram_ts ON chat_log(telegram_id, ts DESC);
 CREATE INDEX ix_chat_log_session ON chat_log(session_id);
 ```
 
@@ -64,7 +65,7 @@ CREATE INDEX ix_chat_log_session ON chat_log(session_id);
 1. **Классификатор Stage-1** ([D-009](D-009-classifier-engine.md)) при роутинге читает last N turns:
    ```sql
    SELECT direction, text, ts FROM chat_log
-   WHERE user_id = ? AND ts > datetime('now', '-24 hours')
+   WHERE telegram_id = ? AND ts > datetime('now', '-24 hours')
    ORDER BY ts DESC LIMIT 20;
    ```
    N=20, окно 24h — достаточно для §2.1 п.3 «недавняя история». Параметры тюнятся при первом реальном измерении качества.
@@ -79,7 +80,7 @@ CREATE INDEX ix_chat_log_session ON chat_log(session_id);
 
 ### Multi-tenant readiness
 
-1. Schema готова для multi-tenant ([D-030](D-030-onboarding.md)) — `user_id` partition.
+1. Schema готова для multi-tenant ([D-030](D-030-onboarding.md)) — `telegram_id` partition.
 2. При добавлении юзера через approve flow — никаких миграций; chat_log начинается с момента первой команды.
 3. При removal юзера ([D-031](D-031-allowlist-hot-reload.md) soft-delete) — его строки в chat_log сохраняются до retention expiry; admin может прочитать через elevation. Hard-delete по запросу — отдельная процедура (Q-E-33).
 

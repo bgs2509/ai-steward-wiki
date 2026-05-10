@@ -83,7 +83,7 @@ Spec-WIKI/
    3. `entities/`, `concepts/`, `research/` — без префиксов.
 4. **Бэклинки:** Markdown-линки на относительные пути: `[Inbox-WIKI](../entities/inbox-wiki.md)`.
 5. **Цитаты из `raw/`:** обязательно ссылка вида `см. raw/<файл>` + блок-цитата.
-6. **Дата в логе:** `## [YYYY-MM-DD] <op> | <title>` — формат для парсинга. Применяется **только** к Spec-WIKI/log.md (design-time мета-зона). Runtime `<Domain>-WIKI/log.md` использует ISO 8601 с TZ-offset per [decisions/D-040](decisions/D-040-log-date-format.md). `<op> ∈ {init, ingest, query, lint, refactor, decision, wave}` — closed canonical set. Семантика op:
+6. **Дата в логе:** `## [YYYY-MM-DD] <op> | <title>` — формат для парсинга. Применяется **только** к Spec-WIKI/log.md (design-time мета-зона). Runtime `<Domain>-WIKI/log.md` использует ISO 8601 с TZ-offset per [decisions/D-040](decisions/D-040-log-date-format.md). `<op> ∈ {init, ingest, query, lint, refactor, decision, wave}` — closed canonical set для новых записей. Исторические записи до schema-bump 2026-05-09 могут содержать legacy `wave-N`; их не редактировать из-за append-only правила. Семантика op:
    1. `init` — создание самой вики или раздела.
    2. `ingest` — внешний материал из `raw/` обработан в страницы.
    3. `query` — ответ на вопрос пользователя сохранён обратно как страница.

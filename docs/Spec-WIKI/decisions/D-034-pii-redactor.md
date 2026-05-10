@@ -1,7 +1,7 @@
 # D-034: PII redactor — tiered write-time, без at-rest crypto
 
 **Статус:** accepted
-**Дата:** 2026-05-09
+**Дата:** 2026-05-09 (amended 2026-05-10 — identity fields aligned with D-042)
 **Контекст:** [Q-E-33](../questions/Q-E-33-audit-pii.md), [D-033](D-033-chat-history.md), [D-006](D-006-state-storage-layout.md), [D-030](D-030-onboarding.md)
 
 ## Проблема
@@ -69,15 +69,15 @@
 
 ### Hard-delete процедура
 
-1. Команда `/admin gdpr_purge <USER_ID>` (admin-only, доступна через [D-028](D-028-admin-access.md) elevation):
+1. Команда `/admin gdpr_purge <telegram_id>` (admin-only, доступна через [D-028](D-028-admin-access.md) elevation):
    ```sql
-   DELETE FROM chat_log WHERE user_id=?;
-   DELETE FROM audit_events WHERE user_id=?;
+   DELETE FROM chat_log WHERE telegram_id=?;
+   DELETE FROM audit_events WHERE telegram_id=?;
    DELETE FROM tracker_answers WHERE owner_telegram_id=?;
    ```
 2. Логируется в `audit.db.admin_events` (что/когда/кем удалено + count).
 3. Tier-1/Tier-2 redactions, попавшие до hard-delete, тоже стираются (они были в тех же rows).
-4. Не purge: `users.toml` (это membership, не PII-данные); WIKI-папки юзера (отдельной командой `/admin user_remove <USER_ID>` — soft-delete per [D-031](D-031-allowlist-hot-reload.md), затем manual rm для full erasure).
+4. Не purge: `users.toml` (это membership, не PII-данные); WIKI-папки юзера (отдельной командой `/admin user_remove <telegram_id>` — soft-delete per [D-031](D-031-allowlist-hot-reload.md), затем manual rm для full erasure).
 
 ### Retention
 

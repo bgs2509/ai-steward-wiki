@@ -1,7 +1,7 @@
 # D-030: Onboarding нового юзера — hybrid `users.toml` SSoT + `/start`-flow за config-флагом
 
 **Статус:** accepted
-**Дата:** 2026-05-09 (amended 2026-05-10 — `users.toml` schema aligned with D-042)
+**Дата:** 2026-05-09 (amended 2026-05-10 — `users.toml` schema aligned with D-042; onboarding Q&A source moved to local templates)
 **Контекст:** [Q-D-27](../questions/Q-D-27-onboarding.md), overview §9.27, [D-013](D-013-claude-cli-auth.md), [D-016](D-016-inbox-claude-md-template.md), [D-020](D-020-cron-result-routing.md), [D-028](D-028-admin-access.md), [D-031](D-031-allowlist-hot-reload.md), [D-041](D-041-no-direct-wiki-commands.md)
 
 ## Проблема
@@ -63,7 +63,7 @@ Onboarding нового юзера: TG-flow (`/start` → admin /approve) даё
 ### Onboarding Q&A (всегда, после approve)
 
 1. Claude-driven через Inbox-WIKI router ([D-016](D-016-inbox-claude-md-template.md)).
-2. Questions per parent-`CLAUDE.md` ai-steward (имя, язык, роль, интересы, любимый герой).
+2. Questions per local template `templates/onboarding-profile-questions.<lang>.md`, aligned with D-042 fields (`display_name`, `timezone`, `persona`) and optional interest prompts.
 3. Output:
    1. `USERS/<NAME>/CLAUDE.md` — профиль из шаблона.
    2. `USERS/<NAME>/Inbox-WIKI/` — по [D-016](D-016-inbox-claude-md-template.md) shared template.

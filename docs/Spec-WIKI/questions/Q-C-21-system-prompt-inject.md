@@ -17,7 +17,7 @@
 
 **Принято 2026-05-08:** Hybrid (вариант C). Global doctrine `prompts/wiki.md` через `--append-system-prompt @file`, per-WIKI профиль через CLAUDE.md auto-walk (D-007). Stage-0 Haiku — `prompts/classifier.md`. Inbox-router наследует `wiki.md` + `inbox.md`. Версия prompt'а логируется в audit.db.
 
-→ оформлено как [D-015](../decisions/D-015-system-prompt-inject.md).
+- [x] оформлено как [D-015](../decisions/D-015-system-prompt-inject.md)
 
 ## Связанные
 

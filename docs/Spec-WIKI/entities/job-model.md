@@ -40,7 +40,7 @@ JobPayload = Annotated[
 
 1. **`reminder_job`** — TG-сообщение по расписанию. **Claude CLI не запускается.** Payload: `chat_id`, `message`, `lead_time`.
 2. **`wiki_job`** — Claude в одной WIKI с фиксированным промптом (например, `daily ingest`). Соответствует §6 `/cron_add`. Payload: `wiki_path`, `prompt`.
-3. **`digest_job`** — Claude с `--add-dir` в несколько WIKI + чтение `planner.json`, сводка → TG. Payload: `wiki_paths`, `prompt`, `chat_id`.
+3. **`digest_job`** — Claude с `--add-dir` в несколько WIKI + чтение planner-семантики из `jobs.db`, сводка → TG. Payload: `wiki_paths`, `prompt`, `chat_id`.
 4. **`tracker_survey`** — периодический опрос «что делал?» (см. [time-tracker](time-tracker.md)). Payload: окно, шаг, ссылка на predictive-replies.
 5. **`tracker_followup`** — follow-up «сделал?» через `follow_up_delay_min` минут после mandatory-item.
 6. **`boundary_message`** — фиксированные границы дня (06:00 «подъём», 23:00 «спать»).

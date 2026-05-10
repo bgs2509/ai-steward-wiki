@@ -11,7 +11,7 @@
 ## Три класса сценариев (§8.1)
 
 1. **Reminder-as-message (lightweight cron)** — «*разбуди в 6*». Без Claude. Только scheduler + sendMessage.
-2. **Aggregator / digest** — «*каждый день в 9 утра сводка*». Claude с `--add-dir` в несколько WIKI + чтение `planner.json`.
+2. **Aggregator / digest** — «*каждый день в 9 утра сводка*». Claude с `--add-dir` в несколько WIKI + чтение planner-семантики из `jobs.db`.
 3. **Smart inbox + auto-routing** — фото билета/чека/афиши. Claude классифицирует → спрашивает условия напоминания → создаёт cron + кладёт в WIKI.
 
 ## Двухуровневый intent-detection (§8.3.3)

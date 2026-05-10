@@ -16,6 +16,7 @@
 ## Решение
 
 - [x] Вариант A (`--add-dir <wiki>` only; профиль через CLAUDE.md auto-walk; digest-job — поимённый список WIKI). Юзер подтвердил 2026-05-08. См. [D-007](../decisions/D-007-add-dir-scope.md) (accepted).
+- [x] оформлено как [D-007](../decisions/D-007-add-dir-scope.md)
 
 ## Связанные
 

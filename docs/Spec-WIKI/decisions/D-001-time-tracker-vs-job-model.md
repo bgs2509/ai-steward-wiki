@@ -6,7 +6,7 @@
 
 ## Проблема
 
-Идея «трекера времени» (опросы каждые 2/5 часов, обязательные напоминания, предсказания ответов) пересекается с уже задуманным `job-model` (общий механизм recurring jobs) и существующим `planner.json` (runtime-данные расписаний). Где провести границу?
+Идея «трекера времени» (опросы каждые 2/5 часов, обязательные напоминания, предсказания ответов) пересекается с уже задуманным `job-model` (общий механизм recurring jobs) и `jobs.db` (runtime-данные расписаний). Где провести границу?
 
 ## Варианты
 
@@ -16,7 +16,7 @@
    3. ❌ Дублирует `job-model` (recurring + cron-like) — нарушает DRY.
    4. ❌ Два scheduler-loop'а в боте — нарушает SSoT и SoC.
    5. ❌ Сложнее переиспользовать механизмы (predictive replies заперты в трекере).
-2. **B — Надстройка-сценарий поверх `job-model` + `classifier` + `planner.json`**
+2. **B — Надстройка-сценарий поверх `job-model` + `classifier` + `jobs.db`**
    1. Трекер = конфигурация existing-механизмов + 3 новых концепта (predictive-replies, schedule-profiles, mandatory-checkins).
    2. Никаких новых infra-сущностей.
    3. ✅ DRY и SSoT — один scheduler, один storage.
@@ -29,7 +29,7 @@
 **Вариант B (надстройка).**
 
 Обоснование:
-1. Юзер описывает **UX-фичу**, а не infra-слой. Все механики (расписание, повторы, напоминания) уже есть в `planner.json` / `job-model`.
+1. Юзер описывает **UX-фичу**, а не infra-слой. Все механики (расписание, повторы, напоминания) уже есть в `jobs.db` / `job-model`.
 2. Реальное новое — три концепта (predictive replies, schedule-profiles, mandatory check-ins). Их выделение в `concepts/` делает их переиспользуемыми.
 3. Cost разбиения по страницам (Cons.6) меньше, чем cost дублирования scheduler'а.
 
@@ -39,7 +39,7 @@
    1. категорию `mandatory` (= нужен follow-up).
    2. поле `follow_up_delay_min`.
 2. `entities/classifier.md` ДОЛЖНА получить метод `predict_top3(slot, history) -> [reply, reply, reply]`.
-3. `planner.json` schema **не меняется** — текущей хватает.
+3. `jobs.db` schema расширяется только через уже принятый `job-model` контракт ([D-002](D-002-job-model-storage.md)); отдельного tracker-storage нет.
 4. Трекер не имеет собственного storage. Память паттернов — отдельный вопрос ([Q-A-09](../questions/Q-A-09-tracker-memory-model.md)).
 
 ## Перенос в ADR

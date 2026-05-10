@@ -20,4 +20,4 @@
 
 ## Связанные
 
-1. [Job-model](../entities/job-model.md) (digest_job читает planner.json)
+1. [Job-model](../entities/job-model.md) (`digest_job` читает planner-семантику из `jobs.db`)

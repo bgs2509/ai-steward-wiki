@@ -18,7 +18,7 @@
 
 - [x] **Вариант E** — двухслойный dedup без LLM:
   - **L1 (TG idempotency):** `(chat_id, update_id)` в `audit.db`, TTL 24h — защита от webhook-retry, прозрачно.
-  - **L2 (content hash):** SHA-256 нормализованного контента (текст: trim+lower; файл: bytes) в `jobs.db.seen_files(hash PK, wiki, first_seen, tg_message_id)`, TTL 30d. На совпадении — inline-кнопка «уже видел такое N дней назад в `<WIKI>`. Создать ещё раз / открыть существующий?».
+  - **L2 (content hash):** SHA-256 нормализованного контента (текст: trim+lower; файл: bytes) в `audit.db.seen_files(hash PK, wiki, first_seen, tg_message_id, tg_chat_id, content_kind)`, TTL 30d. На совпадении — inline-кнопка «уже видел такое N дней назад в `<WIKI>`. Создать ещё раз / открыть существующий?».
   - **L3 (LLM-сравнение)** не делаем в MVP; добавим позже точечно на этапе job-creation, если семантические дубли начнут мешать.
 - [x] оформлено как [D-018](../decisions/D-018-ingest-idempotency.md)
 
