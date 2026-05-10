@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     classifier_haiku_fallback_timeout_s: float = 15.0
     prompts_dir: Path = Path("/opt/ai-steward-wiki/prompts")
 
+    # Chunk 7: Stage-1a/1b Sonnet runner (M-WIKI-RUNNER).
+    wiki_runner_model: str = "claude-sonnet-4-5"
+    wiki_runner_timeout_s: float = 300.0
+    wiki_runner_term_grace_s: float = 10.0
+
     @model_validator(mode="after")
     def _check_stage0_credential_isolation(self) -> Settings:
         """INV-6: API backend MUST use a separate credential, never the OAuth dir."""
