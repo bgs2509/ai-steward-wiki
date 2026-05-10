@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     workspace_root: Path = Path("/var/lib/ai-steward-wiki/workspace")
     claude_config_dir: Path = Path("/var/lib/ai-steward-wiki/claude-code")
 
+    # Storage URLs (D-006). Default to async sqlite under workspace_root/data.
+    jobs_db_url: str = "sqlite+aiosqlite:///data/jobs.db"
+    audit_db_url: str = "sqlite+aiosqlite:///data/audit.db"
+    sessions_db_url: str = "sqlite+aiosqlite:///data/sessions.db"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
