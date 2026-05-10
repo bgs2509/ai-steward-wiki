@@ -21,6 +21,10 @@
 #   PromptVersion - semver+sha256 of system prompts (D-015, indefinite)
 #   OnboardingEvent - intro-element measure-show per user (D-030, retention 180d)
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.2 - 10 tables per D-006 amendment 2026-05-10
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

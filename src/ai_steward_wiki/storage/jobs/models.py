@@ -15,6 +15,10 @@
 #   TrackerAnswer - append-only row for top-3 prediction window (D-014)
 #   JobDLQ - dead-letter row for permanently-failed jobs (D-019)
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.2 - initial jobs.db ORM models
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

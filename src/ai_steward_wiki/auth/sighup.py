@@ -10,10 +10,17 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
+#   AdminAlert - Protocol for admin_alert(message) async callable
+#   DEBOUNCE_SECONDS - watchdog debounce window (0.5s)
+#   logger - module-level structlog logger
 #   AllowlistReloader - guarded async reload coroutine; sha256 short-circuit; admin_alert hook
 #   install_sighup_handler - bind SIGHUP to reloader.schedule()
 #   build_watchdog_observer - watchdog.Observer triggering reloader.schedule_debounced()
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.1 - initial SIGHUP + watchdog reload coordinator (D-031)
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<KnowledgeGraph>
+  <Project NAME="ai-steward-wiki" VERSION="0.0.2">
+    <keywords>telegram, claude-code, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
+    <annotation>Isolated multi-user Telegram service that wraps Claude Code CLI as a personal WIKI assistant (Karpathy LLM Wiki method). Foundation chunk: settings, structured logging, three-DB storage scaffold (jobs/audit/sessions), users.toml allowlist + SIGHUP/watchdog hot-reload.</annotation>
+
+    <M-FOUNDATION-SETTINGS NAME="Settings" TYPE="CONFIG" STATUS="done">
+      <purpose>Pydantic-settings BaseSettings (frozen) loaded from .env with AISW_ prefix.</purpose>
+      <path>src/ai_steward_wiki/settings.py</path>
+      <depends>none</depends>
+      <verification-ref>V-M-FOUNDATION-SETTINGS</verification-ref>
+      <annotations>
+        <type-Settings PURPOSE="Frozen BaseSettings: log_level, workspace_root, claude_config_dir, *_db_url"/>
+        <type-LogLevel PURPOSE="Literal alias for accepted log levels"/>
+        <fn-get_settings PURPOSE="lru_cached singleton accessor"/>
+      </annotations>
+    </M-FOUNDATION-SETTINGS>
+
+    <M-FOUNDATION-LOGGING NAME="Logging" TYPE="UTILITY" STATUS="done">
+      <purpose>structlog JSON-lines logging with correlation_id contextvar propagation.</purpose>
+      <path>src/ai_steward_wiki/logging_setup.py</path>
+      <depends>M-FOUNDATION-SETTINGS</depends>
+      <verification-ref>V-M-FOUNDATION-LOGGING</verification-ref>
+      <annotations>
+        <fn-configure_logging PURPOSE="One-shot structlog setup, JSON renderer, ISO UTC timestamps"/>
+        <fn-bind_correlation_id PURPOSE="Set the correlation_id contextvar; returns Token"/>
+        <fn-reset_correlation_id PURPOSE="Reset via Token returned from bind_correlation_id"/>
+        <fn-get_correlation_id PURPOSE="Read current correlation_id (None if unset)"/>
+        <fn-get_logger PURPOSE="structlog.get_logger thin wrapper for typing"/>
+      </annotations>
+    </M-FOUNDATION-LOGGING>
+
+    <M-AUTH-USERS NAME="Auth / Users" TYPE="RUNTIME" STATUS="done">
+      <purpose>users.toml SSoT allowlist with SIGHUP+watchdog hot-reload and sessions.db sync (D-031, D-042).</purpose>
+      <path>src/ai_steward_wiki/auth/</path>
+      <depends>M-STORAGE-SESSIONS</depends>
+      <verification-ref>V-M-AUTH-USERS</verification-ref>
+      <annotations>
+        <type-UserRecord PURPOSE="Frozen Pydantic model for one [[users]] entry"/>
+        <type-UsersConfig PURPOSE="Frozen top-level (schema_version + users list)"/>
+        <type-UsersTomlError PURPOSE="Raised on parse / validation failure"/>
+        <type-Allowlist PURPOSE="Frozen mapping telegram_id -&gt; UserRecord"/>
+        <type-AllowlistReloader PURPOSE="Guarded async reload coroutine; sha256 short-circuit"/>
+        <fn-load_users_toml PURPOSE="Read TOML, validate, return UsersConfig"/>
+        <fn-replace_global PURPOSE="Atomic swap of module-level allowlist cache"/>
+        <fn-get_global PURPOSE="Accessor returning current allowlist cache"/>
+        <fn-sync_to_sessions_db PURPOSE="Upsert + soft-disable for users absent from config"/>
+        <fn-install_sighup_handler PURPOSE="Bind SIGHUP to reloader.schedule()"/>
+        <fn-build_watchdog_observer PURPOSE="Watchdog observer triggering debounced reload"/>
+      </annotations>
+    </M-AUTH-USERS>
+
+    <M-STORAGE NAME="Storage barrel" TYPE="BARREL" STATUS="done">
+      <purpose>Storage package root; re-exports apply_sqlite_pragmas plus SQLite PRAGMA listener.</purpose>
+      <path>src/ai_steward_wiki/storage/</path>
+      <depends>none</depends>
+      <verification-ref>V-M-STORAGE</verification-ref>
+      <annotations>
+        <fn-apply_sqlite_pragmas PURPOSE="Attach connect-listener that sets WAL, synchronous=NORMAL, foreign_keys=ON, busy_timeout=5000"/>
+      </annotations>
+    </M-STORAGE>
+
+    <M-STORAGE-JOBS NAME="Storage / jobs.db" TYPE="RUNTIME" STATUS="done">
+      <purpose>Async engine + ORM models + Pydantic discriminated union for jobs.db (D-002, D-006, D-014, D-019).</purpose>
+      <path>src/ai_steward_wiki/storage/jobs/</path>
+      <depends>M-STORAGE</depends>
+      <verification-ref>V-M-STORAGE-JOBS</verification-ref>
+      <annotations>
+        <type-Base PURPOSE="DeclarativeBase for jobs.db ORM models"/>
+        <type-Job PURPOSE="Row in jobs.jobs (flat columns + JSON payload)"/>
+        <type-TrackerAnswer PURPOSE="Top-3 prediction window (D-014)"/>
+        <type-JobDLQ PURPOSE="Dead-letter row for permanently-failed jobs (D-019)"/>
+        <type-JobPayload PURPOSE="Annotated discriminated union over WikiRun/Digest/CronUser/Purge"/>
+        <fn-build_engine PURPOSE="Create AsyncEngine with PRAGMAs applied"/>
+        <fn-build_sessionmaker PURPOSE="async_sessionmaker bound to engine"/>
+        <fn-parse_job_payload PURPOSE="Validate dict into JobPayload union"/>
+      </annotations>
+    </M-STORAGE-JOBS>
+
+    <M-STORAGE-AUDIT NAME="Storage / audit.db" TYPE="RUNTIME" STATUS="done">
+      <purpose>Append-only audit + dedup + observability for audit.db (D-006 amended 2026-05-10).</purpose>
+      <path>src/ai_steward_wiki/storage/audit/</path>
+      <depends>M-STORAGE</depends>
+      <verification-ref>V-M-STORAGE-AUDIT</verification-ref>
+      <annotations>
+        <type-Base PURPOSE="DeclarativeBase for audit.db ORM models"/>
+        <type-ChatLog PURPOSE="Plaintext dialog (D-033, retention 30d)"/>
+        <type-AuditEvent PURPOSE="Generic action-log row (retention 90d)"/>
+        <type-AdminEvent PURPOSE="Admin-elevation trail (D-028)"/>
+        <type-TgUpdate PURPOSE="L1 dedup TG update_id (D-018, TTL 24h)"/>
+        <type-SeenFile PURPOSE="L2 content-hash dedup (D-018, TTL 30d)"/>
+        <type-DedupHit PURPOSE="Outcome of L2 collision (D-018)"/>
+        <type-JobOutput PURPOSE="Cron result routing/delivery metadata (D-020)"/>
+        <type-RunOutput PURPOSE="Index of full-output files in &lt;wiki&gt;/data/runs/ (D-025)"/>
+        <type-PromptVersion PURPOSE="semver+sha256 of system prompts (D-015)"/>
+        <type-OnboardingEvent PURPOSE="Intro-element measure-show per user (D-030)"/>
+        <fn-build_engine PURPOSE="Create AsyncEngine with PRAGMAs applied"/>
+        <fn-build_sessionmaker PURPOSE="async_sessionmaker bound to engine"/>
+      </annotations>
+    </M-STORAGE-AUDIT>
+
+    <M-STORAGE-SESSIONS NAME="Storage / sessions.db" TYPE="RUNTIME" STATUS="done">
+      <purpose>Runtime TG state and hot-path caches for sessions.db (D-006, D-031, D-042, D-030, D-023).</purpose>
+      <path>src/ai_steward_wiki/storage/sessions/</path>
+      <depends>M-STORAGE</depends>
+      <verification-ref>V-M-STORAGE-SESSIONS</verification-ref>
+      <annotations>
+        <type-Base PURPOSE="DeclarativeBase for sessions.db ORM models"/>
+        <type-User PURPOSE="Sync-snapshot from users.toml (D-031/D-042)"/>
+        <type-PendingUser PURPOSE="/start applicant pre-approve (D-030)"/>
+        <type-PendingConfirm PURPOSE="Explicit-confirm 10min TTL (D-023)"/>
+        <type-InboxHintCache PURPOSE="Per-user runtime catalog of '## Inbox hint'"/>
+        <type-FsmState PURPOSE="aiogram FSM persistence"/>
+        <fn-build_engine PURPOSE="Create AsyncEngine with PRAGMAs applied"/>
+        <fn-build_sessionmaker PURPOSE="async_sessionmaker bound to engine"/>
+      </annotations>
+    </M-STORAGE-SESSIONS>
+
+    <CrossLink from="M-FOUNDATION-LOGGING" to="M-FOUNDATION-SETTINGS" relation="reads log_level"/>
+    <CrossLink from="M-AUTH-USERS" to="M-STORAGE-SESSIONS" relation="syncs users.toml snapshot to sessions.users table"/>
+    <CrossLink from="M-STORAGE-JOBS" to="M-STORAGE" relation="uses apply_sqlite_pragmas in build_engine"/>
+    <CrossLink from="M-STORAGE-AUDIT" to="M-STORAGE" relation="uses apply_sqlite_pragmas in build_engine"/>
+    <CrossLink from="M-STORAGE-SESSIONS" to="M-STORAGE" relation="uses apply_sqlite_pragmas in build_engine"/>
+  </Project>
+</KnowledgeGraph>

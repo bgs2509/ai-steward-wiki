@@ -12,6 +12,10 @@
 # START_MODULE_MAP
 #   __version__ - package version string
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.1 - top-level package marker
+# END_CHANGE_SUMMARY
 
 __version__ = "0.0.1"
 

@@ -16,6 +16,10 @@
 #   InboxHintCache - per-user runtime catalog of "## Inbox hint" (D-006 §"Структура")
 #   FsmState - aiogram FSM persistence
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.2 - initial sessions.db ORM models
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

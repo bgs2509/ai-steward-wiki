@@ -17,6 +17,10 @@
 #   get_correlation_id - read current correlation_id (None if unset)
 #   get_logger - structlog.get_logger thin wrapper for typing
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.1 - initial structlog JSON setup with correlation_id contextvar
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

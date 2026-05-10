@@ -11,9 +11,14 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
+#   LogLevel - Literal alias for accepted log levels
 #   Settings - frozen pydantic-settings BaseSettings, env-prefixed AISW_
 #   get_settings - cached accessor returning the singleton Settings instance
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.1 - initial Settings with log_level, workspace, db URLs
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

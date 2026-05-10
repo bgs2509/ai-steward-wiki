@@ -8,6 +8,16 @@
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
+#
+# START_MODULE_MAP
+#   Base - DeclarativeBase for audit.db ORM models
+#   build_engine - create AsyncEngine with SQLite PRAGMAs applied
+#   build_sessionmaker - async_sessionmaker bound to engine, expire_on_commit=False
+# END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.2 - audit engine factory with PRAGMA wiring
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

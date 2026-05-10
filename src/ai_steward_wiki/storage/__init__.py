@@ -12,6 +12,10 @@
 # START_MODULE_MAP
 #   apply_sqlite_pragmas - register PRAGMA listener on a (sync) Connection
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.2 - storage barrel re-exporting apply_sqlite_pragmas
+# END_CHANGE_SUMMARY
 
 from ai_steward_wiki.storage.pragmas import apply_sqlite_pragmas
 

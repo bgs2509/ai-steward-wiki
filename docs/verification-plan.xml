@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<VerificationPlan VERSION="0.0.2">
+  <GlobalPolicy>
+    <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
+    <log-examples>
+      <example-1>[settings][get_settings][LOAD] env=AISW_</example-1>
+      <example-2>[allowlist][sync_to_sessions_db][SYNC_DONE] users=N</example-2>
+    </log-examples>
+    <commands>
+      <cmd>uv run pytest tests/unit -q</cmd>
+      <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration -q</cmd>
+      <cmd>make lint</cmd>
+    </commands>
+  </GlobalPolicy>
+
+  <Modules>
+    <V-M-FOUNDATION-SETTINGS MODULE="M-FOUNDATION-SETTINGS">
+      <tests>
+        <test path="tests/unit/test_settings.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/test_settings.py -q</cmd>
+      </commands>
+      <log-markers/>
+      <evidence>Settings frozen, env-prefix AISW_, defaults for log_level/workspace/db URLs.</evidence>
+    </V-M-FOUNDATION-SETTINGS>
+
+    <V-M-FOUNDATION-LOGGING MODULE="M-FOUNDATION-LOGGING">
+      <tests>
+        <test path="tests/unit/test_logging_setup.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/test_logging_setup.py -q</cmd>
+      </commands>
+      <log-markers/>
+      <evidence>structlog JSON renderer, ISO UTC timestamps, correlation_id contextvar bound/reset.</evidence>
+    </V-M-FOUNDATION-LOGGING>
+
+    <V-M-AUTH-USERS MODULE="M-AUTH-USERS">
+      <tests>
+        <test path="tests/unit/auth/test_users_toml.py"/>
+        <test path="tests/unit/auth/test_allowlist.py"/>
+        <test path="tests/unit/auth/test_sighup.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/auth -q</cmd>
+      </commands>
+      <log-markers/>
+      <evidence>users.toml parsed/validated; allowlist atomic swap; SIGHUP+watchdog 500ms debounce; sha256 short-circuit.</evidence>
+    </V-M-AUTH-USERS>
+
+    <V-M-STORAGE MODULE="M-STORAGE">
+      <tests>
+        <test path="tests/unit/storage/test_pragmas.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/storage/test_pragmas.py -q</cmd>
+      </commands>
+      <log-markers/>
+      <evidence>WAL, synchronous=NORMAL, foreign_keys=ON, busy_timeout=5000 applied per connection.</evidence>
+    </V-M-STORAGE>
+
+    <V-M-STORAGE-JOBS MODULE="M-STORAGE-JOBS">
+      <tests>
+        <test path="tests/unit/storage/jobs/test_models.py"/>
+        <test path="tests/unit/storage/jobs/test_payloads.py"/>
+        <test path="tests/integration/storage/test_jobs_engine.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/storage/jobs -q</cmd>
+        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/storage/test_jobs_engine.py -q</cmd>
+      </commands>
+      <log-markers/>
+      <evidence>jobs/tracker_answers/jobs_dlq schema; discriminated union round-trips; PRAGMAs verified on engine.</evidence>
+    </V-M-STORAGE-JOBS>
+
+    <V-M-STORAGE-AUDIT MODULE="M-STORAGE-AUDIT">
+      <tests>
+        <test path="tests/unit/storage/audit/test_models.py"/>
+        <test path="tests/integration/storage/test_audit_engine.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/storage/audit -q</cmd>
+        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/storage/test_audit_engine.py -q</cmd>
+      </commands>
+      <log-markers/>
+      <evidence>10 tables present per D-006 amendment; PRAGMAs verified; append-only invariants.</evidence>
+    </V-M-STORAGE-AUDIT>
+
+    <V-M-STORAGE-SESSIONS MODULE="M-STORAGE-SESSIONS">
+      <tests>
+        <test path="tests/unit/storage/sessions/test_models.py"/>
+        <test path="tests/integration/storage/test_sessions_engine.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/storage/sessions -q</cmd>
+        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/storage/test_sessions_engine.py -q</cmd>
+      </commands>
+      <log-markers/>
+      <evidence>users/pending_users/pending_confirms/inbox_hint_cache/fsm tables; PRAGMAs verified.</evidence>
+    </V-M-STORAGE-SESSIONS>
+  </Modules>
+</VerificationPlan>

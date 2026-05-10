@@ -10,11 +10,16 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
+#   SCHEMA_VERSION - integer constant; supported users.toml schema version
 #   UserRecord - frozen Pydantic model for one [[users]] entry
 #   UsersConfig - frozen top-level (schema_version + users list)
 #   UsersTomlError - raised on parse / validation failure
 #   load_users_toml - read path, parse TOML, validate, return UsersConfig
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.1 - initial users.toml parser/validator (D-031/D-042)
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

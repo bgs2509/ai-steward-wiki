@@ -12,6 +12,10 @@
 # START_MODULE_MAP
 #   apply_sqlite_pragmas - attach a "connect" listener that runs PRAGMAs on every new connection
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.2 - initial SQLite PRAGMA event listener (D-006)
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

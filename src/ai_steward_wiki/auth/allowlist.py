@@ -15,6 +15,10 @@
 #   get_global - accessor returning current cache
 #   sync_to_sessions_db - upsert + soft-disable for users absent from config
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.1 - initial in-memory allowlist + sessions.db sync (D-031/D-042)
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

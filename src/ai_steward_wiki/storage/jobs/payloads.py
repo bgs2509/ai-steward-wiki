@@ -17,6 +17,10 @@
 #   JobPayload - Annotated discriminated union over the four above
 #   parse_job_payload - validate a dict into the union, returning the concrete model
 # END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.0.2 - initial discriminated union for job payloads (D-002)
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 

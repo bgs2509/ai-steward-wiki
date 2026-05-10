@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<DevelopmentPlan VERSION="0.0.2">
+  <ArchitectureNotes>
+    <objective>Multi-user Telegram → Claude Code CLI WIKI assistant. Foundation chunk delivers settings, structured logging, three-DB SQLite scaffold, and users.toml allowlist with hot-reload.</objective>
+    <non-goal>No classifier, scheduler, inbox, or wiki orchestration in this chunk; those land in subsequent chunks.</non-goal>
+    <risk-1>users.toml drift between SSoT file and sessions.db cache — mitigated by SIGHUP+watchdog reload + sha256 short-circuit (D-031).</risk-1>
+    <risk-2>SQLite three-DB topology requires per-engine PRAGMAs; missed PRAGMA = silent corruption — mitigated by shared apply_sqlite_pragmas listener.</risk-2>
+  </ArchitectureNotes>
+
+  <Phases>
+    <Phase-0 NAME="Foundation scaffold" STATUS="done" bd_id="aisw-fm0">
+      <description>Repo skeleton, pyproject + uv lock, ruff/mypy, pre-commit, settings, structured logging, three-DB engines + ORM models, users.toml allowlist with SIGHUP/watchdog hot-reload.</description>
+    </Phase-0>
+  </Phases>
+
+  <Modules>
+    <M-FOUNDATION-SETTINGS bd_id="aisw-fm0">
+      <target>
+        <source>src/ai_steward_wiki/settings.py</source>
+      </target>
+      <verification-ref>V-M-FOUNDATION-SETTINGS</verification-ref>
+    </M-FOUNDATION-SETTINGS>
+    <M-FOUNDATION-LOGGING bd_id="aisw-fm0">
+      <target>
+        <source>src/ai_steward_wiki/logging_setup.py</source>
+      </target>
+      <verification-ref>V-M-FOUNDATION-LOGGING</verification-ref>
+    </M-FOUNDATION-LOGGING>
+    <M-AUTH-USERS bd_id="aisw-fm0">
+      <target>
+        <source>src/ai_steward_wiki/auth/users_toml.py</source>
+        <source>src/ai_steward_wiki/auth/allowlist.py</source>
+        <source>src/ai_steward_wiki/auth/sighup.py</source>
+      </target>
+      <verification-ref>V-M-AUTH-USERS</verification-ref>
+    </M-AUTH-USERS>
+    <M-STORAGE bd_id="aisw-fm0">
+      <target>
+        <source>src/ai_steward_wiki/storage/__init__.py</source>
+        <source>src/ai_steward_wiki/storage/pragmas.py</source>
+      </target>
+      <verification-ref>V-M-STORAGE</verification-ref>
+    </M-STORAGE>
+    <M-STORAGE-JOBS bd_id="aisw-fm0">
+      <target>
+        <source>src/ai_steward_wiki/storage/jobs/engine.py</source>
+        <source>src/ai_steward_wiki/storage/jobs/models.py</source>
+        <source>src/ai_steward_wiki/storage/jobs/payloads.py</source>
+      </target>
+      <verification-ref>V-M-STORAGE-JOBS</verification-ref>
+    </M-STORAGE-JOBS>
+    <M-STORAGE-AUDIT bd_id="aisw-fm0">
+      <target>
+        <source>src/ai_steward_wiki/storage/audit/engine.py</source>
+        <source>src/ai_steward_wiki/storage/audit/models.py</source>
+      </target>
+      <verification-ref>V-M-STORAGE-AUDIT</verification-ref>
+    </M-STORAGE-AUDIT>
+    <M-STORAGE-SESSIONS bd_id="aisw-fm0">
+      <target>
+        <source>src/ai_steward_wiki/storage/sessions/engine.py</source>
+        <source>src/ai_steward_wiki/storage/sessions/models.py</source>
+      </target>
+      <verification-ref>V-M-STORAGE-SESSIONS</verification-ref>
+    </M-STORAGE-SESSIONS>
+  </Modules>
+</DevelopmentPlan>
