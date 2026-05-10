@@ -2,7 +2,9 @@
 
 **Статус:** accepted
 **Дата:** 2026-05-09
-**Контекст:** [Q-E-35](../questions/Q-E-35-testing.md), [D-006](D-006-state-storage-layout.md), [D-009](D-009-classifier-engine.md), [D-013](D-013-claude-cli-auth.md), [D-019](D-019-cron-failure-mode.md), [D-021](D-021-timeouts-kill-policy.md), [D-034](D-034-pii-redactor.md)
+**Контекст:** [Q-E-35](../questions/Q-E-35-testing.md), [D-006](D-006-state-storage-layout.md), [D-009](D-009-classifier-engine.md), [D-013](D-013-claude-cli-auth.md), [D-019](D-019-cron-failure-mode.md), [D-021](D-021-timeouts-kill-policy.md), [D-034](D-034-pii-redactor.md), [D-041](D-041-no-direct-wiki-commands.md)
+
+> **Update ([D-041](D-041-no-direct-wiki-commands.md), 2026-05-09):** e2e-сценарий `/wiki_init <Domain>` читать как «NL-промпт `create_wiki <Domain>` → router → materialize template» (триггер сменился, шаги материализации те же).
 
 ## Проблема
 

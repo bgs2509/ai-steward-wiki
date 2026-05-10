@@ -3,6 +3,8 @@
 **Tier:** D
 **Источник:** [overview §9 п.29](../raw/20260507-ai-steward-wiki-only-overview.md)
 
+> **Update ([D-042](../decisions/D-042-unify-user-config.md), 2026-05-10):** поле `lang` живёт в `users.toml` (исторически `roles.toml`).
+
 ## Формулировка
 
 Интерфейс бота — ru/en, определяется per-user в `roles.toml`.

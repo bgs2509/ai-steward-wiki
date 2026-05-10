@@ -4,6 +4,8 @@
 **Дата:** 2026-05-08
 **Контекст:** [Q-A-03](../questions/Q-A-03-inbox-scope.md), [Inbox-WIKI](../entities/inbox-wiki.md), overview §3a / §7.2 / §8.3.1
 
+> **Update ([D-041](D-041-no-direct-wiki-commands.md), 2026-05-09):** упоминания `/wiki_init` ниже — историческая команда; lifecycle-операции выполняются NL-промптом router'у с pre-flight + explicit confirm. Механика рендеринга шаблона и валидации имени остаётся; только триггер сменился со slash-команды на intent.
+
 ## Проблема
 
 Где живёт Inbox: `USERS/<NAME>/Inbox-WIKI/` (per-user) или глобальный `INBOX/` рядом с `USERS/`. Влияет на файловую SSoT, path-traversal проверки, scope `--add-dir`, admin-доступ, drift router-промптов.

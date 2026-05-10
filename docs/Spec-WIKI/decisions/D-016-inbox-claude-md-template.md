@@ -4,6 +4,8 @@
 **Дата:** 2026-05-08
 **Контекст:** [Q-B-09](../questions/Q-B-09-inbox-claude-md-template.md), overview §9.9, §8.3.1, [D-004](D-004-inbox-wiki-scope.md), [D-009](D-009-classifier-engine.md), [D-015](D-015-system-prompt-inject.md), [D-041](D-041-no-direct-wiki-commands.md)
 
+> **Update ([D-041](D-041-no-direct-wiki-commands.md), 2026-05-09):** упоминание `wiki_init` ниже — генерация Inbox-`CLAUDE.md` происходит при NL-intent создания Inbox-WIKI; механика рендеринга шаблона не меняется.
+
 ## Проблема
 
 Где SSoT каталога доменов для router-Claude в `Inbox-WIKI/CLAUDE.md` и как router узнаёт «куда направить запрос» без drift'а при добавлении новых `<Domain>-WIKI/`.

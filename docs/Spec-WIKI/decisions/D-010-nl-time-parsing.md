@@ -4,6 +4,8 @@
 **Дата:** 2026-05-08
 **Контекст:** [Q-A-05](../questions/Q-A-05-nl-time-parsing.md), overview §9.5, [D-009](D-009-classifier-engine.md)
 
+> **Update ([D-041](D-041-no-direct-wiki-commands.md), 2026-05-09):** упоминание «`/wiki_init` отклоняет онбординг» — TZ-валидация применяется в pre-flight онбординг-flow (NL-intent), не в slash-команде.
+
 ## Проблема
 
 Reminder-intent в Stage-0 ([D-009](D-009-classifier-engine.md)) требует превратить NL-фразу времени («завтра в 18:00», «через две пятницы», «каждый понедельник в 9») в ISO8601 с user timezone. Чисто-LLM-парсинг недетерминирован и галлюцинирует даты; чисто-rule-based падает на edge-cases.
@@ -45,7 +47,7 @@ Haiku возвращает **сырую** фразу времени, не пар
        time_phrase,
        languages=["ru", "en"],
        settings={
-           "TIMEZONE": user_tz,                # из roles.toml
+           "TIMEZONE": user_tz,                # из users.toml (per D-042)
            "RETURN_AS_TIMEZONE_AWARE": True,
            "PREFER_DATES_FROM": "future",
            "RELATIVE_BASE": now_in_user_tz,
@@ -65,7 +67,7 @@ Haiku возвращает **сырую** фразу времени, не пар
 
 ### Timezone
 
-1. SSoT user TZ — `roles.toml[<user>].timezone` (обязательное поле).
+1. SSoT user TZ — `users.toml[<user>].timezone` (обязательное поле, per [D-042](D-042-unify-user-config.md)).
 2. Default-fallback **запрещён** — отсутствие TZ ⇒ `/wiki_init` отклоняет онбординг.
 3. Все datetime в `jobs.db` хранятся в UTC; user-TZ применяется только на ввод (parse) и вывод (TG-сообщения).
 
@@ -82,7 +84,7 @@ Haiku возвращает **сырую** фразу времени, не пар
 1. Зависимость: `dateparser>=1.2` (зафиксировать `==` в production).
 2. Появляется модуль `time_parser.py` с функциями `parse_time(phrase, user_tz, now) -> datetime | None` и `parse_repeat(phrase) -> CronExpr | None`.
 3. Test fixtures: набор золотых фраз на русском (минимум 50 кейсов: today/tomorrow/relative/weekday/explicit-date/repeat).
-4. `roles.toml` schema обязана содержать `timezone: str` (IANA, например `Europe/Moscow`).
+4. `users.toml` schema обязана содержать `timezone: str` (IANA, например `Europe/Moscow`) per [D-042](D-042-unify-user-config.md).
 5. Метрика `time_parser.fallback_rate` — KPI (target ≤5% для горячего пути).
 6. Q-A-05 закрывается этим решением.
 

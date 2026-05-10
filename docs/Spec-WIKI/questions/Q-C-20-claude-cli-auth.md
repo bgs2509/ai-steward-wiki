@@ -3,6 +3,8 @@
 **Tier:** C
 **Источник:** [overview §9 п.20](../raw/20260507-ai-steward-wiki-only-overview.md)
 
+> **Update ([D-042](../decisions/D-042-unify-user-config.md), 2026-05-10):** mapping `tg_user_id→Henry-N` хранится в `users.toml` (исторически назывался `roles.toml`).
+
 ## Формулировка
 
 `ANTHROPIC_API_KEY` per-process / subscription auth / `claude login`. Изоляция `~/.claude/` между юзерами на одном хосте.

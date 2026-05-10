@@ -3,6 +3,8 @@
 **Tier:** D
 **Источник:** [overview §9 п.27](../raw/20260507-ai-steward-wiki-only-overview.md)
 
+> **Update ([D-042](../decisions/D-042-unify-user-config.md), 2026-05-10):** `roles.toml` в формулировке/вариантах — историческое имя; текущий SSoT — `users.toml` (Решение уже использует актуальное имя).
+
 ## Формулировка
 
 TG-flow (`/start` → admin одобряет) vs ручное редактирование `roles.toml`.

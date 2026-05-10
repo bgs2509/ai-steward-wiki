@@ -3,6 +3,8 @@
 **Tier:** A
 **Источник:** [overview §9 п.5](../raw/20260507-ai-steward-wiki-only-overview.md)
 
+> **Update ([D-042](../decisions/D-042-unify-user-config.md), 2026-05-10):** упоминания `roles.toml` ниже — историческая формулировка; текущий SSoT для user-attributes (включая `timezone`) — `users.toml`.
+
 ## Формулировка
 
 Локальный (`dateparser`, `parsedatetime`) vs LLM-парсинг vs гибрид. Часовой пояс юзера в `roles.toml` обязателен.

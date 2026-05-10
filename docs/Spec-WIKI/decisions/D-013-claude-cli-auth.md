@@ -57,7 +57,7 @@ Stage-0 — прямой Anthropic SDK call, **не CLI**. Подписка по
 ### Naming convention
 
 1. В новой машине `USERS/<Name>` именуется `Henry-N`, где `N` — порядковый номер TG-аккаунта.
-2. Mapping `tg_user_id → Henry-N` хранится в `roles.toml` ([D-010](D-010-nl-time-parsing.md): `roles.toml[<user>].timezone`):
+2. Mapping `tg_user_id → Henry-N` хранится в `users.toml` (per [D-042](D-042-unify-user-config.md), ранее `roles.toml`) ([D-010](D-010-nl-time-parsing.md): `roles.toml[<user>].timezone`):
    ```toml
    [users.henry-1]
    tg_user_id = 123456789
@@ -69,7 +69,7 @@ Stage-0 — прямой Anthropic SDK call, **не CLI**. Подписка по
    timezone = "Europe/Moscow"
    display_name = "Henry (laptop)"
    ```
-3. Allowlist (`Q-D-28`, TBD) — все Henry-N tg_user_id'ы в `roles.toml`; никаких внешних юзеров.
+3. Allowlist (`Q-D-28`, TBD) — все Henry-N tg_user_id'ы в `users.toml` (per [D-042](D-042-unify-user-config.md), ранее `roles.toml`); никаких внешних юзеров.
 
 ## Обоснование
 
@@ -81,8 +81,8 @@ Stage-0 — прямой Anthropic SDK call, **не CLI**. Подписка по
 
 ## Последствия
 
-1. Onboarding нового TG-аккаунта Henry — добавление записи в `roles.toml` + `Q-D-27` flow создаёт `USERS/Henry-N/Inbox-WIKI/`. Никаких credentials шагов.
-2. Allowlist enforce: TG-сообщение от tg_user_id, не входящего в `roles.toml`, отклоняется на router-уровне (audit log записывает попытку).
+1. Onboarding нового TG-аккаунта Henry — добавление записи в `users.toml` (per [D-042](D-042-unify-user-config.md), ранее `roles.toml`) + `Q-D-27` flow создаёт `USERS/Henry-N/Inbox-WIKI/`. Никаких credentials шагов.
+2. Allowlist enforce: TG-сообщение от tg_user_id, не входящего в `users.toml` (per [D-042](D-042-unify-user-config.md), ранее `roles.toml`), отклоняется на router-уровне (audit log записывает попытку).
 3. Биллинг — единый счёт подписки, attribution не требуется.
 4. Если когда-нибудь сервис превратится в multi-tenant (другие реальные юзеры) — D-013 переоткрывается отдельным ADR; default остаётся subscription.
 5. Q-C-20 закрывается этим решением.
@@ -92,7 +92,7 @@ Stage-0 — прямой Anthropic SDK call, **не CLI**. Подписка по
 
 1. Не использовать `ANTHROPIC_API_KEY` env var в CLI-spawn — credentials берутся только из `~/.claude/`.
 2. Не создавать per-TG-user `CLAUDE_CONFIG_DIR` / `HOME` override — единый `~/.claude/`.
-3. Не пускать в сервис tg_user_id, отсутствующий в `roles.toml` (защита от случайного открытия multi-tenant).
+3. Не пускать в сервис tg_user_id, отсутствующий в `users.toml` (per [D-042](D-042-unify-user-config.md), ранее `roles.toml`) (защита от случайного открытия multi-tenant).
 4. Не коммитить `~/.claude/.credentials.json` или его копии в git / в WIKI.
 5. Не делать `claude logout` на проде без процедуры plan'd downtime — все CLI-job'ы остановятся.
 

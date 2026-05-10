@@ -4,6 +4,8 @@
 **Дата:** 2026-05-08
 **Контекст:** [Q-C-23](../questions/Q-C-23-wiki-marker-format.md), overview §5 / §7.1 / §7.2 / §7a / §3a, [D-004](D-004-inbox-wiki-scope.md)
 
+> **Update ([D-041](D-041-no-direct-wiki-commands.md), 2026-05-09):** упоминания `/wiki_init` ниже — историческая команда; валидация имени теперь применяется в pre-flight контракта `intent=create_wiki` (NL-промпт), а не в slash-команде. Regex и сообщения об ошибке без изменений.
+
 ## Проблема
 
 Какое правило определяет «папка является WIKI». Используется в §5 (NotAWikiPath), §7.2 (path-traversal), §7a (anti-nesting), `/wiki_init` валидации. Текущий overview-default `"WIKI" in name.upper()` пропускает false positives (`WIKILEAKS-data`, `my-wiki-tmp`).

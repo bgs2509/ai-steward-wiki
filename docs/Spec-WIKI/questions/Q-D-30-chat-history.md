@@ -3,6 +3,8 @@
 **Tier:** D
 **Источник:** [overview §9 п.30](../raw/20260507-ai-steward-wiki-only-overview.md), §7.4
 
+> **Update ([D-042](../decisions/D-042-unify-user-config.md), 2026-05-10):** в Варианте C `roles.toml` → `users.toml`. На принятый Вариант B не влияет.
+
 ## Формулировка
 
 Журнал команд/ответов в SQLite сверх audit-лога §7.4.

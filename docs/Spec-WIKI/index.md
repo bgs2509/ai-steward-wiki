@@ -78,6 +78,7 @@
 - [D-039](decisions/D-039-claude-md-evolution.md) — CLAUDE.md schema evolution: versioning + managed sections + 3-way merge + TG confirm (accepted)
 - [D-040](decisions/D-040-log-date-format.md) — log.md date format: ISO 8601 с TZ-offset, minute-granularity, per-WIKI override (accepted)
 - [D-041](decisions/D-041-no-direct-wiki-commands.md) — WIKI lifecycle только через NL-промпт; убраны `/wiki_init`/`/wiki_delete`/`/wiki_restore`/`/wiki_purge`; обязательный duplicate-check (accepted, supersedes D-029)
+- [D-042](decisions/D-042-unify-user-config.md) — `users.toml` как единый SSoT всех user-attributes; `roles.toml` упраздняется (accepted, D-010 patched)
 
 ## Questions
 
@@ -125,6 +126,7 @@
 ## Research
 
 - [overview-2026-05-07](research/overview-2026-05-07.md) — саммари главного описания сервиса
+- [tech-spec-draft.md](research/tech-spec-draft.md) — сводный черновик tech spec, агрегирует D-001…D-041
 
 ## Raw
 

@@ -3,6 +3,8 @@
 **Tier:** D
 **Источник:** [overview §9 п.28](../raw/20260507-ai-steward-wiki-only-overview.md)
 
+> **Update ([D-042](../decisions/D-042-unify-user-config.md), 2026-05-10):** allowlist-файл переименован `roles.toml` → `users.toml`. Hot-reload механика и watchdog — без изменений.
+
 ## Формулировка
 
 `roles.toml` — hot-reload или restart-only? Кто правит — admin через TG или вручную на VPS.

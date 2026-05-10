@@ -2,7 +2,9 @@
 
 **Статус:** accepted
 **Дата:** 2026-05-08
-**Контекст:** [Q-B-10](../questions/Q-B-10-domain-claude-md-template.md), overview §9.10, §8.4, [D-004](D-004-inbox-wiki-scope.md), [D-016](D-016-inbox-claude-md-template.md)
+**Контекст:** [Q-B-10](../questions/Q-B-10-domain-claude-md-template.md), overview §9.10, §8.4, [D-004](D-004-inbox-wiki-scope.md), [D-016](D-016-inbox-claude-md-template.md), [D-041](D-041-no-direct-wiki-commands.md)
+
+> **Update ([D-041](D-041-no-direct-wiki-commands.md), 2026-05-09):** упоминания `/wiki_init <Domain>` ниже — историческая команда; алгоритм пресет-выбора, fallback `_default` и auto-generation для unknown-домена применяются при NL-intent `create_wiki`. Pipeline без изменений.
 
 ## Проблема
 
@@ -58,7 +60,9 @@ ai-steward-wiki/templates/
 
 ### Источник доменного знания
 
-Базовое содержимое пресетов берётся из parent-`CLAUDE.md` ai-steward (`/home/bgs/ai-steward/CLAUDE.md` → раздел «Шаблоны типов проектов»: Health / Health-Lite / Investment / Budget / Family / Study / Career / Home / Hobby). Адаптируется под Wiki-doctrine ([D-015](D-015-system-prompt-inject.md), Karpathy librarian).
+Шаблоны — **локальная SSoT** репозитория `ai-steward-wiki/templates/`. Никакого runtime / live-sync с parent-`CLAUDE.md` сервиса `ai-steward` (TG-бот) не существует — это нарушило бы границу изоляции (Spec-WIKI/CLAUDE.md §1.1: «никаких пересечений, миграций, импортов формата, cross-service чтений»).
+
+При initial bootstrap репозитория доменные знания **могут быть один раз** скопированы из любого внешнего источника (включая parent ai-steward `/home/bgs/ai-steward/CLAUDE.md` → раздел «Шаблоны типов проектов») как стартовая инспирация и адаптированы под Wiki-doctrine ([D-015](D-015-system-prompt-inject.md), Karpathy librarian). После bootstrap шаблоны эволюционируют **только** PR'ами в этот репозиторий; чтение parent-`CLAUDE.md` сервисом в runtime запрещено.
 
 ### Lint-правила
 
