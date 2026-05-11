@@ -17,7 +17,7 @@
     <Phase-19 NAME="TG handlers wiring" STATUS="done" bd_id="aisw-ps8">
       <description>Compose aiogram Router with 5 handlers (text/voice/photo/document/confirm callback) wired into Dispatcher via build_dispatcher(pipeline=...). DefaultPipeline coordinates L1 idempotency dedup, optional voice/photo staging, ack delivery via TgSender, and confirmation callback resolution. Building blocks unchanged; this chunk is composition + e2e tests.</description>
     </Phase-19>
-    <Phase-20 NAME="TG pipeline classifier wiring" STATUS="planned">
+    <Phase-20 NAME="TG pipeline classifier wiring" STATUS="done" bd_id="aisw-96y">
       <description>Replace ack-only DefaultPipeline.on_text/on_voice with Stage-0 Haiku Classifier → Inbox.stage (L2 dedup) → WikiRunner (Stage-1a/1b Sonnet) → deliver_output. Closes the core MVP-launch gap. SSoT: docs/superpowers/plans/20260511-ai-steward-wiki-launch/breakdown.xml chunk-20. bd_id materializes via bd create at chunk start.</description>
     </Phase-20>
     <Phase-21 NAME="TG pipeline streaming" STATUS="planned">

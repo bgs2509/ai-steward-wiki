@@ -24,6 +24,7 @@
 #   assemble_prompt - concat base+overlay → atomic tmp+os.replace into runtime_dir
 #   WikiRunResult - dataclass result of one run (run_id, exit_code, events, …)
 #   run_wiki_session - public entrypoint orchestrating one Stage-1a/1b run
+#   aggregate_text - extract assistant text from WikiRunResult.events
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
@@ -56,6 +57,7 @@ __all__ = [
     "WikiRunResult",
     "WikiRunnerError",
     "WikiRunnerTimeoutError",
+    "aggregate_text",
     "assemble_prompt",
     "run_wiki_session",
 ]
@@ -125,6 +127,49 @@ def assemble_prompt(*, base_path: Path, overlay_path: Path, runtime_dir: Path, r
     tmp.write_text(base + "\n\n---\n\n" + overlay, encoding="utf-8")
     os.replace(tmp, target)
     return target
+
+
+# START_CONTRACT: aggregate_text
+#   PURPOSE: Concatenate assistant text content from stream-json events.
+#   INPUTS: { events: list[StreamEvent] - parsed events from one run }
+#   OUTPUTS: { str - concatenated assistant text; "" when no assistant content }
+#   SIDE_EFFECTS: none (pure)
+#   LINKS: M-TG-PIPELINE-CLASSIFIER (chunk 20, DEC-TPC-2)
+# END_CONTRACT: aggregate_text
+def aggregate_text(events: list[StreamEvent]) -> str:
+    """Extract assistant text from an event list (stream-json shape).
+
+    Tolerant: returns "" if no assistant_chunk events carry recognisable text.
+    Recognised payload shapes:
+      - payload["message"]["content"] = [{"type": "text", "text": "..."}, ...]
+      - payload["delta"]["text"] = "..."
+      - payload["text"] = "..."
+    """
+    parts: list[str] = []
+    for ev in events:
+        if ev.type != "assistant_chunk":
+            continue
+        payload = ev.payload
+        message = payload.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text = item.get("text")
+                        if isinstance(text, str):
+                            parts.append(text)
+                continue
+        delta = payload.get("delta")
+        if isinstance(delta, dict):
+            text = delta.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+                continue
+        text = payload.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts)
 
 
 def _persist_transcript(events: list[StreamEvent], target: Path) -> None:

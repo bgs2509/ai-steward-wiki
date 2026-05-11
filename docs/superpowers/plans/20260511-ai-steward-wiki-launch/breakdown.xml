@@ -36,7 +36,7 @@
   </Decisions>
 
   <Chunks>
-    <Chunk id="20" bd_id="" title="M-TG-PIPELINE-CLASSIFIER — wire classifier+runner+deliver_output into DefaultPipeline" est_window="0.55" depends_on="aisw-ps8" module_id="M-TG-PIPELINE-CLASSIFIER">
+    <Chunk id="20" bd_id="aisw-96y" title="M-TG-PIPELINE-CLASSIFIER — wire classifier+runner+deliver_output into DefaultPipeline" est_window="0.55" depends_on="aisw-ps8" module_id="M-TG-PIPELINE-CLASSIFIER">
       <scope>
         Replace ack-only responses in DefaultPipeline.on_text and on_voice with the full ingest pipeline:
         Stage-0 Haiku Classifier → Inbox.stage_text/stage_voice (with L2 dedup on text-sha256) → WikiRunner.run (Stage-1a/1b Sonnet) → deliver_output (hybrid size policy).

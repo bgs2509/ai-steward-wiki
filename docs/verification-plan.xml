@@ -143,5 +143,28 @@
       </log-markers>
       <evidence>28 unit tests cover callback parsing (8 variants), router/dispatcher wiring, _download_bytes, text/voice/photo/document/confirm end-to-end dispatch with fake aiogram Message+CallbackQuery, L1 dedup short-circuit, fallback paths when voice/photo handlers absent.</evidence>
     </V-M-TG-HANDLERS-WIRING>
+
+    <V-M-TG-PIPELINE-CLASSIFIER MODULE="M-TG-PIPELINE-CLASSIFIER">
+      <tests>
+        <test path="tests/unit/tg/test_pipeline_classifier_wiring.py"/>
+        <test path="tests/unit/wiki/test_runner_aggregate.py"/>
+        <test path="tests/integration/test_pipeline_classifier_e2e.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/tg/test_pipeline_classifier_wiring.py tests/unit/wiki/test_runner_aggregate.py -q</cmd>
+        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/test_pipeline_classifier_e2e.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>tg.pipeline.classify.begin</marker>
+        <marker>tg.pipeline.classify.done</marker>
+        <marker>tg.pipeline.classify.error</marker>
+        <marker>tg.pipeline.inbox.l2_dedup_hit</marker>
+        <marker>tg.pipeline.runner.dispatched</marker>
+        <marker>tg.pipeline.runner.completed</marker>
+        <marker>tg.pipeline.runner.error</marker>
+        <marker>tg.pipeline.deliver.sent</marker>
+      </log-markers>
+      <evidence>11 unit tests cover text happy path, L1 dup short-circuit, L2 dedup hit (records auto_skip + ACK_DEDUP_RU), classifier error → ACK_CLASSIFY_ERR_RU, runner error → ACK_RUNNER_ERR_RU, empty runner output → ACK_TEXT_RU via deliver, back-compat None injection, voice happy path with transcript, voice empty transcript fallback, voice back-compat legacy ack, structlog markers via capsys. 6 unit tests cover aggregate_text across stream-json payload shapes (message.content text blocks, delta.text, flat text, non-assistant ignore, empty events, unknown shape).</evidence>
+    </V-M-TG-PIPELINE-CLASSIFIER>
   </Modules>
 </VerificationPlan>
