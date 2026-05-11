@@ -20,10 +20,10 @@ class _StubSpawner:
         self._rc = rc
         self._stdout = stdout
         self._stderr = stderr
-        self.calls: list[list[str]] = []
+        self.calls: list[dict] = []
 
-    async def spawn(self, argv, *, env, stdin, timeout_s):
-        self.calls.append(list(argv))
+    async def spawn(self, argv, *, env, stdin, timeout_s, cwd=None):
+        self.calls.append({"argv": list(argv), "cwd": cwd, "env": dict(env)})
         return self._rc, self._stdout, self._stderr
 
 
@@ -85,15 +85,20 @@ async def test_error_envelope_raises() -> None:
         await backend.call(text="t", prompt_path=Path("p"), correlation_id="c")
 
 
-async def test_uses_append_system_prompt_file_flag() -> None:
+async def test_uses_system_prompt_file_and_neutral_cwd() -> None:
+    """System prompt must REPLACE (not append) to suppress default Claude Code persona,
+    and cwd must be neutral so project CLAUDE.md is not auto-discovered."""
     inner = {"intent": "unknown", "confidence": 0.5, "distilled_payload": {}}
     spawner = _StubSpawner(stdout=_envelope(json.dumps(inner)))
     backend = _make_backend(spawner)
     prompt_path = Path("/tmp/classifier.md")
     await backend.call(text="t", prompt_path=prompt_path, correlation_id="c")
-    argv = spawner.calls[0]
-    assert "--append-system-prompt-file" in argv
-    idx = argv.index("--append-system-prompt-file")
+    call = spawner.calls[0]
+    argv = call["argv"]
+    assert "--system-prompt-file" in argv
+    idx = argv.index("--system-prompt-file")
     assert argv[idx + 1] == str(prompt_path)
     assert "--append-system-prompt" not in argv
+    assert "--append-system-prompt-file" not in argv
     assert f"@{prompt_path}" not in argv
+    assert call["cwd"] == "/tmp/fake-claude-config"

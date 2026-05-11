@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/classifier/backend.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Backend abstraction for Stage-0 classifier — Claude CLI default + optional API + Fake.
 #   SCOPE: ClassifierBackend Protocol; ClaudeCliBackend (subprocess); AnthropicApiBackend stub;
@@ -20,9 +20,12 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - unwrap Claude CLI envelope (extract .result + json.loads),
-#                         switch to --append-system-prompt-file so classifier prompt
-#                         actually loads. Fixes aisw-p5b.
+#   LAST_CHANGE: v0.0.3 - replace (not append) default system prompt via
+#                         --system-prompt-file, and run CLI in neutral cwd so project
+#                         CLAUDE.md is not auto-discovered. Together with v0.0.2
+#                         envelope unwrap, fully fixes aisw-p5b.
+#   PREVIOUS:    v0.0.2 - unwrap Claude CLI envelope; switch flag from
+#                         --append-system-prompt @path to --append-system-prompt-file.
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
