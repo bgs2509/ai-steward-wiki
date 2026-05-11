@@ -19,7 +19,7 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.4 - chunk 12: tenancy_mode, admin_chat_id, admin_elevation_ttl_minutes, pending_user_ttl_days
+#   LAST_CHANGE: v0.0.5 - chunk 13: pii_hash_secret/drop/mask + retention_dry_run
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = [
@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     admin_chat_id: int | None = None
     admin_elevation_ttl_minutes: int = 30
     pending_user_ttl_days: int = 14
+
+    # Chunk 13: M-OPS-PII (D-034 §10.4).
+    pii_hash_secret: SecretStr = SecretStr("aisw-default-pii-salt-do-not-use-in-prod")
+    pii_drop_enabled: bool = True
+    pii_mask_enabled: bool = True
+    retention_dry_run: bool = False
 
     @model_validator(mode="after")
     def _check_stage0_credential_isolation(self) -> Settings:

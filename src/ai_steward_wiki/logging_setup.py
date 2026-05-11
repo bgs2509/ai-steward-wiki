@@ -31,6 +31,14 @@ from typing import Any
 
 import structlog
 
+__all__ = [
+    "bind_correlation_id",
+    "configure_logging",
+    "get_correlation_id",
+    "get_logger",
+    "reset_correlation_id",
+]
+
 _correlation_id: ContextVar[str | None] = ContextVar("aisw_correlation_id", default=None)
 
 
@@ -54,20 +62,26 @@ def _inject_correlation_id(
     return event_dict
 
 
-def configure_logging(level: str = "INFO") -> None:
+def configure_logging(level: str = "INFO", *, pii_processor: Any = None) -> None:
     log_level = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(format="%(message)s", level=log_level)
 
+    processors: list[Any] = [
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso", utc=True, key="ts"),
+        _inject_correlation_id,
+    ]
+    if pii_processor is not None:
+        # M-OPS-PII (chunk 13): tier-1 DROP / tier-2 MASK BEFORE renderer.
+        processors.append(pii_processor)
+    processors += [
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.JSONRenderer(),
+    ]
     structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso", utc=True, key="ts"),
-            _inject_correlation_id,
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.JSONRenderer(),
-        ],
+        processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
