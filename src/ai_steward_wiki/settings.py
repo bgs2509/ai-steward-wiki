@@ -20,7 +20,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.6 - add env=local|vps + dual TG bot tokens (local/prod)
+#   LAST_CHANGE: v0.0.7 - claude_config_dir split into _local/_vps slots resolved by env;
+#                         VPS default is None so CLI falls back to ~/.claude/.
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -59,7 +60,12 @@ class Settings(BaseSettings):
     env: Env = "local"
     log_level: LogLevel = "INFO"
     workspace_root: Path = Path("/var/lib/ai-steward-wiki/workspace")
-    claude_config_dir: Path = Path("/var/lib/ai-steward-wiki/claude-code")
+
+    # Claude Code CLI config dir. Two slots, picked by `env`.
+    # local: dedicated dir keeps bot's subscription auth isolated from dev's ~/.claude/.
+    # vps:   default None → CLI uses ~/.claude/ of the aisw-bot service user.
+    claude_config_dir_local: Path | None = Path("/var/lib/ai-steward-wiki/claude-code")
+    claude_config_dir_vps: Path | None = None
 
     # Telegram credentials. Two slots — selected by `env`. Keeps local test bot
     # isolated from production bot so accidental writes never reach real users.
@@ -111,6 +117,11 @@ class Settings(BaseSettings):
         """Active TG bot token chosen by `env` (local|vps)."""
         return self.tg_bot_token_prod if self.env == "vps" else self.tg_bot_token_local
 
+    @property
+    def claude_config_dir(self) -> Path | None:
+        """Active CLAUDE_CONFIG_DIR chosen by `env`. None → CLI uses ~/.claude/."""
+        return self.claude_config_dir_vps if self.env == "vps" else self.claude_config_dir_local
+
     @model_validator(mode="after")
     def _check_tg_token_for_env(self) -> Settings:
         """Active env MUST provide its token slot; the other may stay empty."""
@@ -130,7 +141,10 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "stage0_api_credential_path required when stage0_backend='anthropic_api' (INV-6)"
                 )
-            if self.stage0_api_credential_path == self.claude_config_dir:
+            if (
+                self.claude_config_dir is not None
+                and self.stage0_api_credential_path == self.claude_config_dir
+            ):
                 raise ValueError(
                     "stage0_api_credential_path MUST NOT equal claude_config_dir (INV-6)"
                 )

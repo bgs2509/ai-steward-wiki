@@ -24,7 +24,7 @@ def test_api_credential_must_differ_from_oauth_dir() -> None:
             _env_file=None,
             stage0_backend="anthropic_api",
             stage0_api_credential_path=shared,
-            claude_config_dir=shared,
+            claude_config_dir_local=shared,
         )
 
 

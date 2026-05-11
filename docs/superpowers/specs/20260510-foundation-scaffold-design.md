@@ -58,7 +58,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="AISW_", frozen=True)
     log_level: Literal["DEBUG","INFO","WARNING","ERROR"] = "INFO"
     workspace_root: Path
-    claude_config_dir: Path = Path("/var/lib/ai-steward-wiki/claude-code")
+    claude_config_dir_local: Path | None = Path("/var/lib/ai-steward-wiki/claude-code")
+    claude_config_dir_vps: Path | None = None  # None → CLI uses ~/.claude/ (resolved by env)
     # фактические поля будут пополняться по чанкам — это первичный skeleton
 ```
 

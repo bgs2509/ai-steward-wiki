@@ -71,7 +71,7 @@ class ClassifierBackend(Protocol):
 
 ### 3.1 ClaudeCliBackend
 - Builds command: `claude --model claude-haiku-4-5 --output-format json --json-schema <schema-path> --max-turns 1 --append-system-prompt @<prompt_path> --disallowedTools Bash Read Write Edit Glob Grep WebFetch --permission-mode dontAsk`
-- Spawned via `asyncio.create_subprocess_exec` with `env={CLAUDE_CONFIG_DIR: settings.claude_config_dir, PATH: ...}` — minimal env, no leakage.
+- Spawned via `asyncio.create_subprocess_exec` with `env={CLAUDE_CONFIG_DIR: settings.claude_config_dir, PATH: ...}` — minimal env, no leakage. `claude_config_dir` is an env-resolved property (`_local`/`_vps`); when `None` (VPS default) the variable is omitted and CLI falls back to `~/.claude/`.
 - Timeout = `settings.classifier_stage0_timeout_s` (default 30s). Timeout → raises `ClassifierTimeoutError` (transient per chunk 4 taxonomy).
 - stdin = `text`; stdout = JSON; stderr captured into structlog at WARN.
 - **Note (chunk 16 hand-off):** in production the CLI is invoked via `systemd-run --scope --uid=aisw-stage0 ...`. For chunk 5 we abstract the spawn primitive behind `Spawner` Protocol so chunk 16 can inject the systemd-run prefix without re-touching this module.
@@ -171,15 +171,23 @@ class Settings(BaseSettings):
     stage0_api_credential_path: Path | None = None
     classifier_stage0_timeout_s: float = 30.0
     classifier_haiku_fallback_timeout_s: float = 15.0
-    claude_config_dir: Path = Path("/var/lib/ai-steward-wiki/claude-code")
+    claude_config_dir_local: Path | None = Path("/var/lib/ai-steward-wiki/claude-code")
+    claude_config_dir_vps: Path | None = None  # None → CLI uses ~/.claude/
     prompts_dir: Path = Path("/opt/ai-steward-wiki/prompts")
+
+    @property
+    def claude_config_dir(self) -> Path | None:
+        return self.claude_config_dir_vps if self.env == "vps" else self.claude_config_dir_local
 
     @model_validator(mode="after")
     def _check_api_backend_credential(self):
         if self.stage0_backend == "anthropic_api":
             if self.stage0_api_credential_path is None:
                 raise ValueError("STAGE0_API_CREDENTIAL_PATH required for anthropic_api backend (INV-6)")
-            if self.stage0_api_credential_path == self.claude_config_dir:
+            if (
+                self.claude_config_dir is not None
+                and self.stage0_api_credential_path == self.claude_config_dir
+            ):
                 raise ValueError("API credential MUST NOT equal CLAUDE_CONFIG_DIR (INV-6)")
         return self
 ```

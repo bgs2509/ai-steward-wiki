@@ -10,7 +10,7 @@
       <depends>none</depends>
       <verification-ref>V-M-FOUNDATION-SETTINGS</verification-ref>
       <annotations>
-        <type-Settings PURPOSE="Frozen BaseSettings: log_level, workspace_root, claude_config_dir, *_db_url"/>
+        <type-Settings PURPOSE="Frozen BaseSettings: log_level, workspace_root, claude_config_dir_local/_vps (resolved by env), *_db_url"/>
         <type-LogLevel PURPOSE="Literal alias for accepted log levels"/>
         <fn-get_settings PURPOSE="lru_cached singleton accessor"/>
       </annotations>
