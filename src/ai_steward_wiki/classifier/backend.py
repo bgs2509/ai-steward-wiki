@@ -64,7 +64,13 @@ class ClassifierBackend(Protocol):
 
 class Spawner(Protocol):
     async def spawn(
-        self, argv: list[str], *, env: dict[str, str], stdin: bytes, timeout_s: float
+        self,
+        argv: list[str],
+        *,
+        env: dict[str, str],
+        stdin: bytes,
+        timeout_s: float,
+        cwd: str | None = None,
     ) -> tuple[int, bytes, bytes]: ...
 
 
@@ -76,7 +82,13 @@ class AsyncioSpawner:
     """
 
     async def spawn(
-        self, argv: list[str], *, env: dict[str, str], stdin: bytes, timeout_s: float
+        self,
+        argv: list[str],
+        *,
+        env: dict[str, str],
+        stdin: bytes,
+        timeout_s: float,
+        cwd: str | None = None,
     ) -> tuple[int, bytes, bytes]:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -84,6 +96,7 @@ class AsyncioSpawner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            cwd=cwd,
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(stdin), timeout=timeout_s)
@@ -114,7 +127,7 @@ class ClaudeCliBackend:
             "json",
             "--max-turns",
             "1",
-            "--append-system-prompt-file",
+            "--system-prompt-file",
             str(prompt_path),
             "--disallowedTools",
             "Bash",
@@ -143,11 +156,15 @@ class ClaudeCliBackend:
         env = {"CLAUDE_CONFIG_DIR": str(self.claude_config_dir), "PATH": "/usr/bin:/bin"}
         argv = self._argv(prompt_path)
         argv[0] = self._resolve_binary()
+        # Run in a neutral cwd so Claude Code does not auto-discover the project's
+        # CLAUDE.md and inject its contents into the model's default context — that
+        # context would otherwise drown the classifier system prompt.
         rc, stdout, stderr = await self.spawner.spawn(
             argv,
             env=env,
             stdin=text.encode("utf-8"),
             timeout_s=self.timeout_s,
+            cwd=str(self.claude_config_dir),
         )
         if rc != 0:
             raise ClassifierError(
