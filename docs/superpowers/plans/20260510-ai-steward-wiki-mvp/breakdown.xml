@@ -10,13 +10,14 @@
 
   <RunState>
     <Status>in-progress</Status>
-    <CurrentChunk>10</CurrentChunk>
-    <ClosedChunks>1,2,3,4,5,6,7,8,9</ClosedChunks>
+    <CurrentChunk>11</CurrentChunk>
+    <ClosedChunks>1,2,3,4,5,6,7,8,9,10</ClosedChunks>
     <Notes>Chunk 5 closed 2026-05-10: bd_id=aisw-5; M-CLASSIFIER-STAGE0 (schema/backend/stage0/time_parse + 2 prompts); 24 chunk-5 tests pass; full unit suite 89/89; ruff+format+mypy+grace lint clean; total-test gate green.
 Chunk 6 closed 2026-05-10: bd_id=aisw-qoi; M-INBOX (parser + hint_cache repo + get_or_refresh_hint hot-path + ensure_inbox_wiki + templates/inbox-wiki/CLAUDE.md per D-016); 17 chunk-6 tests pass; full unit suite 106/106; ruff+format+mypy clean; grace lint exit 0 (warnings only, baseline heuristic).
 Chunk 7 closed 2026-05-10: bd_id=aisw-x30; M-WIKI-RUNNER (wiki/{__init__,acquire,streaming,runner}.py + 5 prompts wiki/inbox/domain-{health,finance,default}); 13 chunk-7 tests pass; full unit suite 119/119; ruff+format+mypy clean; grace lint 0 errors / 28 warnings (heuristic baseline); total-test gate green.
 Chunk 8 closed 2026-05-10: bd_id=aisw-9s4; M-WIKI-LIFECYCLE (wiki/{name,lifecycle,migration,preflight}.py + scripts/lint_invariants.py for INV-7); 31 new tests; full unit suite 150/150; ruff+format+mypy clean; grace lint 0 errors / 32 warnings (heuristic baseline); INV-7 ok; total-test gate green.
-Chunk 9 closed 2026-05-11: bd_id=aisw-6t5; M-INGEST-IDEM (inbox/idempotency.py — L1 tg_updates INSERT OR IGNORE, L2 SHA-256 seen_files with NFKC text normalization, DedupHit audit log per D-018); 10 new tests; full unit suite 160/160; ruff+format+mypy clean; grace lint 0 errors / 33 warnings (heuristic baseline); INV-7 ok; total-test gate green.</Notes>
+Chunk 9 closed 2026-05-11: bd_id=aisw-6t5; M-INGEST-IDEM (inbox/idempotency.py — L1 tg_updates INSERT OR IGNORE, L2 SHA-256 seen_files with NFKC text normalization, DedupHit audit log per D-018); 10 new tests; full unit suite 160/160; ruff+format+mypy clean; grace lint 0 errors / 33 warnings (heuristic baseline); INV-7 ok; total-test gate green.
+Chunk 10 closed 2026-05-11: bd_id=aisw-187; M-TG-TEXT (tg/{__init__,bot,middleware_auth,confirm,output,stream_edit}.py); aiogram 3.15 dispatcher + AllowlistMiddleware (D-031/D-042); ConfirmationService graduated 3-tier auto/implicit/explicit + 10min TTL persisted in sessions.pending_confirms (extended ORM with status/category/chat_id/recap_message_id/draft_json — additive); deliver_output D-025 hybrid ≤3500/≤10000/&gt;10000+LengthCapSummarizer+send_document with always-persist to &lt;wiki&gt;/data/runs/&lt;date&gt;/&lt;run_id&gt;.md and audit.run_outputs index; HtmlBalancer + ChainSplitter with (i/M) footer; StreamEditor with throttle 1.5s/Δ50 + chain-split at 4000 + final-flush guarantee on success/exception (D-026); 33 new tg tests; full unit suite 193/193; ruff+format+mypy strict clean; grace lint 0 errors / 38 warnings (heuristic baseline); total-test gate green.</Notes>
   </RunState>
 
   <Decisions>
@@ -97,7 +98,7 @@ Chunk 9 closed 2026-05-11: bd_id=aisw-6t5; M-INGEST-IDEM (inbox/idempotency.py �
       <Verification>pytest tests/unit/inbox/idempotency</Verification>
     </Chunk>
 
-    <Chunk id="10" bd_id="aisw-10" title="Telegram I/O text: aiogram bot + allowlist + confirmations + output-sizing + streaming edits" est_window="0.60" depends_on="aisw-3,aisw-7,aisw-9" module_id="M-TG-TEXT">
+    <Chunk id="10" bd_id="aisw-187" status="closed" title="Telegram I/O text: aiogram bot + allowlist + confirmations + output-sizing + streaming edits" est_window="0.60" depends_on="aisw-3,aisw-7,aisw-9" module_id="M-TG-TEXT">
       <Inputs>src/ai_steward_wiki/tg/{bot.py,middleware_auth.py,confirm.py,output.py,stream_edit.py}</Inputs>
       <Outputs>aiogram 3 dispatcher; allowlist gate; graduated 3-tier confirmation (auto/implicit/explicit) + 10min TTL; size hybrid (≤3500/≤10000/>10000+Haiku-summary+document); HTML parse_mode + balancer; edit-throttle 1.5s/Δ50; chain-split 4000; final-flush guarantee; persist run_outputs</Outputs>
       <Verification>pytest tests/unit/tg; integration with TG sandbox</Verification>

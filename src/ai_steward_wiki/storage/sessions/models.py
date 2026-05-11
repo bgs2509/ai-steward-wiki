@@ -18,7 +18,7 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - initial sessions.db ORM models
+#   LAST_CHANGE: v0.0.3 - chunk 10: extend PendingConfirm per D-023 (status/category/chat_id/recap_message_id/draft_json)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -65,6 +65,8 @@ class PendingUser(Base):
 
 
 class PendingConfirm(Base):
+    """Explicit-confirm 10min TTL row (D-023). Extended in chunk 10 with status/category/draft."""
+
     __tablename__ = "pending_confirms"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -72,6 +74,12 @@ class PendingConfirm(Base):
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at_utc: Mapped[datetime] = mapped_column(nullable=False, index=True)
     created_at_utc: Mapped[datetime] = mapped_column(nullable=False)
+    # D-023 extension (chunk 10) — status machine + draft payload.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    recap_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    draft_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class InboxHintCache(Base):
