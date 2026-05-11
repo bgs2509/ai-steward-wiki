@@ -194,16 +194,13 @@ class _WikiRunnerAdapter:
         wiki_path = self._wiki_root / wiki_id
         wiki_path.mkdir(parents=True, exist_ok=True)
         run_id = f"run-{uuid4().hex[:12]}"
-        # Write the user turn into the overlay (a single-turn prompt) so the
-        # CLI sees the prompt material. The overlay path is stable; we append
-        # the freshly-staged user text to a per-run scratch file referenced
-        # from the overlay header. MVP simplification: feed the text in place
-        # of the overlay so the user input reaches the model without extra
-        # plumbing. Future chunks (21+) will replace with proper Inbox staging.
+        # aisw-w83: user text is delivered to claude via stdin (PIPE) by the
+        # runner; do NOT mix it into the system-prompt overlay. The per-run
+        # overlay stays as a stable, semver-valid placeholder until proper
+        # Inbox staging lands in chunks 21+.
         scratch = self._runtime_dir / "overlays" / f"{run_id}.md"
         scratch.parent.mkdir(parents=True, exist_ok=True)
-        header = "semver: 1.0.0\n\n# User turn\n\n"
-        scratch.write_text(header + text, encoding="utf-8")
+        scratch.write_text("semver: 1.0.0\n\n# User turn\n", encoding="utf-8")
         try:
             result = await run_wiki_session(
                 wiki_id=wiki_id,
@@ -217,6 +214,7 @@ class _WikiRunnerAdapter:
                 spawner=self._spawner,
                 config=self._run_config,
                 on_event=on_event,
+                user_input=text,
             )
         except WikiRunnerError:
             raise

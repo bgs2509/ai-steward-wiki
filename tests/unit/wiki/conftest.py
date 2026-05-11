@@ -16,6 +16,7 @@ class FakeProcess:
     """Minimal SpawnedProcess test double backed by an in-memory StreamReader."""
 
     pid: int = 4242
+    stdin: asyncio.StreamWriter | None = None
     stdout: asyncio.StreamReader | None = None
     stderr: asyncio.StreamReader | None = None
     _exit_code: int = 0
@@ -47,8 +48,17 @@ class FakeSpawner:
     hang: bool = False
     calls: list[dict[str, object]] = field(default_factory=list)
 
-    async def spawn(self, argv: list[str], *, env: dict[str, str], cwd: Path) -> SpawnedProcess:
-        self.calls.append({"argv": list(argv), "env": dict(env), "cwd": str(cwd)})
+    async def spawn(
+        self,
+        argv: list[str],
+        *,
+        env: dict[str, str],
+        cwd: Path,
+        stdin_data: bytes | None = None,
+    ) -> SpawnedProcess:
+        self.calls.append(
+            {"argv": list(argv), "env": dict(env), "cwd": str(cwd), "stdin_data": stdin_data}
+        )
         reader = asyncio.StreamReader()
         for ln in self.lines:
             reader.feed_data(ln)

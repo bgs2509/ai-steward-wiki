@@ -115,6 +115,42 @@ async def test_run_wiki_session_happy_path(
     assert env["CLAUDE_CONFIG_DIR"] == str(cfg_dir)
     assert env["PATH"] == "/usr/bin:/bin"
     assert fake_acquirer.calls == [("Health-WIKI", wiki)]
+    # aisw-w83: when user_input is empty, stdin_data is None (DEVNULL on the
+    # real spawner path); the runner does not synthesize input.
+    assert spawner.calls[0]["stdin_data"] is None
+
+
+async def test_run_wiki_session_pipes_user_input_to_stdin(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    """aisw-w83: user_input is delivered to claude via stdin, not the system prompt."""
+    spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
+    wiki = tmp_path / "Health-WIKI"
+    runtime = tmp_path / "runtime"
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+
+    await run_wiki_session(
+        wiki_id="Health-WIKI",
+        wiki_path=wiki,
+        base_prompt_path=prompts_dir / "wiki.md",
+        overlay_prompt_path=prompts_dir / "domain-default.md",
+        run_id="run-stdin",
+        correlation_id="corr-stdin",
+        runtime_dir=runtime,
+        acquirer=fake_acquirer,
+        spawner=spawner,
+        config=_cfg(cfg_dir),
+        user_input="что ты умеешь",
+    )
+
+    assert spawner.calls[0]["stdin_data"] == "что ты умеешь".encode()
+    # Overlay (assembled system prompt) must NOT contain the user turn.
+    system_prompt_file = runtime / "run-stdin.system.md"
+    assert system_prompt_file.exists()
+    assert "что ты умеешь" not in system_prompt_file.read_text(encoding="utf-8")
 
 
 async def test_run_wiki_session_timeout_invokes_kill(

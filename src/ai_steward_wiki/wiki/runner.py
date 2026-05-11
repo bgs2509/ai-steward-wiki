@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.4
+# VERSION: 0.0.5
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -11,7 +11,7 @@
 #            ai_steward_wiki.claude_cli.common (M-CLAUDE-CLI-COMMON),
 #            ai_steward_wiki.wiki.{acquire,streaming},
 #            ai_steward_wiki.scheduler.core (kill_with_sequence)
-#   LINKS: M-WIKI-RUNNER, M-CLAUDE-CLI-COMMON, D-007, D-011, D-012, D-021, aisw-d3i, aisw-0mg
+#   LINKS: M-WIKI-RUNNER, M-CLAUDE-CLI-COMMON, D-007, D-011, D-012, D-021, aisw-d3i, aisw-0mg, aisw-w83
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -29,7 +29,14 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.4 - aisw-0mg: add -p, --setting-sources "",
+#   LAST_CHANGE: v0.0.5 - aisw-w83: pipe user_input to claude stdin. `-p` (added
+#                         in v0.0.4) requires user prompt via stdin or argv; runner
+#                         previously used stdin=DEVNULL with user text smuggled
+#                         into the system-prompt overlay, causing rc=1 "Input must
+#                         be provided either through stdin or as a prompt argument
+#                         when using --print". Spawner Protocol extended with
+#                         stdin_data; AsyncioSpawner uses PIPE when provided.
+#   PREVIOUS:    v0.0.4 - aisw-0mg: add -p, --setting-sources "",
 #                         --disable-slash-commands to argv. Under subscription
 #                         OAuth, default Claude Code system prompt + skills +
 #                         user/project settings are loaded regardless of
@@ -107,6 +114,7 @@ class WikiRunnerTimeoutError(WikiRunnerError):
 @runtime_checkable
 class SpawnedProcess(Protocol):
     pid: int
+    stdin: asyncio.StreamWriter | None
     stdout: asyncio.StreamReader | None
     stderr: asyncio.StreamReader | None
 
@@ -116,7 +124,14 @@ class SpawnedProcess(Protocol):
 
 
 class Spawner(Protocol):
-    async def spawn(self, argv: list[str], *, env: dict[str, str], cwd: Path) -> SpawnedProcess: ...
+    async def spawn(
+        self,
+        argv: list[str],
+        *,
+        env: dict[str, str],
+        cwd: Path,
+        stdin_data: bytes | None = None,
+    ) -> SpawnedProcess: ...
 
 
 @dataclass
@@ -126,10 +141,19 @@ class AsyncioSpawner:
     Chunk 16 swaps this for a systemd-run wrapper without touching the runner.
     """
 
-    async def spawn(self, argv: list[str], *, env: dict[str, str], cwd: Path) -> SpawnedProcess:
+    async def spawn(
+        self,
+        argv: list[str],
+        *,
+        env: dict[str, str],
+        cwd: Path,
+        stdin_data: bytes | None = None,
+    ) -> SpawnedProcess:
         proc = await asyncio.create_subprocess_exec(
             *argv,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=(
+                asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
@@ -300,6 +324,7 @@ async def run_wiki_session(
     spawner: Spawner,
     config: _RunConfig | None = None,
     on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
+    user_input: str = "",
 ) -> WikiRunResult:
     """Run one Stage-1a/1b Sonnet session against `wiki_path`.
 
@@ -358,9 +383,15 @@ async def run_wiki_session(
         )
 
         wiki_path.mkdir(parents=True, exist_ok=True)
-        proc = await spawner.spawn(argv, env=env, cwd=cwd)
+        stdin_bytes = user_input.encode("utf-8") if user_input else None
+        proc = await spawner.spawn(argv, env=env, cwd=cwd, stdin_data=stdin_bytes)
         if proc.stdout is None:
             raise WikiRunnerError("spawned process has no stdout pipe")
+        if stdin_bytes is not None and proc.stdin is not None:
+            proc.stdin.write(stdin_bytes)
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                await proc.stdin.drain()
+            proc.stdin.close()
 
         async def _drain() -> int:
             assert proc.stdout is not None
