@@ -19,7 +19,7 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 18: initial runtime wiring entrypoint.
+#   LAST_CHANGE: v0.0.1 - chunk 19: wire DefaultPipeline + handlers router.
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -40,11 +40,14 @@ from ai_steward_wiki.auth.users_toml import (
     UsersTomlError,
     load_users_toml,
 )
+from ai_steward_wiki.inbox.idempotency import IdempotencyService
 from ai_steward_wiki.logging_setup import configure_logging
 from ai_steward_wiki.scheduler.core import build_scheduler
 from ai_steward_wiki.settings import Settings, get_settings
 from ai_steward_wiki.storage.audit.engine import build_engine, build_sessionmaker
-from ai_steward_wiki.tg.bot import build_bot, build_dispatcher
+from ai_steward_wiki.tg.bot import AiogramSender, build_bot, build_dispatcher
+from ai_steward_wiki.tg.confirm import ConfirmationService
+from ai_steward_wiki.tg.pipeline import DefaultPipeline
 
 logger = structlog.get_logger("ai_steward_wiki.runtime")
 
@@ -158,6 +161,7 @@ async def _amain() -> None:
     jobs_engine = build_engine(settings.jobs_db_url)
     audit_engine = build_engine(settings.audit_db_url)
     sessions_engine = build_engine(settings.sessions_db_url)
+    audit_maker = build_sessionmaker(audit_engine)
     sessions_maker = build_sessionmaker(sessions_engine)
 
     users_cfg = _load_users_config(settings.users_toml_path)
@@ -169,7 +173,14 @@ async def _amain() -> None:
     logger.info("runtime.scheduler.started", jobs_url=settings.jobs_db_url)
 
     bot = build_bot(settings.tg_bot_token.get_secret_value())
-    dp = build_dispatcher(allowlist)
+    sender = AiogramSender(bot)
+    pipeline = DefaultPipeline(
+        sender=sender,
+        idempotency=IdempotencyService(audit_maker),
+        confirmation=ConfirmationService(sender, sessions_maker),
+    )
+    dp = build_dispatcher(allowlist, pipeline=pipeline)
+    logger.info("runtime.handlers.registered")
 
     loop = asyncio.get_running_loop()
     stop_event = _STOP_EVENT_FOR_TESTS if _STOP_EVENT_FOR_TESTS is not None else asyncio.Event()

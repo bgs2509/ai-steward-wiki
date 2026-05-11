@@ -26,6 +26,9 @@
 #   HaikuSummarizer - Protocol for >10000-char summary path
 #   LengthCapSummarizer - default safe-fallback summarizer
 #   StreamEditor - throttle 1.5s/Δ50 + chain-split at 4000 + final-flush (D-026)
+#   build_router - factory wiring aiogram Router to a MessagePipeline (chunk 19)
+#   DefaultPipeline - default ingest coordinator over building blocks (chunk 19)
+#   MessagePipeline - Protocol for the 5 handler entry points (chunk 19)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
@@ -34,6 +37,7 @@
 
 from ai_steward_wiki.tg.bot import build_bot, build_dispatcher
 from ai_steward_wiki.tg.confirm import ConfirmationService, ConfirmLevel
+from ai_steward_wiki.tg.handlers import build_router
 from ai_steward_wiki.tg.middleware_auth import AllowlistMiddleware
 from ai_steward_wiki.tg.output import (
     ChainSplitter,
@@ -43,6 +47,7 @@ from ai_steward_wiki.tg.output import (
     LengthCapSummarizer,
     deliver_output,
 )
+from ai_steward_wiki.tg.pipeline import DefaultPipeline, MessagePipeline
 from ai_steward_wiki.tg.stream_edit import StreamEditor
 
 __all__ = [
@@ -50,12 +55,15 @@ __all__ = [
     "ChainSplitter",
     "ConfirmLevel",
     "ConfirmationService",
+    "DefaultPipeline",
     "DeliveryReceipt",
     "HaikuSummarizer",
     "HtmlBalancer",
     "LengthCapSummarizer",
+    "MessagePipeline",
     "StreamEditor",
     "build_bot",
     "build_dispatcher",
+    "build_router",
     "deliver_output",
 ]

@@ -120,5 +120,28 @@
       </log-markers>
       <evidence>13 unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. Manual smoke: `python -m ai_steward_wiki` starts, logs polling.start, Ctrl-C → shutdown.done, exit 0.</evidence>
     </V-M-RUNTIME-WIRING>
+
+    <V-M-TG-HANDLERS-WIRING MODULE="M-TG-HANDLERS-WIRING">
+      <tests>
+        <test path="tests/unit/tg/test_handlers.py"/>
+        <test path="tests/unit/tg/test_pipeline.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/tg/test_handlers.py tests/unit/tg/test_pipeline.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>tg.pipeline.text.received</marker>
+        <marker>tg.pipeline.text.l1_duplicate</marker>
+        <marker>tg.pipeline.voice.received</marker>
+        <marker>tg.pipeline.voice.no_handler</marker>
+        <marker>tg.pipeline.photo.received</marker>
+        <marker>tg.pipeline.photo.no_ingestor</marker>
+        <marker>tg.pipeline.document.received</marker>
+        <marker>tg.pipeline.confirm.received</marker>
+        <marker>tg.handlers.callback.malformed</marker>
+        <marker>runtime.handlers.registered</marker>
+      </log-markers>
+      <evidence>28 unit tests cover callback parsing (8 variants), router/dispatcher wiring, _download_bytes, text/voice/photo/document/confirm end-to-end dispatch with fake aiogram Message+CallbackQuery, L1 dedup short-circuit, fallback paths when voice/photo handlers absent.</evidence>
+    </V-M-TG-HANDLERS-WIRING>
   </Modules>
 </VerificationPlan>

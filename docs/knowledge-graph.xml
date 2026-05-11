@@ -132,6 +132,26 @@
       </annotations>
     </M-RUNTIME-WIRING>
 
+    <M-TG-HANDLERS-WIRING NAME="Telegram handlers wiring" TYPE="RUNTIME" STATUS="done">
+      <purpose>Compose aiogram Router (text/voice/photo/document/callback) into Dispatcher; thin handlers delegate to a MessagePipeline that performs L1 idempotency dedup, optional voice/photo staging, ack delivery, and confirmation callback resolution. Building blocks unchanged.</purpose>
+      <path>src/ai_steward_wiki/tg/handlers.py, src/ai_steward_wiki/tg/pipeline.py</path>
+      <depends>M-TG-TEXT, M-INBOX, M-TG-CONFIRM, M-TG-VOICE, M-TG-PHOTO, M-RUNTIME-WIRING</depends>
+      <verification-ref>V-M-TG-HANDLERS-WIRING</verification-ref>
+      <annotations>
+        <fn-build_router PURPOSE="factory wiring 5 aiogram handlers to MessagePipeline"/>
+        <fn-parse_confirm_callback PURPOSE="parse confirm:&lt;pid&gt;:&lt;action&gt; payload"/>
+        <fn-_download_bytes PURPOSE="bot.get_file + bot.download into BytesIO"/>
+        <fn-DefaultPipeline PURPOSE="concrete coordinator: L1 dedup, optional stage, ack send, confirm resolve"/>
+        <fn-MessagePipeline PURPOSE="Protocol with 5 entry points used by handlers"/>
+      </annotations>
+    </M-TG-HANDLERS-WIRING>
+
+    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-INBOX" relation="L1 dedup via IdempotencyService.check_update_id"/>
+    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-TEXT" relation="reply via TgSender (AiogramSender)"/>
+    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-CONFIRM" relation="callback action → ConfirmationService.resolve"/>
+    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-VOICE" relation="optional VoiceHandler for STT staging"/>
+    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-PHOTO" relation="optional PhotoIngestor for media staging"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-TG-HANDLERS-WIRING" relation="constructs DefaultPipeline + include_router via build_dispatcher(pipeline=...)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-FOUNDATION-SETTINGS" relation="reads Settings (tokens, db urls, users_toml_path)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-AUTH-USERS" relation="loads users.toml then sync_to_sessions_db + replace_global"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-STORAGE-JOBS" relation="alembic upgrade head + build_engine"/>

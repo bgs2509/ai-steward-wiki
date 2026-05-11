@@ -14,6 +14,9 @@
     <Phase-18 NAME="Runtime wiring" STATUS="done" bd_id="aisw-cq4">
       <description>Process entrypoint (__main__.py) composing existing modules into a runnable bot: Settings → per-DB alembic upgrade → engines → allowlist sync → APScheduler → aiogram polling → graceful SIGINT/SIGTERM shutdown. Enables `uv run python -m ai_steward_wiki` locally with AISW_TG_BOT_TOKEN_LOCAL. No production handlers yet; unrouted updates silently ignored (separate future chunk).</description>
     </Phase-18>
+    <Phase-19 NAME="TG handlers wiring" STATUS="done" bd_id="aisw-ps8">
+      <description>Compose aiogram Router with 5 handlers (text/voice/photo/document/confirm callback) wired into Dispatcher via build_dispatcher(pipeline=...). DefaultPipeline coordinates L1 idempotency dedup, optional voice/photo staging, ack delivery via TgSender, and confirmation callback resolution. Building blocks unchanged; this chunk is composition + e2e tests.</description>
+    </Phase-19>
   </Phases>
 
   <Modules>
@@ -72,5 +75,12 @@
       </target>
       <verification-ref>V-M-RUNTIME-WIRING</verification-ref>
     </M-RUNTIME-WIRING>
+    <M-TG-HANDLERS-WIRING bd_id="aisw-ps8">
+      <target>
+        <source>src/ai_steward_wiki/tg/handlers.py</source>
+        <source>src/ai_steward_wiki/tg/pipeline.py</source>
+      </target>
+      <verification-ref>V-M-TG-HANDLERS-WIRING</verification-ref>
+    </M-TG-HANDLERS-WIRING>
   </Modules>
 </DevelopmentPlan>

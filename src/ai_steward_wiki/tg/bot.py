@@ -27,7 +27,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 from ai_steward_wiki.auth.allowlist import Allowlist
 from ai_steward_wiki.tg.middleware_auth import AllowlistMiddleware
@@ -147,12 +147,26 @@ def build_bot(token: str) -> Bot:
     return Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
 
-def build_dispatcher(allowlist: Allowlist) -> Dispatcher:
-    """Build Dispatcher and register the allowlist middleware on update + message."""
+def build_dispatcher(
+    allowlist: Allowlist,
+    *,
+    pipeline: object | None = None,
+) -> Dispatcher:
+    """Build Dispatcher with allowlist middleware and (optional) handlers router.
+
+    ``pipeline`` is a :class:`ai_steward_wiki.tg.pipeline.MessagePipeline`
+    (typed loosely with ``object | None`` to avoid an import cycle).
+    """
     from aiogram import Dispatcher
 
     dp = Dispatcher()
     mw = AllowlistMiddleware(allowlist)
     # Outer-middleware so denial happens before any router.
     dp.update.outer_middleware(mw)
+
+    if pipeline is not None:
+        from ai_steward_wiki.tg.handlers import build_router
+        from ai_steward_wiki.tg.pipeline import MessagePipeline
+
+        dp.include_router(build_router(cast("MessagePipeline", pipeline)))
     return dp
