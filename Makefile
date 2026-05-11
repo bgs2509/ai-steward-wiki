@@ -1,4 +1,4 @@
-.PHONY: help install lint ruff-check ruff-format-check mypy grace-lint format test test-unit test-integration qa total-test clean
+.PHONY: help install lint ruff-check ruff-format-check mypy grace-lint inv-lint format test test-unit test-integration test-cov qa nightly total-test clean
 
 # Fail-fast: cheapest checks first, then heavier ones.
 # Order rationale (Google/Stripe SRE Make conventions):
@@ -56,11 +56,21 @@ test-integration:
 grace-lint:
 	grace lint --failOn errors
 
-qa: lint grace-lint test
+inv-lint:
+	uv run python scripts/lint_invariants.py
+
+test-cov:
+	uv run pytest tests/unit --cov=src/ai_steward_wiki --cov-report=term-missing --cov-fail-under=80
+
+nightly: total-test test-cov
+	@echo ""
+	@echo "✓ nightly passed: total-test + coverage gate"
+
+qa: lint grace-lint inv-lint test
 
 # Full quality gate. Order is intentional: cheapest checks first so the
 # pipeline fails as early as possible. Mirrors what CI runs on every PR.
-total-test: ruff-check ruff-format-check mypy grace-lint test-unit test-integration
+total-test: ruff-check ruff-format-check mypy grace-lint inv-lint test-unit test-integration
 	@echo ""
 	@echo "✓ total-test passed: ruff + mypy + grace lint + unit + integration"
 
