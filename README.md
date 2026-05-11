@@ -25,8 +25,11 @@ uv run python -m ai_steward_wiki
 ```
 
 The bot starts, the allowlist middleware gates updates by `telegram_id`, and
-unrouted messages are silently dropped. Production message handlers
-(`TG → classifier → runner` pipeline) ship in a follow-up chunk.
+allowlisted text / voice / photo / document messages and confirm-callbacks
+flow through `M-TG-HANDLERS-WIRING` → `DefaultPipeline` (L1 idempotency dedup,
+optional voice/photo staging, ack delivery, confirmation resolve). The
+classifier + WikiRunner + `deliver_output` wiring lands in a follow-up chunk;
+until then the pipeline replies with short Russian acks.
 
 ## Quality gates
 
