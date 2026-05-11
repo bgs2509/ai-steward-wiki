@@ -44,11 +44,11 @@ test:
 	uv run pytest tests/
 
 test-unit:
-	uv run pytest tests/unit -q
+	uv run pytest tests/unit -v
 
 test-integration:
 	@if [ -d tests/integration ]; then \
-		RUN_INTEGRATION=1 uv run pytest tests/integration -q; \
+		RUN_INTEGRATION=1 uv run pytest tests/integration -v; \
 	else \
 		echo "tests/integration not present — skipping"; \
 	fi
