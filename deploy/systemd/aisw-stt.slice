@@ -1,0 +1,12 @@
+# SSoT: tech-spec §10.1 "STT / vision" + D-038.
+# Separate slice for faster-whisper / vision workers — kept OUT of aisw-bot.slice
+# so STT memory pressure does not compete with concurrent Sonnet CLI scopes.
+
+[Unit]
+Description=ai-steward-wiki STT/vision slice (faster-whisper, image OCR)
+Before=slices.target
+
+[Slice]
+MemoryMax=4G
+CPUQuota=200%
+TasksMax=128

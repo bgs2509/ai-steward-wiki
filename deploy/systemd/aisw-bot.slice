@@ -1,0 +1,16 @@
+# SSoT: tech-spec §10.1 "Aggregate cap" + D-038.
+# Parent slice for the bot and all transient per-CLI scopes spawned via
+# `systemd-run --scope --slice=aisw-bot.slice`.
+#
+# Capacity budget: 4 concurrent CLI x 2G + bot overhead + STT (separate slice).
+
+[Unit]
+Description=ai-steward-wiki aggregate slice (bot + per-CLI scopes)
+Before=slices.target
+
+[Slice]
+MemoryHigh=12G
+MemoryMax=16G
+TasksMax=512
+CPUWeight=100
+IOWeight=100

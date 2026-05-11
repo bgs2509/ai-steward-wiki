@@ -1,0 +1,48 @@
+# SSoT: tech-spec §10.1 "Бот" + D-038.
+# Bot orchestrator. Runs as `aisw-bot`, holds CAP_SETUID/CAP_SETGID so it can
+# spawn per-CLI transient scopes via `systemd-run --scope --uid=aisw-<N>`.
+#
+# Per-CLI hardening (MemoryMax=2G, ProtectSystem=strict, ReadOnlyPaths=...,
+# PrivateTmp, NoNewPrivileges, etc.) is applied by the bot at scope-launch
+# time as `--property=` flags, NOT here. This unit must keep
+# NoNewPrivileges=false so that systemd-run scopes can re-elevate UID.
+
+[Unit]
+Description=ai-steward-wiki Telegram bot (orchestrator)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=aisw-bot
+Group=aisw-bot
+SupplementaryGroups=aisw-claude
+WorkingDirectory=/opt/ai-steward-wiki
+EnvironmentFile=/etc/ai-steward-wiki/.env
+ExecStart=/opt/ai-steward-wiki/.venv/bin/python -m ai_steward_wiki
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillMode=mixed
+
+# Slice + capabilities required for systemd-run --scope --uid=...
+Slice=aisw-bot.slice
+AmbientCapabilities=CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+NoNewPrivileges=false
+
+# Bot-level hardening (does NOT propagate into transient scopes).
+ProtectSystem=strict
+ProtectHome=tmpfs
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/ai-steward-wiki /var/log/ai-steward-wiki
+ReadOnlyPaths=/opt/ai-steward-wiki/prompts /var/lib/ai-steward-wiki/claude-code
+
+# Logging: structlog → stdout → journald.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aisw-bot
+
+[Install]
+WantedBy=multi-user.target
