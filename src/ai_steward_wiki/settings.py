@@ -20,8 +20,7 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.7 - claude_config_dir split into _local/_vps slots resolved by env;
-#                         VPS default is None so CLI falls back to ~/.claude/.
+#   LAST_CHANGE: v0.0.8 - chunk 18: users_toml_path (optional) for M-RUNTIME-WIRING.
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -111,6 +110,10 @@ class Settings(BaseSettings):
     # Chunk 14: M-OPS-BACKUP (tech-spec §10.2, D-037).
     snapshot_dir: Path = Path("/var/lib/ai-steward-wiki/state/snapshots")
     snapshot_retention_days: int = 7
+
+    # Chunk 18: M-RUNTIME-WIRING. Path to users.toml for allowlist.
+    # None or missing file → empty allowlist (frictionless local first-run).
+    users_toml_path: Path | None = None
 
     @property
     def tg_bot_token(self) -> SecretStr | None:
