@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     pii_mask_enabled: bool = True
     retention_dry_run: bool = False
 
+    # Chunk 14: M-OPS-BACKUP (tech-spec §10.2, D-037).
+    snapshot_dir: Path = Path("/var/lib/ai-steward-wiki/state/snapshots")
+    snapshot_retention_days: int = 7
+
     @model_validator(mode="after")
     def _check_stage0_credential_isolation(self) -> Settings:
         """INV-6: API backend MUST use a separate credential, never the OAuth dir."""

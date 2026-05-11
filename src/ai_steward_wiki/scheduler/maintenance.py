@@ -12,15 +12,16 @@
 # START_MODULE_MAP
 #   PURGE_PENDING_JOB_ID - stable id for the daily purge job
 #   register_purge_expired_pending_job - add daily cron job at 05:00 UTC
-#   register_all_retention_jobs - chunk 13 wiring: pending purge + §10.4 retention purges
+#   register_all_retention_jobs - chunks 12-14 wiring: pending purge + §10.4 retention + db_snapshot
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 12: pending_users daily 05:00 UTC purge
+#   LAST_CHANGE: v0.0.2 - chunk 14: also register db_snapshot job
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -49,16 +50,25 @@ def register_all_retention_jobs(
     jobs_maker: async_sessionmaker[AsyncSession],
     sessions_maker: async_sessionmaker[AsyncSession],
     dry_run: bool = False,
+    snapshot_root: Path | None = None,
+    db_urls_for_snapshot: dict[str, str] | None = None,
+    snapshot_retention_days: int | None = None,
 ) -> list[Any]:
-    """Register chunk 12 pending-users purge + chunk 13 §10.4 retention jobs.
+    """Register chunks 12-14 maintenance jobs.
 
     Idempotent: APScheduler `replace_existing=True` lets this run on every boot.
+    ``snapshot_root`` + ``db_urls_for_snapshot`` are required to enable the
+    chunk 14 db_snapshot job; when omitted the snapshot cron is not registered.
     """
-    # Local import to avoid a scheduler↔ops cycle at module load.
+    # Local imports to avoid a scheduler↔ops cycle at module load.
     from ai_steward_wiki.ops.retention import (
         DB_AUDIT,
         DB_JOBS,
         register_retention_jobs,
+    )
+    from ai_steward_wiki.ops.snapshot import (
+        SNAPSHOT_RETENTION_DAYS,
+        register_db_snapshot_job,
     )
 
     jobs: list[Any] = []
@@ -71,6 +81,15 @@ def register_all_retention_jobs(
             dry_run=dry_run,
         )
     )
+    if snapshot_root is not None and db_urls_for_snapshot is not None:
+        jobs.append(
+            register_db_snapshot_job(
+                scheduler,
+                snapshot_root=snapshot_root,
+                db_urls=db_urls_for_snapshot,
+                retention_days=snapshot_retention_days or SNAPSHOT_RETENTION_DAYS,
+            )
+        )
     return jobs
 
 

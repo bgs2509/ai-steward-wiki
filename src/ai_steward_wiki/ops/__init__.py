@@ -1,10 +1,11 @@
 # FILE: src/ai_steward_wiki/ops/__init__.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
-#   PURPOSE: Operational hygiene — PII redaction, retention purge, GDPR purge.
-#   SCOPE: Re-export public surface of ops.pii, ops.retention, ops.gdpr.
-#   DEPENDS: ai_steward_wiki.ops.{pii,retention,gdpr}
-#   LINKS: M-OPS-PII, D-034, D-035
+#   PURPOSE: Operational hygiene — PII redaction, retention purge, GDPR purge,
+#            db snapshot backup, per-WIKI git auto-commit.
+#   SCOPE: Re-export public surface of ops.{pii,retention,gdpr,snapshot,wiki_git}.
+#   DEPENDS: ai_steward_wiki.ops.{pii,retention,gdpr,snapshot,wiki_git}
+#   LINKS: M-OPS-PII, M-OPS-BACKUP, D-034, D-035, D-037
 #   ROLE: BARREL
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -21,10 +22,22 @@
 #   purge_staging - inbox _staging sweep wrapper
 #   purge_trash_sweep - final tier-1/tier-2 sweep over _trash content
 #   purge_user - GDPR admin endpoint
+#   SnapshotResult - outcome of one db_snapshot run
+#   DB_SNAPSHOT_JOB_ID - stable APScheduler id for the daily snapshot job
+#   SNAPSHOT_RETENTION_DAYS - 7d rolling retention constant
+#   snapshot_databases - run VACUUM INTO for each configured DB
+#   purge_old_snapshots - rolling 7d retention sweep
+#   register_db_snapshot_job - register cron 03:00 UTC daily
+#   COMMIT_FMT - canonical per-WIKI commit template
+#   GITIGNORE_ENTRIES - lines written into each WIKI .gitignore
+#   WikiGitError - raised when local git CLI fails
+#   init_wiki_git - idempotent git init + .gitignore writer
+#   format_commit_message - render canonical commit message
+#   auto_commit - stage-all + commit; no-op when nothing staged
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 13: M-OPS-PII initial barrel
+#   LAST_CHANGE: v0.0.2 - chunk 14: M-OPS-BACKUP barrel additions
 # END_CHANGE_SUMMARY
 
 from ai_steward_wiki.ops.gdpr import purge_user
@@ -42,17 +55,45 @@ from ai_steward_wiki.ops.retention import (
     register_retention_jobs,
     run_purge,
 )
+from ai_steward_wiki.ops.snapshot import (
+    DB_SNAPSHOT_JOB_ID,
+    SNAPSHOT_RETENTION_DAYS,
+    SnapshotResult,
+    purge_old_snapshots,
+    register_db_snapshot_job,
+    snapshot_databases,
+)
+from ai_steward_wiki.ops.wiki_git import (
+    COMMIT_FMT,
+    GITIGNORE_ENTRIES,
+    WikiGitError,
+    auto_commit,
+    format_commit_message,
+    init_wiki_git,
+)
 
 __all__ = [
+    "COMMIT_FMT",
+    "DB_SNAPSHOT_JOB_ID",
+    "GITIGNORE_ENTRIES",
     "RETENTION_POLICIES",
+    "SNAPSHOT_RETENTION_DAYS",
     "PIIRedactor",
     "PurgeResult",
     "RetentionPolicy",
+    "SnapshotResult",
+    "WikiGitError",
+    "auto_commit",
+    "format_commit_message",
+    "init_wiki_git",
     "make_structlog_processor",
+    "purge_old_snapshots",
     "purge_staging",
     "purge_trash_sweep",
     "purge_user",
     "redact",
+    "register_db_snapshot_job",
     "register_retention_jobs",
     "run_purge",
+    "snapshot_databases",
 ]
