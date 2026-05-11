@@ -22,14 +22,17 @@
 #   extract_user_zone - find user zone in body (or whole body if no markers)
 #   render_v2 - build full v2 CLAUDE.md from fm + managed + user content
 #   migrate_v1_to_v2 - atomic, idempotent linear migration on disk
+#   load_template - read templates/<id>.md and return (managed_text, sha256)
+#   TemplateNotFoundError - raised by load_template when template_id is unknown
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 8: frontmatter + v1->v2 linear migration
+#   LAST_CHANGE: v0.0.2 - chunk 15: load_template helper + sha256 computation
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from datetime import UTC, datetime
@@ -45,7 +48,9 @@ __all__ = [
     "USER_START",
     "Frontmatter",
     "FrontmatterError",
+    "TemplateNotFoundError",
     "extract_user_zone",
+    "load_template",
     "migrate_v1_to_v2",
     "parse_frontmatter",
     "render_frontmatter",
@@ -64,6 +69,20 @@ _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?(.*)\Z", re.DOTALL)
 
 class FrontmatterError(ValueError):
     """Raised when a CLAUDE.md frontmatter block cannot be parsed."""
+
+
+class TemplateNotFoundError(FileNotFoundError):
+    """Raised when load_template cannot locate templates/<id>.md."""
+
+
+def load_template(template_id: str, templates_dir: Path) -> tuple[str, str]:
+    """Return (managed_text, sha256_hex) for templates/<template_id>.md."""
+    path = templates_dir / f"{template_id}.md"
+    if not path.is_file():
+        raise TemplateNotFoundError(f"template not found: {path}")
+    managed = path.read_text(encoding="utf-8")
+    digest = hashlib.sha256(managed.encode("utf-8")).hexdigest()
+    return managed, digest
 
 
 class Frontmatter(BaseModel):
