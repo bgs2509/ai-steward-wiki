@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Breakdown epic="20260511-ai-steward-wiki-launch" generated_at_utc="2026-05-11T00:00:00Z">
+  <Meta>
+    <TargetRepo>/home/bgs/ai-steward/Gena_Beeline_Local/ai-steward-wiki</TargetRepo>
+    <ParentEpic>20260510-ai-steward-wiki-mvp (closed 17/17)</ParentEpic>
+    <Predecessors>chunk-18 M-RUNTIME-WIRING (done, 9ebd475); chunk-19 M-TG-HANDLERS-WIRING (done, 2acb542)</Predecessors>
+    <Model>claude-opus-4-7</Model>
+    <BudgetPerChunk>0.6</BudgetPerChunk>
+    <Lifecycle>TEMPORARY — archive directory unchanged after production cutover, do not maintain</Lifecycle>
+    <Policy>pre-Beads draft; bd_id appears only when a chunk is started via bd create</Policy>
+  </Meta>
+
+  <RunState>
+    <Status>planned</Status>
+    <CurrentChunk>20</CurrentChunk>
+    <ClosedChunks/>
+    <Notes>Chunks 18 and 19 closed under parent MVP epic without breakdown entries (handled directly via feature-workflow per chunk). This breakdown captures the remaining code-chunks up to production cutover.</Notes>
+  </RunState>
+
+  <Decisions>
+    <Decision id="DEC-L1">
+      <Question>Where does Stage-0 classifier output land?</Question>
+      <Choice>DefaultPipeline injects Classifier protocol; classifier.classify(text|transcript) → ClassifyResult{intent, domain, confidence, time_hint?}; result staged via Inbox.stage_text/stage_voice</Choice>
+      <Source>D-016, D-017 (already approved)</Source>
+    </Decision>
+    <Decision id="DEC-L2">
+      <Question>Streaming edits trigger</Question>
+      <Choice>StreamEditor activates only when WikiRunner.estimated_duration_s > 5 (D-026 threshold); otherwise single final deliver_output</Choice>
+      <Source>D-026 + observed CLI latency profile (chunks 7, 10)</Source>
+    </Decision>
+    <Decision id="DEC-L3">
+      <Question>Document mime routing</Question>
+      <Choice>application/pdf → ocr stage; text/* → inline stage; image/* → photo stage (existing); else → reject with "тип файла пока не поддерживается"</Choice>
+      <Source>D-022 (extension)</Source>
+    </Decision>
+  </Decisions>
+
+  <Chunks>
+    <Chunk id="20" bd_id="" title="M-TG-PIPELINE-CLASSIFIER — wire classifier+runner+deliver_output into DefaultPipeline" est_window="0.55" depends_on="aisw-ps8" module_id="M-TG-PIPELINE-CLASSIFIER">
+      <scope>
+        Replace ack-only responses in DefaultPipeline.on_text and on_voice with the full ingest pipeline:
+        Stage-0 Haiku Classifier → Inbox.stage_text/stage_voice (with L2 dedup on text-sha256) → WikiRunner.run (Stage-1a/1b Sonnet) → deliver_output (hybrid size policy).
+        Inject Classifier + Inbox + WikiRunner + DeliverOutput protocols via DefaultPipeline constructor (back-compat for None: fall back to current acks).
+        Add tg.pipeline.* log markers: classify.begin/done, inbox.staged, runner.dispatched, deliver.sent.
+      </scope>
+      <depends_on>
+        M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-INBOX (stage_text/stage_voice + L2 dedup),
+        M-TG-TEXT (deliver_output), M-TG-HANDLERS-WIRING (DefaultPipeline seam), M-RUNTIME-WIRING (constructor)
+      </depends_on>
+      <exit_criteria>
+        <criterion>DefaultPipeline.on_text("привет") invokes Classifier → Inbox → WikiRunner → deliver_output exactly once</criterion>
+        <criterion>L2 idempotency: identical text within window dedups at Inbox, no second WikiRunner spawn</criterion>
+        <criterion>__main__.py composes Classifier/WikiRunner/Inbox dependencies and passes to DefaultPipeline</criterion>
+        <criterion>Unit tests: ≥10 new tests covering happy path, L1 dedup, L2 dedup, classifier error → fallback ack, runner timeout → audit + safe reply</criterion>
+        <criterion>Integration test (RUN_INTEGRATION=1): real Claude CLI call replies non-empty text within 60s</criterion>
+        <criterion>Coverage ≥80%, grace-lint 0/0, INV 14/14, mypy --strict clean</criterion>
+      </exit_criteria>
+      <rationale>Closes the core MVP-launch gap: bot currently acks but does not invoke Claude. Building blocks all exist, this is composition only.</rationale>
+    </Chunk>
+
+    <Chunk id="21" bd_id="" title="M-TG-PIPELINE-STREAMING — wire StreamEditor for long-running WikiRunner jobs" est_window="0.40" depends_on="20" module_id="M-TG-PIPELINE-STREAMING">
+      <scope>
+        Wrap WikiRunner.run with StreamEditor (1.5s throttle, Δ50 chars, chain-split at 4000) when estimated_duration_s > 5 (DEC-L2).
+        Initial placeholder message ("Думаю…") edited in-place with streaming chunks; final flush guarantees full text even on exception (D-026).
+        Emit tg.pipeline.stream.{begin,chunk,final,error} log markers.
+      </scope>
+      <depends_on>chunk-20 (M-TG-PIPELINE-CLASSIFIER), M-TG-TEXT (StreamEditor), M-WIKI-RUNNER (estimated_duration_s metadata)</depends_on>
+      <exit_criteria>
+        <criterion>Slow runner (mock 10s) produces ≥3 edits to placeholder message before final</criterion>
+        <criterion>Fast runner (mock 1s) skips streaming, uses single deliver_output</criterion>
+        <criterion>Runner exception → final flush of accumulated text + audit log entry</criterion>
+        <criterion>chain-split at 4000 chars triggers new message with (i/M) footer (D-026)</criterion>
+        <criterion>Unit tests: ≥6 new tests; HTML-safe edit boundaries asserted; full quality gate green</criterion>
+      </exit_criteria>
+      <rationale>UX: 60s+ Claude responses without feedback feel like timeout. Streaming closes the perceived-latency gap.</rationale>
+    </Chunk>
+
+    <Chunk id="22" bd_id="" title="M-TG-DOCUMENT-FULL — document handler mime routing, staging, L2 dedup" est_window="0.35" depends_on="20" module_id="M-TG-DOCUMENT-FULL">
+      <scope>
+        Replace ack-only DefaultPipeline.on_document with mime-based routing (DEC-L3):
+        pdf → OCR stage (reuse photo OCR path), text/* → inline as text input, image/* → photo stage, else → polite rejection.
+        L2 dedup via Inbox.seen_files on doc_sha256 (D-018). Filename PII redaction tier-2 (existing M-OPS-PII).
+      </scope>
+      <depends_on>chunk-20, M-INBOX (seen_files L2), M-OPS-PII (filename tier-2 hash), M-TG-MEDIA (photo OCR reuse)</depends_on>
+      <exit_criteria>
+        <criterion>PDF upload → OCR → Inbox staged → WikiRunner reply</criterion>
+        <criterion>Plain .txt → inline text → classifier path</criterion>
+        <criterion>Unsupported mime → reject with ru-only message, no audit error</criterion>
+        <criterion>L2 dedup: identical doc within window → audit DedupHit, no re-staging</criterion>
+        <criterion>Unit tests: ≥8 new tests across 4 mime branches + dedup + rejection</criterion>
+      </exit_criteria>
+      <rationale>Document handler is the last category-level gap. Acks are acceptable as placeholder but not for launch.</rationale>
+    </Chunk>
+
+    <Chunk id="23" bd_id="" title="M-INTEGRATION-E2E — integration suite with real Claude CLI + aiogram test-client" est_window="0.45" depends_on="20,21,22" module_id="M-INTEGRATION-E2E">
+      <scope>
+        Add tests/integration/test_e2e_pipeline.py: spin up DefaultPipeline against real Claude CLI (gated by RUN_INTEGRATION=1) and a FakeAiogramBot.
+        Cover scenarios: text turn (classify → runner → deliver), voice turn (STT → classify → runner → deliver), confirm callback resolve, document PDF turn.
+        Add make integration target; document in runbook/operations.md.
+      </scope>
+      <depends_on>chunks 20, 21, 22; existing tests/integration scaffolding</depends_on>
+      <exit_criteria>
+        <criterion>RUN_INTEGRATION=1 uv run pytest tests/integration/test_e2e_pipeline.py passes locally in ≤180s</criterion>
+        <criterion>≥4 scenarios green: text, voice, photo+confirm, pdf</criterion>
+        <criterion>Make integration target added; CI nightly hook documented (not enabled — manual nightly)</criterion>
+      </exit_criteria>
+      <rationale>Unit tests assume mocks; integration is the final safety net before production cutover.</rationale>
+    </Chunk>
+  </Chunks>
+
+  <CutoverGate>
+    Production cutover is NOT a code chunk. After chunk 23 closes, follow docs/superpowers/plans/20260511-ai-steward-wiki-launch/cutover-checklist.md sequentially. Treat the checklist as a runbook with sign-off, not a development task.
+  </CutoverGate>
+</Breakdown>
