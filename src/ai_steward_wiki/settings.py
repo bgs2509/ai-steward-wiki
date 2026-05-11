@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/settings.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Runtime configuration loaded from environment via pydantic-settings.
 #   SCOPE: Settings BaseSettings (frozen). Initial fields cover Chunk 1 only;
@@ -18,7 +18,7 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - chunk 5: Stage-0 classifier fields + INV-6 validator
+#   LAST_CHANGE: v0.0.3 - chunk 8: wiki lifecycle fields (root, cap, retention, templates)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     wiki_runner_model: str = "claude-sonnet-4-5"
     wiki_runner_timeout_s: float = 300.0
     wiki_runner_term_grace_s: float = 10.0
+
+    # Chunk 8: M-WIKI-LIFECYCLE.
+    wiki_root: Path = Path("/var/lib/ai-steward-wiki/workspace/wikis")
+    wiki_max_per_user: int = 20
+    wiki_trash_retention_days: int = 30
+    wiki_template_dir: Path = Path("/opt/ai-steward-wiki/templates")
 
     @model_validator(mode="after")
     def _check_stage0_credential_isolation(self) -> Settings:
