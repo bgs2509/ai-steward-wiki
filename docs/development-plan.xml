@@ -94,5 +94,10 @@
       </target>
       <verification-ref>V-M-TG-HANDLERS-WIRING</verification-ref>
     </M-TG-HANDLERS-WIRING>
+    <M-CLAUDE-CLI-COMMON bd_id="aisw-d3i">
+      <target>
+        <source>src/ai_steward_wiki/claude_cli/common.py</source>
+      </target>
+    </M-CLAUDE-CLI-COMMON>
   </Modules>
 </DevelopmentPlan>

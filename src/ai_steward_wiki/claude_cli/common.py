@@ -6,7 +6,7 @@
 #          No subprocess spawning, no I/O, no Protocols — argv/env/cwd helpers only.
 #   DEPENDS: shutil, pathlib
 #   LINKS: M-CLAUDE-CLI-COMMON, M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, aisw-d3i
-#   ROLE: UTILITY
+#   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
