@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -111,8 +112,8 @@ class ClaudeCliBackend:
             "json",
             "--max-turns",
             "1",
-            "--append-system-prompt",
-            f"@{prompt_path}",
+            "--append-system-prompt-file",
+            str(prompt_path),
             "--disallowedTools",
             "Bash",
             "Read",
@@ -151,12 +152,51 @@ class ClaudeCliBackend:
                 f"claude CLI exited with rc={rc}; stderr={stderr.decode('utf-8', 'replace')[:512]}"
             )
         try:
-            data = json.loads(stdout.decode("utf-8"))
+            envelope = json.loads(stdout.decode("utf-8"))
         except json.JSONDecodeError as e:
             raise ClassifierSchemaError(f"claude CLI returned non-JSON: {stdout[:512]!r}") from e
-        if not isinstance(data, dict):
-            raise ClassifierSchemaError(f"claude CLI JSON is not an object: {type(data).__name__}")
-        return data
+        if not isinstance(envelope, dict):
+            raise ClassifierSchemaError(
+                f"claude CLI JSON is not an object: {type(envelope).__name__}"
+            )
+        return _unwrap_cli_envelope(envelope)
+
+
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
+
+
+def _unwrap_cli_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Extract the inner classifier JSON from a Claude CLI result envelope.
+
+    The CLI envelope looks like {type:"result", subtype:"success", result:"<text>", ...}.
+    The model is instructed (prompts/classifier.md) to put a strict JSON object into
+    `result`. Defensive: strip code fences if the model adds them anyway.
+    """
+    if envelope.get("is_error") is True or envelope.get("subtype") != "success":
+        raise ClassifierSchemaError(
+            f"claude CLI envelope not success: subtype={envelope.get('subtype')!r} "
+            f"api_error_status={envelope.get('api_error_status')!r}"
+        )
+    result_text = envelope.get("result")
+    if not isinstance(result_text, str):
+        raise ClassifierSchemaError(
+            f"claude CLI envelope missing string 'result': got {type(result_text).__name__}"
+        )
+    candidate = result_text.strip()
+    fence_match = _FENCE_RE.match(candidate)
+    if fence_match is not None:
+        candidate = fence_match.group(1).strip()
+    try:
+        inner = json.loads(candidate)
+    except json.JSONDecodeError as e:
+        raise ClassifierSchemaError(
+            f"claude CLI inner JSON parse failed: {result_text[:256]!r}"
+        ) from e
+    if not isinstance(inner, dict):
+        raise ClassifierSchemaError(
+            f"claude CLI inner JSON is not an object: {type(inner).__name__}"
+        )
+    return inner
 
 
 @dataclass
