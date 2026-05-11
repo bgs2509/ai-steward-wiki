@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.3
+# VERSION: 0.0.4
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -11,7 +11,7 @@
 #            ai_steward_wiki.claude_cli.common (M-CLAUDE-CLI-COMMON),
 #            ai_steward_wiki.wiki.{acquire,streaming},
 #            ai_steward_wiki.scheduler.core (kill_with_sequence)
-#   LINKS: M-WIKI-RUNNER, M-CLAUDE-CLI-COMMON, D-007, D-011, D-012, D-021, aisw-d3i
+#   LINKS: M-WIKI-RUNNER, M-CLAUDE-CLI-COMMON, D-007, D-011, D-012, D-021, aisw-d3i, aisw-0mg
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -29,7 +29,15 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - aisw-adj: inherit inline `--system-prompt` via
+#   LAST_CHANGE: v0.0.4 - aisw-0mg: add -p, --setting-sources "",
+#                         --disable-slash-commands to argv. Under subscription
+#                         OAuth, default Claude Code system prompt + skills +
+#                         user/project settings are loaded regardless of
+#                         --system-prompt; isolation flags drop them. Verified
+#                         2026-05-12 (claude 2.1.139): cache_creation_input_tokens
+#                         goes from ~10k to 0. --tools is NOT zeroed for Stage-1
+#                         (wiki edits require Read/Write/Edit).
+#   PREVIOUS:    v0.0.3 - aisw-adj: inherit inline `--system-prompt` via
 #                         system_prompt_argv. `--system-prompt-file` does NOT
 #                         replace the default Claude Code system prompt under
 #                         subscription auth (verified 2026-05-12, claude 2.1.139);
@@ -231,11 +239,15 @@ def _build_argv(
 ) -> list[str]:
     argv: list[str] = [
         binary,
+        "-p",
         "--model",
         model,
         "--add-dir",
         str(wiki_path),
         *system_prompt_argv(prompt_path),
+        "--setting-sources",
+        "",
+        "--disable-slash-commands",
         "--output-format",
         "stream-json",
         "--permission-mode",

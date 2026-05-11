@@ -101,6 +101,12 @@ async def test_run_wiki_session_happy_path(
     assert "--system-prompt-file" not in argv
     assert "--append-system-prompt" not in argv
     assert not any(str(a).startswith("@") for a in argv)
+    # aisw-0mg: -p + isolation flags required so default Claude Code persona
+    # does not leak into Stage-1 wiki edits under subscription OAuth.
+    assert "-p" in argv
+    ss = argv.index("--setting-sources")
+    assert argv[ss + 1] == ""
+    assert "--disable-slash-commands" in argv
     # FR-3: cwd is the neutral claude_config_dir, not the wiki path.
     assert spawner.calls[0]["cwd"] == str(cfg_dir)
     # env: CLAUDE_CONFIG_DIR + minimal PATH.

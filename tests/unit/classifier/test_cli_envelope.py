@@ -111,3 +111,13 @@ async def test_inlines_system_prompt_and_neutral_cwd(prompt_file: Path) -> None:
     assert "--append-system-prompt-file" not in argv
     assert f"@{prompt_file}" not in argv
     assert call["cwd"] == "/tmp/fake-claude-config"
+    # aisw-0mg: subscription OAuth requires -p + isolation to suppress
+    # default Claude Code persona (cache_creation_input_tokens → 0).
+    assert "-p" in argv
+    ss = argv.index("--setting-sources")
+    assert argv[ss + 1] == ""
+    assert "--disable-slash-commands" in argv
+    t = argv.index("--tools")
+    assert argv[t + 1] == ""
+    # old long --disallowedTools list replaced by --tools "".
+    assert "--disallowedTools" not in argv

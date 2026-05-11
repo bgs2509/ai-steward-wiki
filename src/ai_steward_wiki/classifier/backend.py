@@ -1,12 +1,12 @@
 # FILE: src/ai_steward_wiki/classifier/backend.py
-# VERSION: 0.0.5
+# VERSION: 0.0.6
 # START_MODULE_CONTRACT
 #   PURPOSE: Backend abstraction for Stage-0 classifier — Claude CLI default + optional API + Fake.
 #   SCOPE: ClassifierBackend Protocol; ClaudeCliBackend (subprocess); AnthropicApiBackend stub;
 #          FakeClaudeRunner test double; Spawner Protocol seam for chunk 16 systemd-run wrap.
 #   DEPENDS: asyncio, json, ai_steward_wiki.classifier.schema,
 #            ai_steward_wiki.claude_cli.common (M-CLAUDE-CLI-COMMON)
-#   LINKS: M-CLASSIFIER-STAGE0, M-CLAUDE-CLI-COMMON, D-009, D-013, INV-6, aisw-d3i
+#   LINKS: M-CLASSIFIER-STAGE0, M-CLAUDE-CLI-COMMON, D-009, D-013, INV-6, aisw-d3i, aisw-0mg
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -21,7 +21,15 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.5 - aisw-adj: inherit inline `--system-prompt` via
+#   LAST_CHANGE: v0.0.6 - aisw-0mg: add -p (required for --output-format json),
+#                         --setting-sources "", --disable-slash-commands, --tools "".
+#                         Replaces long --disallowedTools list. Under subscription
+#                         OAuth, --system-prompt alone does NOT suppress default
+#                         Claude Code persona; isolation flags drop
+#                         cache_creation_input_tokens from ~10k to 0. Verified
+#                         2026-05-12 with input 'что ты умеешь' returning valid
+#                         classifier JSON. Supersedes aisw-adj root cause.
+#   PREVIOUS:    v0.0.5 - aisw-adj: inherit inline `--system-prompt` via
 #                         system_prompt_argv (file form does not replace under
 #                         subscription auth). No local code change.
 #   PREVIOUS:    v0.0.4 - aisw-d3i: import shared invocation primitives from
@@ -136,6 +144,7 @@ class ClaudeCliBackend:
     def _argv(self, prompt_path: Path) -> list[str]:
         return [
             self.binary,
+            "-p",
             "--model",
             self.model,
             "--output-format",
@@ -143,14 +152,11 @@ class ClaudeCliBackend:
             "--max-turns",
             "1",
             *system_prompt_argv(prompt_path),
-            "--disallowedTools",
-            "Bash",
-            "Read",
-            "Write",
-            "Edit",
-            "Glob",
-            "Grep",
-            "WebFetch",
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
+            "--tools",
+            "",
             "--permission-mode",
             "dontAsk",
         ]
