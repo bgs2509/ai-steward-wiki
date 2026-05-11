@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <KnowledgeGraph>
-  <Project NAME="ai-steward-wiki" VERSION="0.0.2">
+  <Project NAME="ai-steward-wiki" VERSION="0.0.3">
     <keywords>telegram, claude-code, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
     <annotation>Isolated multi-user Telegram service that wraps Claude Code CLI as a personal WIKI assistant (Karpathy LLM Wiki method). Foundation chunk: settings, structured logging, three-DB storage scaffold (jobs/audit/sessions), users.toml allowlist + SIGHUP/watchdog hot-reload.</annotation>
 
@@ -116,6 +116,27 @@
       </annotations>
     </M-STORAGE-SESSIONS>
 
+    <M-RUNTIME-WIRING NAME="Runtime wiring / __main__" TYPE="RUNTIME" STATUS="done">
+      <purpose>Process entrypoint (python -m ai_steward_wiki). Composes Settings, per-DB alembic migrations, engines, allowlist sync, APScheduler, aiogram Bot+Dispatcher; runs long-polling with graceful SIGINT/SIGTERM shutdown.</purpose>
+      <path>src/ai_steward_wiki/__main__.py</path>
+      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS</depends>
+      <verification-ref>V-M-RUNTIME-WIRING</verification-ref>
+      <annotations>
+        <fn-main PURPOSE="sync wrapper: asyncio.run(_amain())"/>
+        <fn-_amain PURPOSE="full async lifecycle (bootstrap, polling, shutdown)"/>
+        <fn-_sync_url_for_jobstore PURPOSE="strip aiosqlite driver from URL for SQLAlchemyJobStore"/>
+        <fn-_ensure_data_dirs PURPOSE="mkdir parents for sqlite file URLs"/>
+        <fn-_run_all_migrations PURPOSE="alembic upgrade head per-DB via asyncio.to_thread"/>
+        <fn-_load_users_config PURPOSE="load users.toml or return empty config when path missing"/>
+        <fn-_install_signal_handlers PURPOSE="wire SIGINT/SIGTERM to stop event"/>
+      </annotations>
+    </M-RUNTIME-WIRING>
+
+    <CrossLink from="M-RUNTIME-WIRING" to="M-FOUNDATION-SETTINGS" relation="reads Settings (tokens, db urls, users_toml_path)"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-AUTH-USERS" relation="loads users.toml then sync_to_sessions_db + replace_global"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-STORAGE-JOBS" relation="alembic upgrade head + build_engine"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-STORAGE-AUDIT" relation="alembic upgrade head + build_engine"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-STORAGE-SESSIONS" relation="alembic upgrade head + build_engine + build_sessionmaker"/>
     <CrossLink from="M-FOUNDATION-LOGGING" to="M-FOUNDATION-SETTINGS" relation="reads log_level"/>
     <CrossLink from="M-AUTH-USERS" to="M-STORAGE-SESSIONS" relation="syncs users.toml snapshot to sessions.users table"/>
     <CrossLink from="M-STORAGE-JOBS" to="M-STORAGE" relation="uses apply_sqlite_pragmas in build_engine"/>

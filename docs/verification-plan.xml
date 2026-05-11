@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.2">
+<VerificationPlan VERSION="0.0.3">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -99,5 +99,26 @@
       <log-markers/>
       <evidence>users/pending_users/pending_confirms/inbox_hint_cache/fsm tables; PRAGMAs verified.</evidence>
     </V-M-STORAGE-SESSIONS>
+
+    <V-M-RUNTIME-WIRING MODULE="M-RUNTIME-WIRING">
+      <tests>
+        <test path="tests/unit/test_runtime_wiring.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/test_runtime_wiring.py -q</cmd>
+        <cmd>uv run python -m ai_steward_wiki  # manual smoke with AISW_TG_BOT_TOKEN_LOCAL</cmd>
+      </commands>
+      <log-markers>
+        <marker>runtime.start</marker>
+        <marker>runtime.migrations.begin</marker>
+        <marker>runtime.migrations.done</marker>
+        <marker>runtime.allowlist.loaded</marker>
+        <marker>runtime.scheduler.started</marker>
+        <marker>runtime.polling.start</marker>
+        <marker>runtime.signal.received</marker>
+        <marker>runtime.shutdown.done</marker>
+      </log-markers>
+      <evidence>13 unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. Manual smoke: `python -m ai_steward_wiki` starts, logs polling.start, Ctrl-C → shutdown.done, exit 0.</evidence>
+    </V-M-RUNTIME-WIRING>
   </Modules>
 </VerificationPlan>
