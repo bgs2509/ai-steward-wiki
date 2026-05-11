@@ -32,6 +32,7 @@ build/
 # state / runtime
 state/
 *.wiki.lock
+data/
 
 # sentrux scratch
 .sentrux/baselines/
