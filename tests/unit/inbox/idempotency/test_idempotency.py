@@ -41,7 +41,7 @@ def test_normalize_text_nfkc_strip_lower_collapse() -> None:
     assert normalize_text("  Hello\u00a0WORLD\n\tfoo  ") == "hello world foo"
     assert normalize_text("\uff21\uff22\uff23  \uff11\uff12\uff13") == "abc 123"
     # Whitespace-noise invariance, Cyrillic input.
-    assert normalize_text("Привет   Мир") == normalize_text("\nпривет мир\n")  # noqa: RUF001
+    assert normalize_text("Привет   Мир") == normalize_text("\nпривет мир\n")
 
 
 def test_compute_content_hash_text_is_normalization_invariant() -> None:

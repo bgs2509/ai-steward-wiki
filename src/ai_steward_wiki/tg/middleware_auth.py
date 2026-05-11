@@ -19,7 +19,7 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 10: allowlist gate + deny logging
+#   LAST_CHANGE: v0.0.2 - chunk 12: allow `/start` from unknown ids to reach onboarding handler
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -33,9 +33,29 @@ from aiogram.types import TelegramObject
 
 from ai_steward_wiki.auth.allowlist import Allowlist
 
+__all__ = [
+    "DENY_TEXT_RU",
+    "AllowlistMiddleware",
+]
+
 _log = structlog.get_logger("tg.auth")
 
 DENY_TEXT_RU = "Извини, доступ к этому боту ограничен."
+
+_START_COMMAND_PREFIX = "/start"
+
+
+def _is_start_command(event: TelegramObject) -> bool:
+    """True if the (Message inside an) event is `/start` (with optional payload)."""
+    # Drill into Update→message if needed.
+    msg = event if hasattr(event, "text") else getattr(event, "message", None)
+    text = getattr(msg, "text", None)
+    if not isinstance(text, str):
+        return False
+    head = text.strip().split(maxsplit=1)[0]
+    # Strip @bot_name suffix if Telegram added it.
+    head = head.split("@", maxsplit=1)[0]
+    return head == _START_COMMAND_PREFIX
 
 
 def _extract_telegram_user(event: TelegramObject) -> tuple[int | None, int | None]:
@@ -77,6 +97,20 @@ class AllowlistMiddleware(BaseMiddleware):
 
         record = self._allowlist.get_user(telegram_id)
         if record is None:
+            # /start is the onboarding entry point — let it through so the
+            # handler can record a pending_users row. All other commands
+            # remain gated. (Chunk 12 / M-ONBOARD-ADMIN.)
+            if _is_start_command(event):
+                _log.info(
+                    "auth.deny.bypass_start",
+                    telegram_id=telegram_id,
+                    chat_id=chat_id,
+                )
+                data["telegram_id"] = telegram_id
+                data["user_record"] = None
+                data["is_pending"] = True
+                return await handler(event, data)
+
             _log.info(
                 "auth.deny",
                 telegram_id=telegram_id,
@@ -93,4 +127,5 @@ class AllowlistMiddleware(BaseMiddleware):
 
         data["user_record"] = record
         data["telegram_id"] = telegram_id
+        data["is_pending"] = False
         return await handler(event, data)

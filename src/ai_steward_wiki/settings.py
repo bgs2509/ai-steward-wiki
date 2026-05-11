@@ -13,12 +13,13 @@
 # START_MODULE_MAP
 #   LogLevel - Literal alias for accepted log levels
 #   Stage0Backend - Literal alias for Stage-0 classifier backends (D-009)
+#   TenancyMode - Literal alias for single|multi admin tenancy (chunk 12)
 #   Settings - frozen pydantic-settings BaseSettings, env-prefixed AISW_
 #   get_settings - cached accessor returning the singleton Settings instance
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - chunk 8: wiki lifecycle fields (root, cap, retention, templates)
+#   LAST_CHANGE: v0.0.4 - chunk 12: tenancy_mode, admin_chat_id, admin_elevation_ttl_minutes, pending_user_ttl_days
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -30,8 +31,17 @@ from typing import Literal
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+__all__ = [
+    "LogLevel",
+    "Settings",
+    "Stage0Backend",
+    "TenancyMode",
+    "get_settings",
+]
+
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 Stage0Backend = Literal["claude_cli", "anthropic_api"]
+TenancyMode = Literal["single", "multi"]
 
 
 class Settings(BaseSettings):
@@ -69,6 +79,12 @@ class Settings(BaseSettings):
     wiki_max_per_user: int = 20
     wiki_trash_retention_days: int = 30
     wiki_template_dir: Path = Path("/opt/ai-steward-wiki/templates")
+
+    # Chunk 12: M-ONBOARD-ADMIN.
+    tenancy_mode: TenancyMode = "single"
+    admin_chat_id: int | None = None
+    admin_elevation_ttl_minutes: int = 30
+    pending_user_ttl_days: int = 14
 
     @model_validator(mode="after")
     def _check_stage0_credential_isolation(self) -> Settings:

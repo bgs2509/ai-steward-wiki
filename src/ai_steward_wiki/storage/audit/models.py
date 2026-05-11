@@ -23,7 +23,7 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - 10 tables per D-006 amendment 2026-05-10
+#   LAST_CHANGE: v0.0.3 - chunk 12: AdminEvent extended with target_telegram_id, outcome, reason (additive)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -41,6 +41,19 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ai_steward_wiki.storage.audit.engine import Base
+
+__all__ = [
+    "AdminEvent",
+    "AuditEvent",
+    "ChatLog",
+    "DedupHit",
+    "JobOutput",
+    "OnboardingEvent",
+    "PromptVersion",
+    "RunOutput",
+    "SeenFile",
+    "TgUpdate",
+]
 
 
 class ChatLog(Base):
@@ -76,6 +89,10 @@ class AdminEvent(Base):
     target: Mapped[str | None] = mapped_column(String(255), nullable=True)
     expires_at_utc: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at_utc: Mapped[datetime] = mapped_column(nullable=False, index=True)
+    # Chunk 12 additive: structured admin trail (D-028 + step-12 plan).
+    target_telegram_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class TgUpdate(Base):
