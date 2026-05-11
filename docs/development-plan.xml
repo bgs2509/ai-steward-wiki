@@ -26,7 +26,7 @@
     <Phase-22 NAME="TG document full handler" STATUS="planned" bd_id="aisw-wku">
       <description>Mime-routing in on_document (DEC-L3): pdf→OCR, text/*→inline, image/*→photo path, else reject. L2 dedup on doc_sha256. Filename PII tier-2 hash. SSoT: launch breakdown chunk-22.</description>
     </Phase-22>
-    <Phase-23 NAME="Integration E2E suite" STATUS="planned">
+    <Phase-23 NAME="Integration E2E suite" STATUS="done" bd_id="aisw-vb9">
       <description>tests/integration/test_e2e_pipeline.py against real Claude CLI + FakeAiogramBot. 4 scenarios: text, voice, photo+confirm, pdf. make integration target. SSoT: launch breakdown chunk-23. Last gate before production cutover (see cutover-checklist.md).</description>
     </Phase-23>
   </Phases>

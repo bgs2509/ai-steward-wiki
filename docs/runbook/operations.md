@@ -80,3 +80,54 @@
 | Scheduler tick | `journalctl -u aisw-bot -g 'scheduler.*tick'` | every minute |
 | State-DB writable | last `audit.db` insert via `journalctl -u aisw-bot -g 'audit.write'` | recent (≤ user activity) |
 | Snapshot job | `journalctl -u aisw-bot -g 'db_snapshot' --since "26 hours ago"` | exactly one success line |
+
+
+## Integration testing (chunk 23 — M-INTEGRATION-E2E)
+
+> Last-resort safety net before each production cutover. Exercises `DefaultPipeline` against the **real Claude CLI classifier** with fake runner/output collaborators. Latency budget ≤ 180 s for 4 scenarios.
+
+### Gate
+
+The integration suite is **opt-in**. It runs only when both conditions hold:
+
+1. `RUN_INTEGRATION=1` environment variable is set.
+2. The `claude` binary is on `PATH` (subscription auth via `CLAUDE_CONFIG_DIR`).
+
+When either is missing, every test under `tests/integration/` is skipped silently — `make total-test` stays green on dev boxes without a Claude subscription.
+
+### Command
+
+```bash
+RUN_INTEGRATION=1 CLAUDE_CONFIG_DIR=/var/lib/ai-steward-wiki/claude-code \
+  uv run pytest tests/integration -v
+```
+
+Or via the Makefile target:
+
+```bash
+make test-integration
+```
+
+### Cadence
+
+- **Manual nightly** before each cutover window. No CI auto-trigger (subscription token cost; recursive `claude` invocation footgun).
+- Run from the dev VPS (`/opt/ai-steward-wiki`) or a developer workstation with the same `CLAUDE_CONFIG_DIR` mounted/copied.
+
+### Scenarios
+
+| File | Scenarios | Real components |
+|------|-----------|-----------------|
+| `tests/integration/test_e2e_pipeline.py` | text turn, voice turn, photo + explicit confirm, PDF document | Claude CLI Stage-0 classifier |
+| `tests/integration/test_pipeline_classifier_e2e.py` | chunk-20 wiring regression | Claude CLI Stage-0 classifier |
+| `tests/integration/classifier/test_real_cli.py` | low-level `ClaudeCliBackend.classify` | Claude CLI |
+
+Runner Stage-1a/1b is **faked** in all scenarios — keeps wall-time inside the 180 s budget while still exercising the full pipeline composition.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| All tests skipped | Gate var or binary missing | `export RUN_INTEGRATION=1`; verify `which claude` |
+| `subprocess.TimeoutExpired` | Claude CLI cold start or quota | Re-run; check subscription dashboard |
+| `OperationalError: database is locked` | Stale tmp_path artefacts | `rm -rf /tmp/pytest-*`; re-run |
+| `_extract_pdf_text` empty | Latin-1 PDF stream — pypdf cannot decode | Accepted: scenario assertion tolerates either branch |

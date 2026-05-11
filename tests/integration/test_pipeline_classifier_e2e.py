@@ -3,7 +3,8 @@
 Uses the real Claude CLI classifier backend with a fake runner+output to verify
 the DefaultPipeline composition reaches the runner with a valid Intent within
 the agreed latency budget. Gated by RUN_CLAUDE_CLI_INTEGRATION=1 because real
-`claude` CLI invocation is environment-sensitive.
+`claude` CLI invocation is environment-sensitive. Gate unified to RUN_INTEGRATION=1
+in chunk 23 (M-INTEGRATION-E2E) for Makefile parity.
 """
 
 from __future__ import annotations
@@ -47,8 +48,8 @@ PROMPT = REPO_ROOT / "prompts" / "classifier.md"
 
 pytestmark = [
     pytest.mark.skipif(
-        os.environ.get("RUN_CLAUDE_CLI_INTEGRATION") != "1",
-        reason="set RUN_CLAUDE_CLI_INTEGRATION=1 to enable",
+        os.environ.get("RUN_INTEGRATION") != "1",
+        reason="set RUN_INTEGRATION=1 to enable",
     ),
     pytest.mark.skipif(shutil.which("claude") is None, reason="`claude` binary not on PATH"),
 ]

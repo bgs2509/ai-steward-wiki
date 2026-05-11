@@ -1,8 +1,7 @@
 """Integration test for ClaudeCliBackend against the real `claude` binary.
 
 Gated by:
-  - RUN_CLAUDE_CLI_INTEGRATION=1 environment variable (separate from RUN_INTEGRATION
-    because recursive `claude` invocation is environment-sensitive — opt-in only)
+  - RUN_INTEGRATION=1 environment variable (unified gate after chunk-23)
   - presence of the `claude` binary on PATH
   - presence of CLAUDE_CONFIG_DIR with a usable subscription session
 
@@ -24,8 +23,8 @@ PROMPT = REPO_ROOT / "prompts" / "classifier.md"
 
 pytestmark = [
     pytest.mark.skipif(
-        os.environ.get("RUN_CLAUDE_CLI_INTEGRATION") != "1",
-        reason="set RUN_CLAUDE_CLI_INTEGRATION=1 to enable",
+        os.environ.get("RUN_INTEGRATION") != "1",
+        reason="set RUN_INTEGRATION=1 to enable",
     ),
     pytest.mark.skipif(shutil.which("claude") is None, reason="`claude` binary not on PATH"),
 ]

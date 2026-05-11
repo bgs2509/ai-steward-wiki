@@ -92,7 +92,7 @@
       <rationale>Document handler is the last category-level gap. Acks are acceptable as placeholder but not for launch.</rationale>
     </Chunk>
 
-    <Chunk id="23" bd_id="" title="M-INTEGRATION-E2E — integration suite with real Claude CLI + aiogram test-client" est_window="0.45" depends_on="20,21,22" module_id="M-INTEGRATION-E2E">
+    <Chunk id="23" bd_id="aisw-vb9" title="M-INTEGRATION-E2E — integration suite with real Claude CLI + aiogram test-client" est_window="0.45" depends_on="20,21,22" module_id="M-INTEGRATION-E2E">
       <scope>
         Add tests/integration/test_e2e_pipeline.py: spin up DefaultPipeline against real Claude CLI (gated by RUN_INTEGRATION=1) and a FakeAiogramBot.
         Cover scenarios: text turn (classify → runner → deliver), voice turn (STT → classify → runner → deliver), confirm callback resolve, document PDF turn.
