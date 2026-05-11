@@ -49,32 +49,39 @@ def _envelope(result_text: str, *, subtype: str = "success", is_error: bool = Fa
     ).encode("utf-8")
 
 
-async def test_unwraps_inner_classifier_json() -> None:
+@pytest.fixture
+def prompt_file(tmp_path: Path) -> Path:
+    p = tmp_path / "classifier.md"
+    p.write_text("CLASSIFIER PROMPT\n", encoding="utf-8")
+    return p
+
+
+async def test_unwraps_inner_classifier_json(prompt_file: Path) -> None:
     inner = {"intent": "reminder", "confidence": 0.92, "distilled_payload": {"foo": "bar"}}
     spawner = _StubSpawner(stdout=_envelope(json.dumps(inner)))
     backend = _make_backend(spawner)
-    out = await backend.call(text="напомни завтра", prompt_path=Path("p"), correlation_id="c")
+    out = await backend.call(text="напомни завтра", prompt_path=prompt_file, correlation_id="c")
     assert out == inner
 
 
-async def test_strips_code_fences() -> None:
+async def test_strips_code_fences(prompt_file: Path) -> None:
     inner = {"intent": "wiki_query", "confidence": 0.7, "distilled_payload": {}}
     fenced = f"```json\n{json.dumps(inner)}\n```"
     spawner = _StubSpawner(stdout=_envelope(fenced))
     backend = _make_backend(spawner)
-    out = await backend.call(text="t", prompt_path=Path("p"), correlation_id="c")
+    out = await backend.call(text="t", prompt_path=prompt_file, correlation_id="c")
     assert out == inner
 
 
-async def test_conversational_text_raises_schema_error() -> None:
+async def test_conversational_text_raises_schema_error(prompt_file: Path) -> None:
     """Real failure shape captured 2026-05-11 — model defaulted to assistant persona."""
     spawner = _StubSpawner(stdout=_envelope("Привет! 👋 Я могу помочь тебе с проектом."))
     backend = _make_backend(spawner)
     with pytest.raises(ClassifierSchemaError, match="inner JSON parse failed"):
-        await backend.call(text="Привет", prompt_path=Path("p"), correlation_id="c")
+        await backend.call(text="Привет", prompt_path=prompt_file, correlation_id="c")
 
 
-async def test_error_envelope_raises() -> None:
+async def test_error_envelope_raises(prompt_file: Path) -> None:
     spawner = _StubSpawner(
         stdout=json.dumps(
             {"type": "result", "subtype": "error", "is_error": True, "api_error_status": 500}
@@ -82,23 +89,25 @@ async def test_error_envelope_raises() -> None:
     )
     backend = _make_backend(spawner)
     with pytest.raises(ClassifierSchemaError, match="not success"):
-        await backend.call(text="t", prompt_path=Path("p"), correlation_id="c")
+        await backend.call(text="t", prompt_path=prompt_file, correlation_id="c")
 
 
-async def test_uses_system_prompt_file_and_neutral_cwd() -> None:
-    """System prompt must REPLACE (not append) to suppress default Claude Code persona,
-    and cwd must be neutral so project CLAUDE.md is not auto-discovered."""
+async def test_inlines_system_prompt_and_neutral_cwd(prompt_file: Path) -> None:
+    """System prompt content must be inlined via `--system-prompt` (not `--system-prompt-file`
+    — the file form does NOT replace the default Claude Code system prompt under subscription
+    auth; verified 2026-05-12, bd aisw-adj). cwd must be neutral so project CLAUDE.md is not
+    auto-discovered."""
     inner = {"intent": "unknown", "confidence": 0.5, "distilled_payload": {}}
     spawner = _StubSpawner(stdout=_envelope(json.dumps(inner)))
     backend = _make_backend(spawner)
-    prompt_path = Path("/tmp/classifier.md")
-    await backend.call(text="t", prompt_path=prompt_path, correlation_id="c")
+    await backend.call(text="t", prompt_path=prompt_file, correlation_id="c")
     call = spawner.calls[0]
     argv = call["argv"]
-    assert "--system-prompt-file" in argv
-    idx = argv.index("--system-prompt-file")
-    assert argv[idx + 1] == str(prompt_path)
+    assert "--system-prompt" in argv
+    idx = argv.index("--system-prompt")
+    assert argv[idx + 1] == "CLASSIFIER PROMPT\n"
+    assert "--system-prompt-file" not in argv
     assert "--append-system-prompt" not in argv
     assert "--append-system-prompt-file" not in argv
-    assert f"@{prompt_path}" not in argv
+    assert f"@{prompt_file}" not in argv
     assert call["cwd"] == "/tmp/fake-claude-config"

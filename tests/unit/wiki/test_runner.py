@@ -94,8 +94,11 @@ async def test_run_wiki_session_happy_path(
     assert "--add-dir" in argv
     assert str(wiki) in argv
     assert "stream-json" in argv
-    # FR-2: replace flag form. No @-prefix on prompt path, no --append-system-prompt.
-    assert "--system-prompt-file" in argv
+    # FR-2: inline replace form. `--system-prompt-file` does NOT replace the default
+    # Claude Code system prompt under subscription auth (verified 2026-05-12, bd aisw-adj);
+    # content must be inlined via `--system-prompt`. No @-prefix on prompt path, no append.
+    assert "--system-prompt" in argv
+    assert "--system-prompt-file" not in argv
     assert "--append-system-prompt" not in argv
     assert not any(str(a).startswith("@") for a in argv)
     # FR-3: cwd is the neutral claude_config_dir, not the wiki path.

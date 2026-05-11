@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/classifier/backend.py
-# VERSION: 0.0.4
+# VERSION: 0.0.5
 # START_MODULE_CONTRACT
 #   PURPOSE: Backend abstraction for Stage-0 classifier — Claude CLI default + optional API + Fake.
 #   SCOPE: ClassifierBackend Protocol; ClaudeCliBackend (subprocess); AnthropicApiBackend stub;
@@ -21,7 +21,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.4 - aisw-d3i: import shared invocation primitives from
+#   LAST_CHANGE: v0.0.5 - aisw-adj: inherit inline `--system-prompt` via
+#                         system_prompt_argv (file form does not replace under
+#                         subscription auth). No local code change.
+#   PREVIOUS:    v0.0.4 - aisw-d3i: import shared invocation primitives from
 #                         M-CLAUDE-CLI-COMMON (resolve_binary, build_env,
 #                         neutral_cwd, system_prompt_argv, truncate_stderr).
 #                         No behaviour change; eliminates duplication with

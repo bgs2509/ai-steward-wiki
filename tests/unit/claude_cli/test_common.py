@@ -45,9 +45,15 @@ def test_neutral_cwd_equals_claude_config_dir() -> None:
     assert neutral_cwd(Path("/var/lib/aisw/claude-code")) == Path("/var/lib/aisw/claude-code")
 
 
-def test_system_prompt_argv_uses_replace_flag() -> None:
-    argv = system_prompt_argv(Path("/tmp/prompt.md"))
-    assert argv == ["--system-prompt-file", "/tmp/prompt.md"]
+def test_system_prompt_argv_inlines_file_content(tmp_path: Path) -> None:
+    # `--system-prompt-file` does NOT replace the default Claude Code system prompt
+    # under subscription auth (verified 2026-05-12, claude 2.1.139, bd aisw-adj).
+    # The helper must inline the file content via `--system-prompt`.
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("hello system\n", encoding="utf-8")
+    argv = system_prompt_argv(prompt)
+    assert argv == ["--system-prompt", "hello system\n"]
+    assert "--system-prompt-file" not in argv
     assert "--append-system-prompt" not in argv
     assert "--append-system-prompt-file" not in argv
 

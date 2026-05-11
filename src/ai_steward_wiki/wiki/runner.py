@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -29,7 +29,13 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-d3i: fix Claude CLI invocation. Replace
+#   LAST_CHANGE: v0.0.3 - aisw-adj: inherit inline `--system-prompt` via
+#                         system_prompt_argv. `--system-prompt-file` does NOT
+#                         replace the default Claude Code system prompt under
+#                         subscription auth (verified 2026-05-12, claude 2.1.139);
+#                         wiki prompt is now passed as inline content. No local
+#                         code change — fix is in M-CLAUDE-CLI-COMMON.
+#   PREVIOUS:    v0.0.2 - aisw-d3i: fix Claude CLI invocation. Replace
 #                         --append-system-prompt @path with --system-prompt-file
 #                         <path>; run CLI in neutral cwd (claude_config_dir) so
 #                         project CLAUDE.md is not auto-discovered; drain stderr

@@ -1,11 +1,11 @@
 # FILE: src/ai_steward_wiki/claude_cli/common.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Pure-function primitives shared by Stage-0 (classifier) and Stage-1 (wiki) Claude CLI backends.
 #   SCOPE: resolve_binary, build_env, neutral_cwd, system_prompt_argv, truncate_stderr.
-#          No subprocess spawning, no I/O, no Protocols — argv/env/cwd helpers only.
+#          No subprocess spawning; system_prompt_argv reads the prompt file (small text I/O).
 #   DEPENDS: shutil, pathlib
-#   LINKS: M-CLAUDE-CLI-COMMON, M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, aisw-d3i
+#   LINKS: M-CLAUDE-CLI-COMMON, M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, aisw-d3i, aisw-adj
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -14,12 +14,16 @@
 #   resolve_binary - shutil.which absolute-path resolver with /-path short-circuit
 #   build_env - restricted env dict (CLAUDE_CONFIG_DIR + minimal PATH) for CLI subprocess
 #   neutral_cwd - working directory that does NOT auto-discover project CLAUDE.md
-#   system_prompt_argv - flag fragment replacing default Claude Code system prompt
+#   system_prompt_argv - inlines prompt file content via --system-prompt (replaces default)
 #   truncate_stderr - UTF-8 decode + length cap for error log lines
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - initial extraction of duplicated invocation primitives (aisw-d3i)
+#   LAST_CHANGE: v0.0.2 - aisw-adj: switch system_prompt_argv from --system-prompt-file
+#                         to inline --system-prompt with file content. The file form does
+#                         NOT replace the default Claude Code system prompt under
+#                         subscription auth (verified 2026-05-12, claude 2.1.139).
+#   PREVIOUS:    v0.0.1 - initial extraction of duplicated invocation primitives (aisw-d3i)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -71,14 +75,21 @@ def neutral_cwd(claude_config_dir: Path) -> Path:
 
 
 def system_prompt_argv(prompt_path: Path) -> list[str]:
-    """Flag fragment that REPLACES the default Claude Code system prompt.
+    """Argv fragment that REPLACES the default Claude Code system prompt.
 
-    Use `--system-prompt-file <path>` (not `--append-system-prompt`); the
-    append variant either does not accept `@<path>` or layers on top of the
-    default Claude Code assistant prompt, which is not what classifier/wiki
-    backends want.
+    Inlines the prompt file content via `--system-prompt <content>`. The
+    `--system-prompt-file <path>` form does NOT replace the default Claude
+    Code system prompt under subscription auth (verified 2026-05-12,
+    claude 2.1.139, bd aisw-adj): model defaults to the generic Claude Code
+    assistant persona, ignoring classifier/wiki prompts. `--bare` mode would
+    fix the file form but requires ANTHROPIC_API_KEY and breaks subscription
+    auth, so it is not used here.
+
+    Prompt files in use are single-digit KB, well below ARG_MAX. If a future
+    prompt approaches command-line size limits, revisit (consider stdin or
+    SDK migration).
     """
-    return ["--system-prompt-file", str(prompt_path)]
+    return ["--system-prompt", prompt_path.read_text(encoding="utf-8")]
 
 
 def truncate_stderr(stderr: bytes, limit: int = 512) -> str:
