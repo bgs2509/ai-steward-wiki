@@ -48,62 +48,100 @@ step_grace_lint()        { grace lint --failOn errors; }
 step_inv_lint()          { uv run python scripts/lint_invariants.py; }
 step_test_cov()          { uv run pytest tests/unit --cov=src/ai_steward_wiki --cov-report=term-missing --cov-fail-under=80; }
 step_integration() {
-  if [ -d tests/integration ]; then
-    RUN_INTEGRATION=1 uv run pytest tests/integration -v
-  else
+  if [ ! -d tests/integration ]; then
     echo "tests/integration not present — skipping"
+    return 0
   fi
+  if [ "${CLAUDECODE:-}" = "1" ]; then
+    echo "CLAUDECODE=1 detected — skipping integration (recursive claude invocation breaks subscription auth)"
+    return 0
+  fi
+  RUN_INTEGRATION=1 CLAUDECODE="${CLAUDECODE:-}" uv run pytest tests/integration -v
 }
 
 # --- key-metric extractors ---------------------------------------------------
 
+# Extract a numeric token following a keyword on the pytest summary line,
+# e.g. "397 passed, 2 skipped" → pytest_num "passed" → 397
+pytest_num() {
+  local log="$1" kw="$2"
+  grep -Eo "[0-9]+ ${kw}" "$log" | tail -n1 | grep -Eo '[0-9]+' || echo 0
+}
+
 summary_ruff_check() {
-  local log="$1"
-  local found
-  found=$(grep -Eo 'Found [0-9]+ error' "$log" | tail -n1 || true)
-  if [ -n "$found" ]; then echo "$found"
-  elif grep -q "All checks passed" "$log"; then echo "All checks passed"
-  else tail -n1 "$log"; fi
+  local log="$1" errs=0
+  if grep -q "All checks passed" "$log"; then
+    errs=0
+  else
+    errs=$(grep -Eo 'Found [0-9]+ error' "$log" | tail -n1 | grep -Eo '[0-9]+' || echo 0)
+    [ -z "$errs" ] && errs=0
+  fi
+  echo "errors=${errs}"
 }
 summary_ruff_format() {
   local log="$1"
-  local n
-  n=$(grep -Eo '[0-9]+ files? would be reformatted' "$log" | tail -n1 || true)
-  if [ -n "$n" ]; then echo "$n"
-  elif grep -q "already formatted" "$log"; then
-    grep -Eo '[0-9]+ files? already formatted' "$log" | tail -n1
-  else tail -n1 "$log"; fi
+  local formatted reformat
+  formatted=$(grep -Eo '[0-9]+ files? already formatted' "$log" | tail -n1 | grep -Eo '[0-9]+' || echo 0)
+  reformat=$(grep -Eo '[0-9]+ files? would be reformatted' "$log" | tail -n1 | grep -Eo '[0-9]+' || echo 0)
+  [ -z "$formatted" ] && formatted=0
+  [ -z "$reformat" ] && reformat=0
+  echo "formatted=${formatted} reformat=${reformat}"
 }
 summary_mypy() {
-  local log="$1"
-  grep -E "^(Success|Found [0-9]+ error)" "$log" | tail -n1 || tail -n1 "$log"
+  local log="$1" files errs
+  if grep -q "^Success" "$log"; then
+    files=$(grep -Eo 'no issues found in [0-9]+ source files?' "$log" | grep -Eo '[0-9]+' | tail -n1)
+    [ -z "$files" ] && files=0
+    echo "files=${files} errors=0"
+  else
+    errs=$(grep -Eo 'Found [0-9]+ error' "$log" | tail -n1 | grep -Eo '[0-9]+')
+    files=$(grep -Eo 'in [0-9]+ files? \(checked' "$log" | grep -Eo '[0-9]+' | tail -n1)
+    [ -z "$errs" ] && errs=0
+    [ -z "$files" ] && files=0
+    echo "files=${files} errors=${errs}"
+  fi
 }
 summary_grace() {
-  local log="$1"
-  # grace lint typically prints counts like "errors=N warnings=M"
-  local last
-  last=$(grep -iE 'error|warning|pass|ok' "$log" | tail -n1 || true)
-  [ -n "$last" ] && echo "$last" || tail -n1 "$log"
+  local log="$1" governed xml errs warns
+  governed=$(grep -Eo 'Governed files checked: [0-9]+' "$log" | grep -Eo '[0-9]+' | tail -n1)
+  xml=$(grep -Eo 'XML files checked: [0-9]+' "$log" | grep -Eo '[0-9]+' | tail -n1)
+  errs=$(grep -Eo 'errors: [0-9]+' "$log" | grep -Eo '[0-9]+' | tail -n1)
+  warns=$(grep -Eo 'warnings: [0-9]+' "$log" | grep -Eo '[0-9]+' | tail -n1)
+  [ -z "$governed" ] && governed=0
+  [ -z "$xml" ] && xml=0
+  [ -z "$errs" ] && errs=0
+  [ -z "$warns" ] && warns=0
+  echo "governed=${governed} xml=${xml} errors=${errs} warnings=${warns}"
 }
 summary_inv_lint() {
-  local log="$1"
-  local last
-  last=$(grep -iE 'invariant|violation|pass|ok|✓|✗' "$log" | tail -n1 || true)
-  [ -n "$last" ] && echo "$last" || tail -n1 "$log"
+  local log="$1" total passed
+  total=$(grep -Eo 'All [0-9]+ invariant checks passed' "$log" | grep -Eo '[0-9]+' | tail -n1)
+  if [ -n "$total" ]; then
+    echo "checks=${total} passed=${total} failed=0"
+  else
+    passed=$(grep -cE ':[[:space:]]*ok' "$log" || echo 0)
+    local failed
+    failed=$(grep -cE ':[[:space:]]*fail|violation' "$log" || echo 0)
+    echo "passed=${passed} failed=${failed}"
+  fi
 }
 summary_pytest() {
   local log="$1"
-  local line cov
-  line=$(grep -Eo '[0-9]+ (passed|failed|error|skipped)[^=]*' "$log" | tail -n1 || true)
-  cov=$(grep -Eo 'Total coverage: [0-9.]+%' "$log" | tail -n1 || true)
-  [ -z "$cov" ] && cov=$(grep -Eo 'TOTAL[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+%' "$log" | tail -n1 || true)
-  if [ -n "$line" ] && [ -n "$cov" ]; then echo "$line | $cov"
-  elif [ -n "$line" ]; then echo "$line"
-  else tail -n1 "$log"; fi
+  local passed failed errors skipped total cov result
+  passed=$(pytest_num "$log" passed)
+  failed=$(pytest_num "$log" failed)
+  errors=$(pytest_num "$log" error)
+  skipped=$(pytest_num "$log" skipped)
+  total=$((passed + failed + errors + skipped))
+  result="passed=${passed} failed=${failed} skipped=${skipped} total=${total}"
+  cov=$(grep -Eo 'Total coverage: [0-9.]+%' "$log" | grep -Eo '[0-9.]+%' | tail -n1)
+  [ -z "$cov" ] && cov=$(grep -E '^TOTAL' "$log" | tail -n1 | grep -Eo '[0-9.]+%' | tail -n1)
+  [ -n "$cov" ] && result="${result} | coverage=${cov}"
+  echo "$result"
 }
 summary_integration() {
   local log="$1"
-  if grep -q "skipping" "$log"; then echo "skipped (tests/integration absent)"; return; fi
+  if grep -q "skipping" "$log"; then echo "skipped=0 (tests/integration absent)"; return; fi
   summary_pytest "$log"
 }
 

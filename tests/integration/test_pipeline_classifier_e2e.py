@@ -52,6 +52,10 @@ pytestmark = [
         reason="set RUN_INTEGRATION=1 to enable",
     ),
     pytest.mark.skipif(shutil.which("claude") is None, reason="`claude` binary not on PATH"),
+    pytest.mark.skipif(
+        os.environ.get("CLAUDECODE") == "1",
+        reason="recursive claude invocation (CLAUDECODE=1) — run outside Claude Code",
+    ),
 ]
 
 

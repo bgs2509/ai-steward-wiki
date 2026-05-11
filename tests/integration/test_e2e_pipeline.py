@@ -30,6 +30,8 @@
 from __future__ import annotations
 
 import io
+import os
+import shutil
 
 import pytest
 from sqlalchemy import select
@@ -37,6 +39,18 @@ from sqlalchemy import select
 from ai_steward_wiki.classifier.schema import Intent
 from ai_steward_wiki.storage.sessions.models import PendingConfirm
 from ai_steward_wiki.tg.confirm import PendingConfirmDraft
+
+pytestmark = [
+    pytest.mark.skipif(
+        os.environ.get("RUN_INTEGRATION") != "1",
+        reason="set RUN_INTEGRATION=1 to enable integration suite",
+    ),
+    pytest.mark.skipif(shutil.which("claude") is None, reason="`claude` binary not on PATH"),
+    pytest.mark.skipif(
+        os.environ.get("CLAUDECODE") == "1",
+        reason="recursive claude invocation (CLAUDECODE=1) — run outside Claude Code",
+    ),
+]
 
 # Minimal 1x1 PNG (RFC 2083) — header + IHDR + IDAT + IEND.
 _PNG_1X1 = bytes.fromhex(
