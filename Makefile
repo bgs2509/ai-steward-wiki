@@ -63,10 +63,11 @@ test-cov:
 	uv run pytest tests/unit --cov=src/ai_steward_wiki --cov-report=term-missing --cov-fail-under=80
 
 # Full quality gate. Order is intentional: cheapest checks first so the
-# pipeline fails as early as possible. Mirrors what CI runs on every PR.
-total-test: ruff-check ruff-format-check mypy grace-lint inv-lint test-cov test-integration
-	@echo ""
-	@echo "✓ total-test passed: ruff + mypy + grace lint + inv-lint + coverage (≥80%) + integration"
+# pipeline fails as early as possible. Each step's output is captured to
+# .total-test-logs/<step>.log; a detailed breakdown prints at the end
+# (on success AND failure) with status, duration, and key metrics per step.
+total-test:
+	@bash scripts/total_test.sh
 
 clean:
 	rm -rf .ruff_cache .mypy_cache .pytest_cache build dist *.egg-info htmlcov .coverage

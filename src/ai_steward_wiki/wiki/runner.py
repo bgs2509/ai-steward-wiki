@@ -39,6 +39,7 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -251,6 +252,7 @@ async def run_wiki_session(
     acquirer: LockAcquirer,
     spawner: Spawner,
     config: _RunConfig | None = None,
+    on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
 ) -> WikiRunResult:
     """Run one Stage-1a/1b Sonnet session against `wiki_path`.
 
@@ -314,6 +316,16 @@ async def run_wiki_session(
             last_type: str | None = None
             async for ev in parse_stream_json(proc.stdout):
                 events.append(ev)
+                if on_event is not None:
+                    try:
+                        await on_event(ev)
+                    except Exception as exc:
+                        _log.warning(
+                            "wiki.run.on_event_error",
+                            run_id=run_id,
+                            correlation_id=correlation_id,
+                            error=type(exc).__name__,
+                        )
                 if ev.type != last_type:
                     _log.info(
                         "wiki.run.event",

@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from uuid import uuid4
 
@@ -62,7 +63,11 @@ from ai_steward_wiki.storage.audit.engine import build_engine, build_sessionmake
 from ai_steward_wiki.tg.bot import AiogramSender, TgSender, build_bot, build_dispatcher
 from ai_steward_wiki.tg.confirm import ConfirmationService
 from ai_steward_wiki.tg.output import deliver_output
-from ai_steward_wiki.tg.pipeline import DefaultPipeline, WikiRunOutcome
+from ai_steward_wiki.tg.pipeline import (
+    DefaultPipeline,
+    DefaultStreamingDelivery,
+    WikiRunOutcome,
+)
 from ai_steward_wiki.wiki.acquire import WikiLockAdapter
 from ai_steward_wiki.wiki.runner import (
     AsyncioSpawner,
@@ -71,6 +76,7 @@ from ai_steward_wiki.wiki.runner import (
     aggregate_text,
     run_wiki_session,
 )
+from ai_steward_wiki.wiki.streaming import StreamEvent
 
 logger = structlog.get_logger("ai_steward_wiki.runtime")
 
@@ -181,6 +187,7 @@ class _WikiRunnerAdapter:
         owner_telegram_id: int,
         correlation_id: str,
         intent: Intent,
+        on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
     ) -> WikiRunOutcome:
         wiki_id = str(owner_telegram_id)
         wiki_path = self._wiki_root / wiki_id
@@ -208,6 +215,7 @@ class _WikiRunnerAdapter:
                 acquirer=self._acquirer,
                 spawner=self._spawner,
                 config=self._run_config,
+                on_event=on_event,
             )
         except WikiRunnerError:
             raise
@@ -382,6 +390,7 @@ async def _amain() -> None:
     )
     # END_BLOCK_TEXT_PIPELINE_WIRING
 
+    streaming_delivery = DefaultStreamingDelivery(sender=sender)
     pipeline = DefaultPipeline(
         sender=sender,
         idempotency=IdempotencyService(audit_maker),
@@ -389,6 +398,7 @@ async def _amain() -> None:
         classifier=classifier_adapter,
         runner=runner_adapter,
         output=output_adapter,
+        streaming=streaming_delivery,
     )
     dp = build_dispatcher(allowlist, pipeline=pipeline)
     logger.info("runtime.handlers.registered")

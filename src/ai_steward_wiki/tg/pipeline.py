@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.1.0
+# VERSION: 0.2.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -40,14 +40,18 @@
 #   OutputDelivery - Protocol (deliver_output wrapper)
 #   MessagePipeline - Protocol for the 5 entry points used by handlers
 #   DefaultPipeline - concrete coordinator wiring existing building blocks
+#   StreamingDelivery - Protocol for slow-path race+stream wrapper (chunk 21)
+#   DefaultStreamingDelivery - default race-and-stream impl over StreamEditor
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - chunk 20: classifier+runner+delivery composition
+#   LAST_CHANGE: v0.2.0 - chunk 21: StreamingDelivery race+stream wrapper
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 from uuid import uuid4
@@ -77,11 +81,16 @@ __all__ = [
     "Classifier",
     "ConfirmKeyboardAction",
     "DefaultPipeline",
+    "DefaultStreamingDelivery",
     "MessagePipeline",
     "OutputDelivery",
+    "StreamingDelivery",
     "WikiRunOutcome",
     "WikiRunner",
 ]
+
+STREAMING_PLACEHOLDER_RU = "\u23f3 Думаю\u2026"
+STREAMING_TIMEOUT_S = 5.0
 
 _log = structlog.get_logger("tg.pipeline")
 
@@ -112,7 +121,7 @@ class WikiRunOutcome:
 
 
 class WikiRunner(Protocol):
-    """Stage-1a/1b Sonnet runner wrapper (D-017 + DEC-TPC-2)."""
+    """Stage-1a/1b Sonnet runner wrapper (D-017 + DEC-TPC-2 + DEC-TPS-2)."""
 
     async def run(
         self,
@@ -121,6 +130,28 @@ class WikiRunner(Protocol):
         owner_telegram_id: int,
         correlation_id: str,
         intent: Intent,
+        on_event: Callable[[object], Awaitable[None]] | None = None,
+    ) -> WikiRunOutcome: ...
+
+
+class StreamingDelivery(Protocol):
+    """Slow-path streaming wrapper (D-026 + DEC-TPS-3..5).
+
+    Implementations race the runner against a 5s timer; if the runner
+    completes first the fast path is taken and a single deliver is issued.
+    Otherwise a placeholder is sent and assistant text streamed in-place.
+    """
+
+    async def run_and_deliver(
+        self,
+        *,
+        runner: WikiRunner,
+        output: OutputDelivery,
+        chat_id: int,
+        telegram_id: int,
+        text: str,
+        intent: Intent,
+        correlation_id: str,
     ) -> WikiRunOutcome: ...
 
 
@@ -203,6 +234,7 @@ class DefaultPipeline:
         classifier: Classifier | None = None,
         runner: WikiRunner | None = None,
         output: OutputDelivery | None = None,
+        streaming: StreamingDelivery | None = None,
     ) -> None:
         self._sender = sender
         self._idem = idempotency
@@ -212,6 +244,7 @@ class DefaultPipeline:
         self._classifier = classifier
         self._runner = runner
         self._output = output
+        self._streaming = streaming
 
     async def _l1_check(self, *, update_id: int, telegram_id: int, kind: str) -> bool:
         """Return True iff the update is new (proceed). Logs on duplicate."""
@@ -297,6 +330,33 @@ class DefaultPipeline:
             intent=result.intent.value,
         )
         try:
+            if self._streaming is not None and source == "text":
+                outcome = await self._streaming.run_and_deliver(
+                    runner=self._runner,
+                    output=self._output,
+                    chat_id=chat_id,
+                    telegram_id=telegram_id,
+                    text=text,
+                    intent=result.intent,
+                    correlation_id=correlation_id,
+                )
+                _log.info(
+                    "tg.pipeline.runner.completed",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    run_id=outcome.run_id,
+                    chars=len(outcome.text),
+                    latency_ms=outcome.latency_ms,
+                )
+                _log.info(
+                    "tg.pipeline.deliver.sent",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    run_id=outcome.run_id,
+                    chars=len(outcome.text or ACK_TEXT_RU),
+                    streamed=True,
+                )
+                return
             outcome = await self._runner.run(
                 text=text,
                 owner_telegram_id=telegram_id,
@@ -480,3 +540,199 @@ class DefaultPipeline:
             action=action,
             status=status,
         )
+
+
+class DefaultStreamingDelivery:
+    """Race-and-stream wrapper (DEC-TPS-1..5).
+
+    Behaviour:
+      - Launches ``runner.run`` with an on_event callback that captures
+        StreamEvent objects into an internal list.
+      - Waits up to ``timeout_s`` for the runner to finish. If it does,
+        fast path: single ``output.deliver``.
+      - Otherwise sends ``placeholder_text``, constructs StreamEditor over the
+        placeholder, replays buffered chunks, then live-feeds subsequent ones.
+      - On runner completion finalizes the editor and calls ``output.deliver``
+        with the final aggregated text.
+      - On runner exception finalizes editor (best-effort) and re-raises so
+        the parent pipeline maps to ACK_RUNNER_ERR_RU.
+    """
+
+    def __init__(
+        self,
+        *,
+        sender: TgSender,
+        timeout_s: float = STREAMING_TIMEOUT_S,
+        placeholder_text: str = STREAMING_PLACEHOLDER_RU,
+        stream_editor_factory: Callable[..., object] | None = None,
+    ) -> None:
+        self._sender = sender
+        self._timeout_s = timeout_s
+        self._placeholder_text = placeholder_text
+        self._stream_editor_factory = stream_editor_factory
+
+    def _make_editor(self, *, chat_id: int, message_id: int) -> object:
+        if self._stream_editor_factory is not None:
+            return self._stream_editor_factory(
+                sender=self._sender, chat_id=chat_id, first_message_id=message_id
+            )
+        # Local import to keep stream_edit dependency lazy / test-friendly.
+        from ai_steward_wiki.tg.stream_edit import StreamEditor
+
+        return StreamEditor(sender=self._sender, chat_id=chat_id, first_message_id=message_id)
+
+    async def run_and_deliver(
+        self,
+        *,
+        runner: WikiRunner,
+        output: OutputDelivery,
+        chat_id: int,
+        telegram_id: int,
+        text: str,
+        intent: Intent,
+        correlation_id: str,
+    ) -> WikiRunOutcome:
+        from ai_steward_wiki.wiki.runner import aggregate_text  # lazy import
+
+        buffered: list[object] = []
+        live_editor: object | None = None
+
+        async def on_event(ev: object) -> None:
+            if live_editor is None:
+                buffered.append(ev)
+                return
+            text_piece = _event_text(ev)
+            if text_piece:
+                await live_editor.feed(text_piece)  # type: ignore[attr-defined]
+
+        runner_task = asyncio.create_task(
+            runner.run(
+                text=text,
+                owner_telegram_id=telegram_id,
+                correlation_id=correlation_id,
+                intent=intent,
+                on_event=on_event,
+            )
+        )
+
+        try:
+            outcome = await asyncio.wait_for(asyncio.shield(runner_task), timeout=self._timeout_s)
+            # Fast path.
+            reply_text = outcome.text if outcome.text else ACK_TEXT_RU
+            await output.deliver(
+                chat_id=chat_id,
+                telegram_id=telegram_id,
+                run_id=outcome.run_id,
+                text=reply_text,
+            )
+            return outcome
+        except TimeoutError:
+            pass
+
+        # Slow path: send placeholder + start streaming.
+        placeholder = await self._sender.send_message(chat_id, self._placeholder_text)
+        live_editor = self._make_editor(chat_id=chat_id, message_id=placeholder.message_id)
+        _log.info(
+            "tg.pipeline.stream.begin",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            message_id=placeholder.message_id,
+        )
+
+        # Replay any chunks that arrived during the race.
+        for ev in buffered:
+            text_piece = _event_text(ev)
+            if text_piece:
+                try:
+                    await live_editor.feed(text_piece)  # type: ignore[attr-defined]
+                    _log.info(
+                        "tg.pipeline.stream.chunk",
+                        correlation_id=correlation_id,
+                        chars=len(text_piece),
+                        replayed=True,
+                    )
+                except Exception as exc:
+                    _log.warning(
+                        "tg.pipeline.stream.error",
+                        correlation_id=correlation_id,
+                        error=type(exc).__name__,
+                    )
+
+        try:
+            outcome = await runner_task
+        except Exception:
+            # Finalize editor best-effort, then re-raise.
+            try:
+                await live_editor.finalize()  # type: ignore[attr-defined]
+            except Exception as exc:
+                _log.warning(
+                    "tg.pipeline.stream.error",
+                    correlation_id=correlation_id,
+                    error=type(exc).__name__,
+                    phase="finalize_on_runner_exception",
+                )
+            raise
+
+        # Build final text from the streamed events (DEC-TPS-4) — fall back
+        # to outcome.text or ACK_TEXT_RU if events lacked assistant content.
+        from ai_steward_wiki.wiki.streaming import StreamEvent
+
+        final_text = aggregate_text([e for e in buffered if isinstance(e, StreamEvent)])
+        if not final_text:
+            final_text = outcome.text or ACK_TEXT_RU
+
+        try:
+            await live_editor.finalize()  # type: ignore[attr-defined]
+        except Exception as exc:
+            _log.warning(
+                "tg.pipeline.stream.error",
+                correlation_id=correlation_id,
+                error=type(exc).__name__,
+                phase="finalize",
+            )
+
+        await output.deliver(
+            chat_id=chat_id,
+            telegram_id=telegram_id,
+            run_id=outcome.run_id,
+            text=final_text,
+        )
+        _log.info(
+            "tg.pipeline.stream.final",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            run_id=outcome.run_id,
+            chars=len(final_text),
+        )
+        return WikiRunOutcome(run_id=outcome.run_id, text=final_text, latency_ms=outcome.latency_ms)
+
+
+def _event_text(ev: object) -> str:
+    """Extract text fragment from a StreamEvent (best effort)."""
+    payload = getattr(ev, "payload", None)
+    if not isinstance(payload, dict):
+        return ""
+    if getattr(ev, "type", None) != "assistant_chunk":
+        return ""
+    message = payload.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    t = item.get("text")
+                    if isinstance(t, str):
+                        parts.append(t)
+            if parts:
+                return "".join(parts)
+    delta = payload.get("delta")
+    if isinstance(delta, dict):
+        t = delta.get("text")
+        if isinstance(t, str):
+            return t
+    t = payload.get("text")
+    if isinstance(t, str):
+        return t
+    return ""

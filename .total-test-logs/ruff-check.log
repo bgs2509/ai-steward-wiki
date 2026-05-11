@@ -1,0 +1,24 @@
+src/ai_steward_wiki/tg/pipeline.py:146:17: UP037 [*] Remove quotes from type annotation
+    |
+144 |         self,
+145 |         *,
+146 |         runner: "WikiRunner",
+    |                 ^^^^^^^^^^^^ UP037
+147 |         output: "OutputDelivery",
+148 |         chat_id: int,
+    |
+    = help: Remove quotes
+
+src/ai_steward_wiki/tg/pipeline.py:147:17: UP037 [*] Remove quotes from type annotation
+    |
+145 |         *,
+146 |         runner: "WikiRunner",
+147 |         output: "OutputDelivery",
+    |                 ^^^^^^^^^^^^^^^^ UP037
+148 |         chat_id: int,
+149 |         telegram_id: int,
+    |
+    = help: Remove quotes
+
+Found 2 errors.
+[*] 2 fixable with the `--fix` option.

@@ -20,7 +20,7 @@
     <Phase-20 NAME="TG pipeline classifier wiring" STATUS="done" bd_id="aisw-96y">
       <description>Replace ack-only DefaultPipeline.on_text/on_voice with Stage-0 Haiku Classifier → Inbox.stage (L2 dedup) → WikiRunner (Stage-1a/1b Sonnet) → deliver_output. Closes the core MVP-launch gap. SSoT: docs/superpowers/plans/20260511-ai-steward-wiki-launch/breakdown.xml chunk-20. bd_id materializes via bd create at chunk start.</description>
     </Phase-20>
-    <Phase-21 NAME="TG pipeline streaming" STATUS="planned">
+    <Phase-21 NAME="TG pipeline streaming" STATUS="done" bd_id="aisw-a3z">
       <description>Wrap WikiRunner with StreamEditor (1.5s throttle, Δ50, chain-split 4000) when estimated_duration_s > 5 (DEC-L2). Placeholder edit-in-place + final flush guarantee. SSoT: launch breakdown chunk-21.</description>
     </Phase-21>
     <Phase-22 NAME="TG document full handler" STATUS="planned">

@@ -58,7 +58,7 @@
       <rationale>Closes the core MVP-launch gap: bot currently acks but does not invoke Claude. Building blocks all exist, this is composition only.</rationale>
     </Chunk>
 
-    <Chunk id="21" bd_id="" title="M-TG-PIPELINE-STREAMING — wire StreamEditor for long-running WikiRunner jobs" est_window="0.40" depends_on="20" module_id="M-TG-PIPELINE-STREAMING">
+    <Chunk id="21" bd_id="aisw-a3z" title="M-TG-PIPELINE-STREAMING — wire StreamEditor for long-running WikiRunner jobs" est_window="0.40" depends_on="20" module_id="M-TG-PIPELINE-STREAMING">
       <scope>
         Wrap WikiRunner.run with StreamEditor (1.5s throttle, Δ50 chars, chain-split at 4000) when estimated_duration_s > 5 (DEC-L2).
         Initial placeholder message ("Думаю…") edited in-place with streaming chunks; final flush guarantees full text even on exception (D-026).
