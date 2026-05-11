@@ -36,3 +36,6 @@ state/
 # sentrux scratch
 .sentrux/baselines/
 .sentrux/results/
+
+# total-test run artifacts
+.total-test-logs/
