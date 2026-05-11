@@ -10,12 +10,13 @@
 
   <RunState>
     <Status>in-progress</Status>
-    <CurrentChunk>9</CurrentChunk>
-    <ClosedChunks>1,2,3,4,5,6,7,8</ClosedChunks>
+    <CurrentChunk>10</CurrentChunk>
+    <ClosedChunks>1,2,3,4,5,6,7,8,9</ClosedChunks>
     <Notes>Chunk 5 closed 2026-05-10: bd_id=aisw-5; M-CLASSIFIER-STAGE0 (schema/backend/stage0/time_parse + 2 prompts); 24 chunk-5 tests pass; full unit suite 89/89; ruff+format+mypy+grace lint clean; total-test gate green.
 Chunk 6 closed 2026-05-10: bd_id=aisw-qoi; M-INBOX (parser + hint_cache repo + get_or_refresh_hint hot-path + ensure_inbox_wiki + templates/inbox-wiki/CLAUDE.md per D-016); 17 chunk-6 tests pass; full unit suite 106/106; ruff+format+mypy clean; grace lint exit 0 (warnings only, baseline heuristic).
 Chunk 7 closed 2026-05-10: bd_id=aisw-x30; M-WIKI-RUNNER (wiki/{__init__,acquire,streaming,runner}.py + 5 prompts wiki/inbox/domain-{health,finance,default}); 13 chunk-7 tests pass; full unit suite 119/119; ruff+format+mypy clean; grace lint 0 errors / 28 warnings (heuristic baseline); total-test gate green.
-Chunk 8 closed 2026-05-10: bd_id=aisw-9s4; M-WIKI-LIFECYCLE (wiki/{name,lifecycle,migration,preflight}.py + scripts/lint_invariants.py for INV-7); 31 new tests; full unit suite 150/150; ruff+format+mypy clean; grace lint 0 errors / 32 warnings (heuristic baseline); INV-7 ok; total-test gate green.</Notes>
+Chunk 8 closed 2026-05-10: bd_id=aisw-9s4; M-WIKI-LIFECYCLE (wiki/{name,lifecycle,migration,preflight}.py + scripts/lint_invariants.py for INV-7); 31 new tests; full unit suite 150/150; ruff+format+mypy clean; grace lint 0 errors / 32 warnings (heuristic baseline); INV-7 ok; total-test gate green.
+Chunk 9 closed 2026-05-11: bd_id=aisw-6t5; M-INGEST-IDEM (inbox/idempotency.py — L1 tg_updates INSERT OR IGNORE, L2 SHA-256 seen_files with NFKC text normalization, DedupHit audit log per D-018); 10 new tests; full unit suite 160/160; ruff+format+mypy clean; grace lint 0 errors / 33 warnings (heuristic baseline); INV-7 ok; total-test gate green.</Notes>
   </RunState>
 
   <Decisions>
@@ -90,7 +91,7 @@ Chunk 8 closed 2026-05-10: bd_id=aisw-9s4; M-WIKI-LIFECYCLE (wiki/{name,lifecycl
       <Verification>pytest tests/unit/wiki/lifecycle; INV-7 no direct command grep</Verification>
     </Chunk>
 
-    <Chunk id="9" bd_id="aisw-9" title="Idempotency: tg_updates (24h) + seen_files (30d) dedup" est_window="0.25" depends_on="aisw-2" module_id="M-INGEST-IDEM">
+    <Chunk id="9" bd_id="aisw-6t5" status="closed" title="Idempotency: tg_updates (24h) + seen_files (30d) dedup" est_window="0.25" depends_on="aisw-x30" module_id="M-INGEST-IDEM">
       <Inputs>src/ai_steward_wiki/inbox/idempotency.py</Inputs>
       <Outputs>L1 TG update_id dedup; L2 SHA-256 content dedup with inline-confirm on collision; both layers in audit.db</Outputs>
       <Verification>pytest tests/unit/inbox/idempotency</Verification>
