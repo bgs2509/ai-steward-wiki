@@ -42,6 +42,13 @@ from ai_steward_wiki.classifier.schema import (
 )
 from ai_steward_wiki.storage.audit.models import PromptVersion
 
+__all__ = [
+    "PromptCache",
+    "PromptMeta",
+    "classify",
+    "record_prompt_version",
+]
+
 _log = structlog.get_logger("classifier.stage0")
 _SEMVER_RE = re.compile(r"^semver:\s*(\d+\.\d+\.\d+)\s*$", re.MULTILINE)
 

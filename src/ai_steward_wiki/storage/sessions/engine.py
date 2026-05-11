@@ -31,6 +31,12 @@ from sqlalchemy.orm import DeclarativeBase
 
 from ai_steward_wiki.storage.pragmas import apply_sqlite_pragmas
 
+__all__ = [
+    "Base",
+    "build_engine",
+    "build_sessionmaker",
+]
+
 
 class Base(DeclarativeBase):
     """Declarative base for sessions.db."""

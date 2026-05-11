@@ -39,6 +39,15 @@ from ai_steward_wiki.classifier.schema import (
     ClassifierTimeoutError,
 )
 
+__all__ = [
+    "AnthropicApiBackend",
+    "AsyncioSpawner",
+    "ClassifierBackend",
+    "ClaudeCliBackend",
+    "FakeClaudeRunner",
+    "Spawner",
+]
+
 
 @runtime_checkable
 class ClassifierBackend(Protocol):

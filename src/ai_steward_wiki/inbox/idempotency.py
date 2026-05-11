@@ -37,6 +37,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ai_steward_wiki.logging_setup import get_logger
 from ai_steward_wiki.storage.audit.models import DedupHit, SeenFile, TgUpdate
 
+__all__ = [
+    "ContentKind",
+    "IdempotencyService",
+    "SeenFileMatch",
+    "compute_content_hash",
+    "normalize_text",
+]
+
 _log = get_logger(__name__)
 
 ContentKind = Literal["text", "voice", "photo", "file"]

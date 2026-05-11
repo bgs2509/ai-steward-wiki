@@ -30,6 +30,10 @@ import structlog
 from ai_steward_wiki.classifier.backend import ClassifierBackend
 from ai_steward_wiki.classifier.schema import TimeParseResult
 
+__all__ = [
+    "parse_time",
+]
+
 _log = structlog.get_logger("classifier.time")
 
 

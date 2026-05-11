@@ -26,6 +26,13 @@ import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 
+__all__ = [
+    "AUTO_DISABLE_STRIKES",
+    "FailureClass",
+    "FailureCounter",
+    "classify_exception",
+]
+
 AUTO_DISABLE_STRIKES = 3
 
 

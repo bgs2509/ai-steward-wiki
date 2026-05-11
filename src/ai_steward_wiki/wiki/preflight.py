@@ -11,6 +11,7 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
+#   CheckName - Literal alias of the 5 pre-flight step names
 #   PreflightCheck - frozen Pydantic (name, ok, detail)
 #   PreflightReport - frozen Pydantic (checks tuple, ok aggregate)
 #   preflight - run all 5 steps, return PreflightReport
@@ -30,6 +31,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from ai_steward_wiki.wiki.migration import FrontmatterError, parse_frontmatter
+
+__all__ = [
+    "CheckName",
+    "PreflightCheck",
+    "PreflightReport",
+    "preflight",
+]
 
 CheckName = Literal["locks", "frontmatter", "template", "staging", "permissions"]
 

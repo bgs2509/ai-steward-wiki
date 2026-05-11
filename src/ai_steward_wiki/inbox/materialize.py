@@ -28,6 +28,11 @@ from pathlib import Path
 
 from ai_steward_wiki.logging_setup import get_logger
 
+__all__ = [
+    "INBOX_WIKI_DIRNAME",
+    "ensure_inbox_wiki",
+]
+
 _log = get_logger(__name__)
 
 INBOX_WIKI_DIRNAME = "Inbox-WIKI"

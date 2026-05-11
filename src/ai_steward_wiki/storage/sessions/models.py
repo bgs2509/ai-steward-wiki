@@ -39,6 +39,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from ai_steward_wiki.storage.sessions.engine import Base
 
+__all__ = [
+    "FsmState",
+    "InboxHintCache",
+    "PendingConfirm",
+    "PendingUser",
+    "User",
+]
+
 
 class User(Base):
     """The ONLY table holding both user_id (surrogate) and telegram_id (canonical) — D-042."""

@@ -40,6 +40,15 @@ from watchdog.observers import Observer
 from ai_steward_wiki.auth.allowlist import replace_global, sync_to_sessions_db
 from ai_steward_wiki.auth.users_toml import UsersTomlError, load_users_toml
 
+__all__ = [
+    "DEBOUNCE_SECONDS",
+    "AdminAlert",
+    "AllowlistReloader",
+    "build_watchdog_observer",
+    "install_sighup_handler",
+    "logger",
+]
+
 logger = structlog.get_logger(__name__)
 
 DEBOUNCE_SECONDS = 0.5

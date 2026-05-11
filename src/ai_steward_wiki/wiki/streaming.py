@@ -31,6 +31,13 @@ from typing import Any, Literal
 import structlog
 from pydantic import BaseModel, ConfigDict
 
+__all__ = [
+    "StreamEvent",
+    "StreamEventType",
+    "classify_line",
+    "parse_stream_json",
+]
+
 _log = structlog.get_logger("wiki.streaming")
 
 StreamEventType = Literal["assistant_chunk", "tool_use", "final", "raw"]

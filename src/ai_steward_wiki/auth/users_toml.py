@@ -29,6 +29,14 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+__all__ = [
+    "SCHEMA_VERSION",
+    "UserRecord",
+    "UsersConfig",
+    "UsersTomlError",
+    "load_users_toml",
+]
+
 SCHEMA_VERSION = 1
 
 

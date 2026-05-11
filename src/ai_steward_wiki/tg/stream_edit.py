@@ -34,6 +34,12 @@ import structlog
 from ai_steward_wiki.tg.bot import TgSender
 from ai_steward_wiki.tg.output import HtmlBalancer
 
+__all__ = [
+    "Clock",
+    "MonotonicClock",
+    "StreamEditor",
+]
+
 _log = structlog.get_logger("tg.stream_edit")
 
 

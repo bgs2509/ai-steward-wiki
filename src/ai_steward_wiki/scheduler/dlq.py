@@ -26,6 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ai_steward_wiki.scheduler.failure import FailureClass
 from ai_steward_wiki.storage.jobs.models import JobDLQ
 
+__all__ = [
+    "move_to_dlq",
+]
+
 
 async def move_to_dlq(
     session: AsyncSession,

@@ -38,6 +38,20 @@ from pathlib import Path
 import structlog
 from pydantic import BaseModel, ConfigDict
 
+__all__ = [
+    "MANAGED_END",
+    "MANAGED_START",
+    "USER_END",
+    "USER_START",
+    "Frontmatter",
+    "FrontmatterError",
+    "extract_user_zone",
+    "migrate_v1_to_v2",
+    "parse_frontmatter",
+    "render_frontmatter",
+    "render_v2",
+]
+
 _log = structlog.get_logger(__name__)
 
 MANAGED_START = "<!-- managed:start -->"

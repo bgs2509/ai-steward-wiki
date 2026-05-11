@@ -32,6 +32,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ai_steward_wiki.auth.users_toml import UserRecord, UsersConfig
 from ai_steward_wiki.storage.sessions.models import User
 
+__all__ = [
+    "Allowlist",
+    "get_global",
+    "replace_global",
+    "sync_to_sessions_db",
+]
+
 
 class Allowlist:
     """Frozen view over telegram_id → UserRecord."""

@@ -22,6 +22,11 @@ from __future__ import annotations
 
 import re
 
+__all__ = [
+    "INBOX_HINT_HEADING",
+    "extract_inbox_hint",
+]
+
 INBOX_HINT_HEADING = "## Inbox hint"
 
 # START_BLOCK_INBOX_HINT_REGEX

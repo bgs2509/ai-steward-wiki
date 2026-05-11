@@ -25,6 +25,10 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+__all__ = [
+    "apply_sqlite_pragmas",
+]
+
 # WAL retains journal between connections; the others must be set per-connection.
 _PRAGMAS: tuple[tuple[str, str], ...] = (
     ("journal_mode", "WAL"),

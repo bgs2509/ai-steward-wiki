@@ -32,6 +32,14 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from ai_steward_wiki.auth.allowlist import Allowlist
 from ai_steward_wiki.tg.middleware_auth import AllowlistMiddleware
 
+__all__ = [
+    "AiogramSender",
+    "SentMessage",
+    "TgSender",
+    "build_bot",
+    "build_dispatcher",
+]
+
 if TYPE_CHECKING:
     from aiogram import Bot, Dispatcher
 

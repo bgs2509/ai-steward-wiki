@@ -49,6 +49,17 @@ from ai_steward_wiki.scheduler.core import kill_with_sequence
 from ai_steward_wiki.wiki.acquire import LockAcquirer
 from ai_steward_wiki.wiki.streaming import StreamEvent, parse_stream_json
 
+__all__ = [
+    "AsyncioSpawner",
+    "SpawnedProcess",
+    "Spawner",
+    "WikiRunResult",
+    "WikiRunnerError",
+    "WikiRunnerTimeoutError",
+    "assemble_prompt",
+    "run_wiki_session",
+]
+
 _log = structlog.get_logger("wiki.runner")
 _SEMVER_RE = re.compile(r"^semver:\s*(\d+\.\d+\.\d+)\s*$", re.MULTILINE)
 

@@ -50,6 +50,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ai_steward_wiki.storage.sessions.models import PendingConfirm
 from ai_steward_wiki.tg.bot import TgSender
 
+__all__ = [
+    "BTN_CANCEL",
+    "BTN_CONFIRM",
+    "BTN_CORRECT",
+    "DEFAULT_TTL_SEC",
+    "ConfirmAction",
+    "ConfirmLevel",
+    "ConfirmRecord",
+    "ConfirmStatus",
+    "ConfirmationService",
+    "PendingConfirmDraft",
+    "build_explicit_keyboard",
+    "compute_payload_hash",
+]
+
 if TYPE_CHECKING:
     pass
 

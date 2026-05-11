@@ -35,6 +35,11 @@ from ai_steward_wiki.inbox.parser import extract_inbox_hint
 from ai_steward_wiki.logging_setup import get_logger
 from ai_steward_wiki.storage.sessions.models import InboxHintCache
 
+__all__ = [
+    "InboxHintCacheRepo",
+    "get_or_refresh_hint",
+]
+
 _log = get_logger(__name__)
 
 

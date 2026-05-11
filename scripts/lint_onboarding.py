@@ -29,6 +29,14 @@ import re
 import sys
 from pathlib import Path
 
+__all__ = [
+    "REQUIRED_SLUGS",
+    "SLUG_PATTERN",
+    "OnboardingLintError",
+    "lint_template",
+    "main",
+]
+
 REQUIRED_SLUGS: tuple[str, ...] = (
     "greeting",
     "purpose",

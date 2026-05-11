@@ -27,6 +27,12 @@ import re
 
 from pydantic import BaseModel, ConfigDict
 
+__all__ = [
+    "WikiName",
+    "WikiNameError",
+    "normalize_wiki_name",
+]
+
 # START_BLOCK_ISO9_TABLE
 # ISO 9:1995 single-strategy romanisation (Russian alphabet only — MVP scope).
 # Multi-char outputs are intentional and lossless; uppercase derived dynamically.

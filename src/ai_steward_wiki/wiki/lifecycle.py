@@ -37,6 +37,16 @@ from pydantic import BaseModel, ConfigDict
 
 from ai_steward_wiki.wiki.name import WikiName, normalize_wiki_name
 
+__all__ = [
+    "AntiSpamCapError",
+    "NearDuplicateMatch",
+    "TrashRetentionExpiredError",
+    "TrashedWiki",
+    "WikiLifecycleManager",
+    "WikiNotFoundError",
+    "levenshtein",
+]
+
 _log = structlog.get_logger(__name__)
 
 _TRASH_DIR = "_trash"

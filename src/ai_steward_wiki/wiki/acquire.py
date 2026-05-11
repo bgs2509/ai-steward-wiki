@@ -29,6 +29,11 @@ from typing import Protocol
 
 from ai_steward_wiki.scheduler.locks import WikiLockManager
 
+__all__ = [
+    "LockAcquirer",
+    "WikiLockAdapter",
+]
+
 
 class LockAcquirer(Protocol):
     def acquire(self, wiki_id: str, wiki_path: Path) -> AbstractAsyncContextManager[None]: ...
