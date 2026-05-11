@@ -1,11 +1,12 @@
 # FILE: src/ai_steward_wiki/classifier/backend.py
-# VERSION: 0.0.3
+# VERSION: 0.0.4
 # START_MODULE_CONTRACT
 #   PURPOSE: Backend abstraction for Stage-0 classifier — Claude CLI default + optional API + Fake.
 #   SCOPE: ClassifierBackend Protocol; ClaudeCliBackend (subprocess); AnthropicApiBackend stub;
 #          FakeClaudeRunner test double; Spawner Protocol seam for chunk 16 systemd-run wrap.
-#   DEPENDS: asyncio, json, ai_steward_wiki.classifier.schema
-#   LINKS: M-CLASSIFIER-STAGE0, D-009, D-013, INV-6
+#   DEPENDS: asyncio, json, ai_steward_wiki.classifier.schema,
+#            ai_steward_wiki.claude_cli.common (M-CLAUDE-CLI-COMMON)
+#   LINKS: M-CLASSIFIER-STAGE0, M-CLAUDE-CLI-COMMON, D-009, D-013, INV-6, aisw-d3i
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -20,12 +21,14 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - replace (not append) default system prompt via
-#                         --system-prompt-file, and run CLI in neutral cwd so project
-#                         CLAUDE.md is not auto-discovered. Together with v0.0.2
-#                         envelope unwrap, fully fixes aisw-p5b.
-#   PREVIOUS:    v0.0.2 - unwrap Claude CLI envelope; switch flag from
-#                         --append-system-prompt @path to --append-system-prompt-file.
+#   LAST_CHANGE: v0.0.4 - aisw-d3i: import shared invocation primitives from
+#                         M-CLAUDE-CLI-COMMON (resolve_binary, build_env,
+#                         neutral_cwd, system_prompt_argv, truncate_stderr).
+#                         No behaviour change; eliminates duplication with
+#                         Stage-1 wiki runner.
+#   PREVIOUS:    v0.0.3 - replace default system prompt via --system-prompt-file
+#                         and run CLI in neutral cwd (fix aisw-p5b).
+#   PREVIOUS:    v0.0.2 - unwrap Claude CLI envelope; switch flag form.
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -33,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +45,13 @@ from ai_steward_wiki.classifier.schema import (
     ClassifierError,
     ClassifierSchemaError,
     ClassifierTimeoutError,
+)
+from ai_steward_wiki.claude_cli.common import (
+    build_env,
+    neutral_cwd,
+    resolve_binary,
+    system_prompt_argv,
+    truncate_stderr,
 )
 
 __all__ = [
@@ -130,8 +139,7 @@ class ClaudeCliBackend:
             "json",
             "--max-turns",
             "1",
-            "--system-prompt-file",
-            str(prompt_path),
+            *system_prompt_argv(prompt_path),
             "--disallowedTools",
             "Bash",
             "Read",
@@ -144,34 +152,20 @@ class ClaudeCliBackend:
             "dontAsk",
         ]
 
-    def _resolve_binary(self) -> str:
-        """Return absolute path to the `claude` binary, or the configured value as-is.
-
-        Resolved with the *outer* PATH (not the restricted PATH passed to the subprocess
-        env) so that callers can rely on Settings to point at any installation location.
-        """
-        if "/" in self.binary:
-            return self.binary
-        resolved = shutil.which(self.binary)
-        return resolved if resolved is not None else self.binary
-
     async def call(self, *, text: str, prompt_path: Path, correlation_id: str) -> dict[str, Any]:
-        env = {"CLAUDE_CONFIG_DIR": str(self.claude_config_dir), "PATH": "/usr/bin:/bin"}
+        env = build_env(self.claude_config_dir)
         argv = self._argv(prompt_path)
-        argv[0] = self._resolve_binary()
-        # Run in a neutral cwd so Claude Code does not auto-discover the project's
-        # CLAUDE.md and inject its contents into the model's default context — that
-        # context would otherwise drown the classifier system prompt.
+        argv[0] = resolve_binary(self.binary)
         rc, stdout, stderr = await self.spawner.spawn(
             argv,
             env=env,
             stdin=text.encode("utf-8"),
             timeout_s=self.timeout_s,
-            cwd=str(self.claude_config_dir),
+            cwd=str(neutral_cwd(self.claude_config_dir)),
         )
         if rc != 0:
             raise ClassifierError(
-                f"claude CLI exited with rc={rc}; stderr={stderr.decode('utf-8', 'replace')[:512]}"
+                f"claude CLI exited with rc={rc}; stderr={truncate_stderr(stderr)}"
             )
         try:
             envelope = json.loads(stdout.decode("utf-8"))

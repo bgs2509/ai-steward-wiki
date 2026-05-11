@@ -39,7 +39,7 @@ async def test_on_event_called_per_event(
         runtime_dir=tmp_path / "rt",
         acquirer=fake_acquirer,
         spawner=spawner,
-        config=_RunConfig(timeout_s=2.0, term_grace_s=0.1),
+        config=_RunConfig(claude_config_dir=tmp_path / "rt", timeout_s=2.0, term_grace_s=0.1),
         on_event=cb,
     )
     assert len(received) == 3
@@ -67,7 +67,7 @@ async def test_on_event_exception_swallowed(
         runtime_dir=tmp_path / "rt",
         acquirer=fake_acquirer,
         spawner=spawner,
-        config=_RunConfig(timeout_s=2.0, term_grace_s=0.1),
+        config=_RunConfig(claude_config_dir=tmp_path / "rt", timeout_s=2.0, term_grace_s=0.1),
         on_event=cb,
     )
     assert result.exit_code == 0
@@ -88,7 +88,7 @@ async def test_no_callback_back_compat(
         runtime_dir=tmp_path / "rt",
         acquirer=fake_acquirer,
         spawner=spawner,
-        config=_RunConfig(timeout_s=2.0, term_grace_s=0.1),
+        config=_RunConfig(claude_config_dir=tmp_path / "rt", timeout_s=2.0, term_grace_s=0.1),
     )
     assert result.exit_code == 0
     assert len(result.events) == 3

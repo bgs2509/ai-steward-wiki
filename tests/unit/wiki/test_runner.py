@@ -15,6 +15,16 @@ from ai_steward_wiki.wiki.runner import (
 from tests.unit.wiki.conftest import FakeAcquirer, FakeSpawner
 
 
+def _cfg(claude_config_dir: Path, **overrides: object) -> _RunConfig:
+    base: dict[str, object] = {
+        "claude_config_dir": claude_config_dir,
+        "timeout_s": 2.0,
+        "term_grace_s": 0.1,
+    }
+    base.update(overrides)
+    return _RunConfig(**base)  # type: ignore[arg-type]
+
+
 def _make_lines() -> list[bytes]:
     return [
         json.dumps({"type": "assistant", "text": "hi"}).encode() + b"\n",
@@ -59,6 +69,8 @@ async def test_run_wiki_session_happy_path(
     spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
     wiki = tmp_path / "Health-WIKI"
     runtime = tmp_path / "runtime"
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
 
     result = await run_wiki_session(
         wiki_id="Health-WIKI",
@@ -70,22 +82,29 @@ async def test_run_wiki_session_happy_path(
         runtime_dir=runtime,
         acquirer=fake_acquirer,
         spawner=spawner,
-        config=_RunConfig(timeout_s=2.0, term_grace_s=0.1),
+        config=_cfg(cfg_dir),
     )
 
     assert result.exit_code == 0
     assert [e.type for e in result.events] == ["assistant_chunk", "final"]
     assert result.transcript_path.exists()
-    # Atomic write: no .tmp leftover.
     assert not result.transcript_path.with_suffix(result.transcript_path.suffix + ".tmp").exists()
-    # Argv assertions: contains --add-dir <wiki> and --output-format stream-json.
     argv = spawner.calls[0]["argv"]
     assert isinstance(argv, list)
     assert "--add-dir" in argv
     assert str(wiki) in argv
     assert "stream-json" in argv
-    assert any(str(arg).startswith("@") for arg in argv)
-    # Acquirer received the wiki_id.
+    # FR-2: replace flag form. No @-prefix on prompt path, no --append-system-prompt.
+    assert "--system-prompt-file" in argv
+    assert "--append-system-prompt" not in argv
+    assert not any(str(a).startswith("@") for a in argv)
+    # FR-3: cwd is the neutral claude_config_dir, not the wiki path.
+    assert spawner.calls[0]["cwd"] == str(cfg_dir)
+    # env: CLAUDE_CONFIG_DIR + minimal PATH.
+    env = spawner.calls[0]["env"]
+    assert isinstance(env, dict)
+    assert env["CLAUDE_CONFIG_DIR"] == str(cfg_dir)
+    assert env["PATH"] == "/usr/bin:/bin"
     assert fake_acquirer.calls == [("Health-WIKI", wiki)]
 
 
@@ -97,6 +116,8 @@ async def test_run_wiki_session_timeout_invokes_kill(
     spawner = FakeSpawner(lines=[], exit_code=0, hang=True)
     wiki = tmp_path / "Slow-WIKI"
     runtime = tmp_path / "runtime"
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
 
     with pytest.raises(WikiRunnerTimeoutError):
         await run_wiki_session(
@@ -109,9 +130,79 @@ async def test_run_wiki_session_timeout_invokes_kill(
             runtime_dir=runtime,
             acquirer=fake_acquirer,
             spawner=spawner,
-            config=_RunConfig(timeout_s=0.1, term_grace_s=0.05),
+            config=_cfg(cfg_dir, timeout_s=0.1, term_grace_s=0.05),
         )
 
-    # Transcript should still be persisted (with whatever events arrived — none here).
     transcript = wiki / "runs" / "run-timeout" / "transcript.jsonl"
     assert transcript.exists()
+
+
+async def test_run_wiki_session_nonzero_exit_raises_with_stderr(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    """FR-4: rc != 0 → drain stderr, log wiki.run.error, raise WikiRunnerError."""
+    spawner = FakeSpawner(
+        lines=[],
+        stderr_bytes=b"error: unrecognized arguments: --append-system-prompt",
+        exit_code=1,
+    )
+    wiki = tmp_path / "Broken-WIKI"
+    runtime = tmp_path / "runtime"
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+
+    with pytest.raises(WikiRunnerError, match=r"rc=1.*unrecognized arguments"):
+        await run_wiki_session(
+            wiki_id="Broken-WIKI",
+            wiki_path=wiki,
+            base_prompt_path=prompts_dir / "wiki.md",
+            overlay_prompt_path=prompts_dir / "domain-default.md",
+            run_id="run-fail",
+            correlation_id="corr-3",
+            runtime_dir=runtime,
+            acquirer=fake_acquirer,
+            spawner=spawner,
+            config=_cfg(cfg_dir),
+        )
+
+    # Transcript still persisted before raise.
+    transcript = wiki / "runs" / "run-fail" / "transcript.jsonl"
+    assert transcript.exists()
+
+
+def test_assemble_prompt_folds_per_wiki_claude_md(prompts_dir: Path, tmp_path: Path) -> None:
+    """FR-3 derivative: per-WIKI CLAUDE.md is appended to assembled prompt."""
+    wiki = tmp_path / "Health-WIKI"
+    wiki.mkdir()
+    (wiki / "CLAUDE.md").write_text("# Per-WIKI overlay text\n", encoding="utf-8")
+
+    target = assemble_prompt(
+        base_path=prompts_dir / "wiki.md",
+        overlay_path=prompts_dir / "inbox.md",
+        runtime_dir=tmp_path / "runtime",
+        run_id="r2",
+        wiki_path=wiki,
+    )
+    text = target.read_text(encoding="utf-8")
+    assert "# base" in text
+    assert "# inbox overlay" in text
+    assert "Per-WIKI overlay text" in text
+    # Per-WIKI content appears AFTER the overlay.
+    assert text.index("inbox overlay") < text.index("Per-WIKI overlay text")
+
+
+def test_assemble_prompt_without_per_wiki_file(prompts_dir: Path, tmp_path: Path) -> None:
+    """wiki_path given but no CLAUDE.md → no error, no extra content."""
+    wiki = tmp_path / "Empty-WIKI"
+    wiki.mkdir()
+    target = assemble_prompt(
+        base_path=prompts_dir / "wiki.md",
+        overlay_path=prompts_dir / "inbox.md",
+        runtime_dir=tmp_path / "runtime",
+        run_id="r3",
+        wiki_path=wiki,
+    )
+    text = target.read_text(encoding="utf-8")
+    assert "Per-WIKI" not in text

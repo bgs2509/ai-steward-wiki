@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -7,10 +7,11 @@
 #   SCOPE: run_wiki_session(...); Spawner Protocol; AsyncioSpawner default;
 #          assemble_prompt helper; transcript persistence; SIGTERM→SIGKILL on
 #          timeout via scheduler.core.kill_with_sequence.
-#   DEPENDS: asyncio, contextlib, hashlib, json, os, pathlib, time, structlog,
+#   DEPENDS: asyncio, contextlib, os, pathlib, time, structlog,
+#            ai_steward_wiki.claude_cli.common (M-CLAUDE-CLI-COMMON),
 #            ai_steward_wiki.wiki.{acquire,streaming},
 #            ai_steward_wiki.scheduler.core (kill_with_sequence)
-#   LINKS: M-WIKI-RUNNER, D-007, D-011, D-012, D-021
+#   LINKS: M-WIKI-RUNNER, M-CLAUDE-CLI-COMMON, D-007, D-011, D-012, D-021, aisw-d3i
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -19,16 +20,24 @@
 #   WikiRunnerError - base exception
 #   WikiRunnerTimeoutError - hard timeout after kill-sequence
 #   Spawner - Protocol; spawn(argv, env, cwd) -> SpawnedProcess
-#   SpawnedProcess - Protocol; pid + stdout reader + wait/terminate/kill
+#   SpawnedProcess - Protocol; pid + stdout/stderr readers + wait/terminate/kill
 #   AsyncioSpawner - default Spawner using asyncio.create_subprocess_exec
-#   assemble_prompt - concat base+overlay → atomic tmp+os.replace into runtime_dir
+#   assemble_prompt - concat base+overlay (+ per-WIKI CLAUDE.md if present) → atomic write
 #   WikiRunResult - dataclass result of one run (run_id, exit_code, events, …)
 #   run_wiki_session - public entrypoint orchestrating one Stage-1a/1b run
 #   aggregate_text - extract assistant text from WikiRunResult.events
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 7: initial M-WIKI-RUNNER orchestrator
+#   LAST_CHANGE: v0.0.2 - aisw-d3i: fix Claude CLI invocation. Replace
+#                         --append-system-prompt @path with --system-prompt-file
+#                         <path>; run CLI in neutral cwd (claude_config_dir) so
+#                         project CLAUDE.md is not auto-discovered; drain stderr
+#                         and raise WikiRunnerError with truncated stderr on
+#                         non-zero exit; fold per-WIKI CLAUDE.md into the
+#                         assembled prompt explicitly; require claude_config_dir.
+#                         Shared primitives extracted to M-CLAUDE-CLI-COMMON.
+#   PREVIOUS:    v0.0.1 - chunk 7: initial M-WIKI-RUNNER orchestrator
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -37,7 +46,6 @@ import asyncio
 import contextlib
 import os
 import re
-import shutil
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
@@ -47,6 +55,13 @@ from typing import Protocol, runtime_checkable
 
 import structlog
 
+from ai_steward_wiki.claude_cli.common import (
+    build_env,
+    neutral_cwd,
+    resolve_binary,
+    system_prompt_argv,
+    truncate_stderr,
+)
 from ai_steward_wiki.scheduler.core import kill_with_sequence
 from ai_steward_wiki.wiki.acquire import LockAcquirer
 from ai_steward_wiki.wiki.streaming import StreamEvent, parse_stream_json
@@ -79,6 +94,7 @@ class WikiRunnerTimeoutError(WikiRunnerError):
 class SpawnedProcess(Protocol):
     pid: int
     stdout: asyncio.StreamReader | None
+    stderr: asyncio.StreamReader | None
 
     async def wait(self) -> int: ...
     def terminate(self) -> None: ...
@@ -113,19 +129,35 @@ def _check_semver(text: str, label: str) -> None:
         raise WikiRunnerError(f"prompt {label} missing required `semver: X.Y.Z` frontmatter")
 
 
-def assemble_prompt(*, base_path: Path, overlay_path: Path, runtime_dir: Path, run_id: str) -> Path:
-    """Concatenate base+overlay prompts and atomically write to runtime_dir.
+def assemble_prompt(
+    *,
+    base_path: Path,
+    overlay_path: Path,
+    runtime_dir: Path,
+    run_id: str,
+    wiki_path: Path | None = None,
+) -> Path:
+    """Concatenate base + overlay (+ per-WIKI CLAUDE.md if present) and atomically write.
 
-    Both pieces must carry a `semver: X.Y.Z` line. Returns the assembled path.
+    Base and overlay must carry a `semver: X.Y.Z` line. The optional per-WIKI
+    CLAUDE.md (at `wiki_path / "CLAUDE.md"`) is appended verbatim if present —
+    operator-authored, not framework-versioned, so no semver check. Folding it
+    in here eliminates dependence on Claude Code's CLAUDE.md auto-discovery,
+    which is disabled by the neutral cwd in `run_wiki_session`.
     """
     base = base_path.read_text(encoding="utf-8")
     overlay = overlay_path.read_text(encoding="utf-8")
     _check_semver(base, base_path.name)
     _check_semver(overlay, overlay_path.name)
+    pieces = [base, "---", overlay]
+    if wiki_path is not None:
+        per_wiki = wiki_path / "CLAUDE.md"
+        if per_wiki.exists():
+            pieces += ["---", per_wiki.read_text(encoding="utf-8")]
     runtime_dir.mkdir(parents=True, exist_ok=True)
     target = runtime_dir / f"{run_id}.system.md"
     tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_text(base + "\n\n---\n\n" + overlay, encoding="utf-8")
+    tmp.write_text("\n\n".join(pieces), encoding="utf-8")
     os.replace(tmp, target)
     return target
 
@@ -197,8 +229,7 @@ def _build_argv(
         model,
         "--add-dir",
         str(wiki_path),
-        "--append-system-prompt",
-        f"@{prompt_path}",
+        *system_prompt_argv(prompt_path),
         "--output-format",
         "stream-json",
         "--permission-mode",
@@ -209,13 +240,6 @@ def _build_argv(
     if disallowed_tools:
         argv.extend(["--disallowedTools", *disallowed_tools])
     return argv
-
-
-def _resolve_binary(binary: str) -> str:
-    if "/" in binary:
-        return binary
-    resolved = shutil.which(binary)
-    return resolved if resolved is not None else binary
 
 
 @dataclass
@@ -229,15 +253,20 @@ class WikiRunResult:
 
 @dataclass
 class _RunConfig:
-    """Internal grouping to satisfy mypy + ruff arg counts."""
+    """Internal grouping to satisfy mypy + ruff arg counts.
 
+    `claude_config_dir` is required (post aisw-d3i): the runner uses it to
+    build both the CLI env and the neutral cwd. Tests construct it with a
+    tmp_path fixture; production wires from Settings.claude_config_dir.
+    """
+
+    claude_config_dir: Path
     binary: str = "claude"
     model: str = "claude-sonnet-4-5"
     timeout_s: float = 300.0
     term_grace_s: float = 10.0
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] = field(default_factory=lambda: ["WebFetch"])
-    claude_config_dir: Path | None = None
 
 
 async def run_wiki_session(
@@ -264,22 +293,26 @@ async def run_wiki_session(
       - on timeout invokes scheduler.core.kill_with_sequence and raises
         WikiRunnerTimeoutError.
     """
-    cfg = config or _RunConfig()
+    if config is None:
+        raise WikiRunnerError(
+            "run_wiki_session requires a _RunConfig (claude_config_dir is mandatory)"
+        )
+    cfg = config
     started = time.monotonic()
     prompt_path = assemble_prompt(
         base_path=base_prompt_path,
         overlay_path=overlay_prompt_path,
         runtime_dir=runtime_dir,
         run_id=run_id,
+        wiki_path=wiki_path,
     )
     transcript_path = wiki_path / "runs" / run_id / "transcript.jsonl"
 
-    env = {"PATH": "/usr/bin:/bin"}
-    if cfg.claude_config_dir is not None:
-        env["CLAUDE_CONFIG_DIR"] = str(cfg.claude_config_dir)
+    env = build_env(cfg.claude_config_dir)
+    cwd = neutral_cwd(cfg.claude_config_dir)
 
     argv = _build_argv(
-        binary=_resolve_binary(cfg.binary),
+        binary=resolve_binary(cfg.binary),
         model=cfg.model,
         wiki_path=wiki_path,
         prompt_path=prompt_path,
@@ -307,7 +340,7 @@ async def run_wiki_session(
         )
 
         wiki_path.mkdir(parents=True, exist_ok=True)
-        proc = await spawner.spawn(argv, env=env, cwd=wiki_path)
+        proc = await spawner.spawn(argv, env=env, cwd=cwd)
         if proc.stdout is None:
             raise WikiRunnerError("spawned process has no stdout pipe")
 
@@ -354,8 +387,21 @@ async def run_wiki_session(
             _persist_transcript(events, transcript_path)
             raise WikiRunnerTimeoutError(f"wiki run exceeded timeout {cfg.timeout_s}s") from e
 
+    stderr_text = await _drain_stderr(proc)
     _persist_transcript(events, transcript_path)
     latency_ms = int((time.monotonic() - started) * 1000)
+    if exit_code != 0:
+        _log.error(
+            "wiki.run.error",
+            correlation_id=correlation_id,
+            wiki_id=wiki_id,
+            run_id=run_id,
+            exit_code=exit_code,
+            n_events=len(events),
+            latency_ms=latency_ms,
+            stderr=stderr_text,
+        )
+        raise WikiRunnerError(f"claude CLI exited rc={exit_code}; stderr={stderr_text}")
     _log.info(
         "wiki.run.finish",
         correlation_id=correlation_id,
@@ -372,3 +418,14 @@ async def run_wiki_session(
         transcript_path=transcript_path,
         latency_ms=latency_ms,
     )
+
+
+async def _drain_stderr(proc: SpawnedProcess) -> str:
+    """Read up to 4 KiB of stderr (best-effort, bounded). Returns truncated string."""
+    if proc.stderr is None:
+        return ""
+    try:
+        data = await asyncio.wait_for(proc.stderr.read(4096), timeout=1.0)
+    except (TimeoutError, asyncio.IncompleteReadError):
+        return ""
+    return truncate_stderr(data)

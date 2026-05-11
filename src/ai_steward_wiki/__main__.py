@@ -362,6 +362,11 @@ async def _amain() -> None:
     runtime_dir = settings.workspace_root / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     lock_manager = WikiLockManager()
+    if settings.claude_config_dir is None:
+        raise RuntimeError(
+            "claude_config_dir is required for wiki runner; set "
+            "AISW_CLAUDE_CONFIG_DIR_LOCAL or AISW_CLAUDE_CONFIG_DIR_VPS"
+        )
     runner_adapter = _WikiRunnerAdapter(
         wiki_root=settings.wiki_root,
         base_prompt_path=settings.prompts_dir / "wiki.md",

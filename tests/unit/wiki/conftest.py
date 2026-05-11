@@ -17,6 +17,7 @@ class FakeProcess:
 
     pid: int = 4242
     stdout: asyncio.StreamReader | None = None
+    stderr: asyncio.StreamReader | None = None
     _exit_code: int = 0
     _terminated: bool = False
     _killed: bool = False
@@ -41,6 +42,7 @@ class FakeSpawner:
     """Records argv/env/cwd, returns a FakeProcess with pre-loaded stdout lines."""
 
     lines: list[bytes] = field(default_factory=list)
+    stderr_bytes: bytes = b""
     exit_code: int = 0
     hang: bool = False
     calls: list[dict[str, object]] = field(default_factory=list)
@@ -52,8 +54,13 @@ class FakeSpawner:
             reader.feed_data(ln)
         if not self.hang:
             reader.feed_eof()
+        err = asyncio.StreamReader()
+        if self.stderr_bytes:
+            err.feed_data(self.stderr_bytes)
+        err.feed_eof()
         proc = FakeProcess(
             stdout=reader,
+            stderr=err,
             _exit_code=self.exit_code,
             _hang=self.hang,
         )
