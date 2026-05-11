@@ -141,7 +141,7 @@ Chunk 10 closed 2026-05-11: bd_id=aisw-187; M-TG-TEXT (tg/{__init__,bot,middlewa
     </Chunk>
 
     <Chunk id="16" bd_id="aisw-16" title="Deployment: systemd units, slices, sysusers, runbook" est_window="0.40" depends_on="aisw-1,aisw-13,aisw-14" module_id="M-DEPLOY">
-      <Inputs>deploy/systemd/{aisw-bot.service,aisw-bot.slice,aisw-stt.slice,aisw-sysusers.conf}; deploy/{staging,prod}/.env.example; docs/runbook/{deploy.md,operations.md}</Inputs>
+      <Inputs>deploy/systemd/{aisw-bot.service,aisw-bot.slice,aisw-stt.slice,aisw-sysusers.conf}; root .env.example (AISW_ENV=local|vps); docs/runbook/{deploy.md,operations.md}</Inputs>
       <Outputs>aisw-bot service with CAP_SETUID/CAP_SETGID; per-CLI systemd-run --scope --uid=aisw-N --unit=cli-&lt;job_id&gt;; transient scope props (MemoryMax=2G, TasksMax=64, ProtectSystem=strict, ReadOnlyPaths=&lt;service&gt;/prompts and CLAUDE_CONFIG_DIR); aisw-bot.slice MemoryHigh=12G/Max=16G; aisw-stt.slice 4G/CPUQuota=200%; per-user UID via systemd-sysusers drop-in</Outputs>
       <Verification>systemd-analyze verify; manual staging deploy</Verification>
     </Chunk>

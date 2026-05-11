@@ -58,7 +58,7 @@ ai-steward-wiki/
 ├── alembic/{jobs,audit,sessions}/
 ├── prompts/                        # classifier.md, wiki.md, inbox.md, domain-*.md
 ├── templates/                      # health.md, health-lite.md, …, _default.md
-├── deploy/{systemd,staging,prod}/
+├── deploy/systemd/
 ├── scripts/
 └── docs/
     ├── Spec-WIKI/                  # research / design SSoT (life-зона, отдельный CLAUDE.md там)

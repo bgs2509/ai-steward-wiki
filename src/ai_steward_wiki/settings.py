@@ -14,12 +14,13 @@
 #   LogLevel - Literal alias for accepted log levels
 #   Stage0Backend - Literal alias for Stage-0 classifier backends (D-009)
 #   TenancyMode - Literal alias for single|multi admin tenancy (chunk 12)
+#   Env - Literal alias for runtime profile (local|vps)
 #   Settings - frozen pydantic-settings BaseSettings, env-prefixed AISW_
 #   get_settings - cached accessor returning the singleton Settings instance
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.5 - chunk 13: pii_hash_secret/drop/mask + retention_dry_run
+#   LAST_CHANGE: v0.0.6 - add env=local|vps + dual TG bot tokens (local/prod)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = [
+    "Env",
     "LogLevel",
     "Settings",
     "Stage0Backend",
@@ -39,6 +41,7 @@ __all__ = [
     "get_settings",
 ]
 
+Env = Literal["local", "vps"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 Stage0Backend = Literal["claude_cli", "anthropic_api"]
 TenancyMode = Literal["single", "multi"]
@@ -53,9 +56,16 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    env: Env = "local"
     log_level: LogLevel = "INFO"
     workspace_root: Path = Path("/var/lib/ai-steward-wiki/workspace")
     claude_config_dir: Path = Path("/var/lib/ai-steward-wiki/claude-code")
+
+    # Telegram credentials. Two slots — selected by `env`. Keeps local test bot
+    # isolated from production bot so accidental writes never reach real users.
+    tg_bot_token_local: SecretStr | None = None
+    tg_bot_token_prod: SecretStr | None = None
+    tg_admin_telegram_ids: list[int] = []
 
     # Storage URLs (D-006). Default to async sqlite under workspace_root/data.
     jobs_db_url: str = "sqlite+aiosqlite:///data/jobs.db"
@@ -95,6 +105,22 @@ class Settings(BaseSettings):
     # Chunk 14: M-OPS-BACKUP (tech-spec §10.2, D-037).
     snapshot_dir: Path = Path("/var/lib/ai-steward-wiki/state/snapshots")
     snapshot_retention_days: int = 7
+
+    @property
+    def tg_bot_token(self) -> SecretStr | None:
+        """Active TG bot token chosen by `env` (local|vps)."""
+        return self.tg_bot_token_prod if self.env == "vps" else self.tg_bot_token_local
+
+    @model_validator(mode="after")
+    def _check_tg_token_for_env(self) -> Settings:
+        """Active env MUST provide its token slot; the other may stay empty."""
+        if self.env == "vps" and self.tg_bot_token_prod is None:
+            raise ValueError("tg_bot_token_prod required when env='vps'")
+        if self.env == "local" and self.tg_bot_token_local is None:
+            # Local default: allow None so unit tests can construct Settings()
+            # without a real token; runtime TG bringup checks tg_bot_token itself.
+            pass
+        return self
 
     @model_validator(mode="after")
     def _check_stage0_credential_isolation(self) -> Settings:

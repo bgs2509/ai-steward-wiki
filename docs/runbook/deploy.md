@@ -1,6 +1,6 @@
 # Deploy runbook — `ai-steward-wiki`
 
-> **Scope:** install / upgrade / rollback of the bot on a single VPS. SSoT for systemd layout — `deploy/systemd/`. SSoT for env — `deploy/{staging,prod}/.env.example`. Source rationale — tech-spec §10.1, D-038.
+> **Scope:** install / upgrade / rollback of the bot on a single VPS. SSoT for systemd layout — `deploy/systemd/`. SSoT for env — root `.env.example` (single template, profile selected via `AISW_ENV=local|vps`). Source rationale — tech-spec §10.1, D-038.
 
 ## 1. Layout (paths are load-bearing)
 
@@ -20,7 +20,7 @@
 3. `sudo install -d -o aisw-bot -g aisw-claude -m 0750 /var/lib/ai-steward-wiki/claude-code`
 4. `sudo -u aisw-bot git clone <repo-url> /opt/ai-steward-wiki && cd /opt/ai-steward-wiki && sudo -u aisw-bot uv sync --frozen`
 5. Authenticate Claude CLI once into `/var/lib/ai-steward-wiki/claude-code` (subscription mode, D-013). One-shot, manual.
-6. `sudo install -m 0640 -o root -g aisw-bot deploy/{staging|prod}/.env.example /etc/ai-steward-wiki/.env` and edit secrets in place.
+6. `sudo install -m 0640 -o root -g aisw-bot .env.example /etc/ai-steward-wiki/.env`, set `AISW_ENV=vps`, fill `AISW_TG_BOT_TOKEN_PROD` + `AISW_TG_ADMIN_TELEGRAM_IDS`, leave `AISW_TG_BOT_TOKEN_LOCAL` empty.
 7. `sudo cp deploy/systemd/aisw-bot.slice deploy/systemd/aisw-stt.slice deploy/systemd/aisw-bot.service /etc/systemd/system/`
 8. `sudo systemd-analyze verify /etc/systemd/system/aisw-bot.service /etc/systemd/system/aisw-bot.slice /etc/systemd/system/aisw-stt.slice`
 9. `sudo systemctl daemon-reload && sudo systemctl enable --now aisw-bot.service`

@@ -103,13 +103,21 @@ qa:      $(MAKE) lint && $(MAKE) test
 
 bd's `.git/hooks/pre-commit` остаётся (`pre-commit install` использует `core.hooksPath` или `pre-commit-multi`). Если конфликт — `pre-commit install --hook-type pre-commit -f` с переносом bd-команд в `local` hook (решим в Execution при первом конфликте).
 
-## .env.example — initial keys (расширим по чанкам)
+## .env.example — single template (AISW_ENV switch + dual TG tokens)
+
+Корневой `.env.example` — единственный шаблон. Профиль выбирается через `AISW_ENV=local|vps`; локальный и продовый TG-токены живут в разных полях, активный выбирается по `env`. Для VPS файл инсталлируется как `/etc/ai-steward-wiki/.env` (`0640 root:aisw-bot`).
 
 ```
+AISW_ENV=local
 AISW_LOG_LEVEL=INFO
 AISW_WORKSPACE_ROOT=/var/lib/ai-steward-wiki/workspace
 AISW_CLAUDE_CONFIG_DIR=/var/lib/ai-steward-wiki/claude-code
+AISW_TG_BOT_TOKEN_LOCAL=__SET_ME_LOCAL__
+AISW_TG_BOT_TOKEN_PROD=__SET_ME_PROD__
+AISW_TG_ADMIN_TELEGRAM_IDS=__SET_ME__
 ```
+
+`Settings._check_tg_token_for_env` валидатор требует `tg_bot_token_prod` при `env='vps'`; при `env='local'` оба слота могут быть пусты (для unit-тестов без живого бота).
 
 ## Tests (этот чанк)
 
