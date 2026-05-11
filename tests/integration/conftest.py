@@ -253,14 +253,23 @@ __all__ = [
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip all tests in this folder unless RUN_INTEGRATION=1 and `claude` binary present."""
+    """Skip every test in this folder unless we are on a host that can actually
+    invoke the Claude CLI subprocess: needs RUN_INTEGRATION=1, the `claude`
+    binary on PATH, and NOT running inside a parent Claude Code session
+    (CLAUDECODE=1 — recursive invocation breaks subscription auth)."""
     skip_no_gate = pytest.mark.skip(reason="set RUN_INTEGRATION=1 to enable integration suite")
     skip_no_claude = pytest.mark.skip(reason="`claude` binary not on PATH")
+    skip_recursive = pytest.mark.skip(
+        reason="recursive claude invocation (CLAUDECODE=1) — run outside Claude Code"
+    )
     gate = os.environ.get("RUN_INTEGRATION") == "1"
     has_claude = shutil.which("claude") is not None
+    is_recursive = os.environ.get("CLAUDECODE") == "1"
     for item in items:
         if str(item.fspath).startswith(str(Path(__file__).parent)):
             if not gate:
                 item.add_marker(skip_no_gate)
             elif not has_claude:
                 item.add_marker(skip_no_claude)
+            elif is_recursive:
+                item.add_marker(skip_recursive)

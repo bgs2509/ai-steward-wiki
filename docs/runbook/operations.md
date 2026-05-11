@@ -88,12 +88,13 @@
 
 ### Gate
 
-The integration suite is **opt-in**. It runs only when both conditions hold:
+The integration suite is **opt-in**. It runs only when all three conditions hold:
 
 1. `RUN_INTEGRATION=1` environment variable is set.
 2. The `claude` binary is on `PATH` (subscription auth via `CLAUDE_CONFIG_DIR`).
+3. `CLAUDECODE` is **unset** — the suite is not inside a parent Claude Code session. Recursive `claude` invocation from within Claude Code breaks subscription auth (`rc=1` with no usable stderr).
 
-When either is missing, every test under `tests/integration/` is skipped silently — `make total-test` stays green on dev boxes without a Claude subscription.
+When any condition fails, every test under `tests/integration/` is skipped silently — `make total-test` stays green on dev boxes without a Claude subscription and inside Claude Code agent sessions.
 
 ### Command
 
@@ -127,7 +128,7 @@ Runner Stage-1a/1b is **faked** in all scenarios — keeps wall-time inside the 
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| All tests skipped | Gate var or binary missing | `export RUN_INTEGRATION=1`; verify `which claude` |
+| All tests skipped | Gate var or binary missing, or inside Claude Code | `export RUN_INTEGRATION=1`; verify `which claude`; ensure `CLAUDECODE` is unset (run outside the Claude Code CLI) |
 | `subprocess.TimeoutExpired` | Claude CLI cold start or quota | Re-run; check subscription dashboard |
 | `OperationalError: database is locked` | Stale tmp_path artefacts | `rm -rf /tmp/pytest-*`; re-run |
 | `_extract_pdf_text` empty | Latin-1 PDF stream — pypdf cannot decode | Accepted: scenario assertion tolerates either branch |
