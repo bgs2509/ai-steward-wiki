@@ -89,7 +89,7 @@ uv run python -m ai_steward_wiki                 # bot entrypoint
 uv run pytest tests/unit                         # unit, ≥80% core coverage
 RUN_INTEGRATION=1 uv run pytest tests/integration   # nightly, реальный Claude CLI
 make lint                                        # ruff + ruff format + mypy + grace lint
-make qa                                          # lint + unit + integration
+make total-test                                  # lint + grace + inv-lint + coverage (≥80%) + integration
 ```
 
 ## Деплой

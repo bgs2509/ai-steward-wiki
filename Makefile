@@ -1,4 +1,4 @@
-.PHONY: help install lint ruff-check ruff-format-check mypy grace-lint inv-lint format test test-unit test-integration test-cov qa nightly total-test clean
+.PHONY: help install lint ruff-check ruff-format-check mypy grace-lint inv-lint format test test-unit test-integration test-cov total-test clean
 
 # Fail-fast: cheapest checks first, then heavier ones.
 # Order rationale (Google/Stripe SRE Make conventions):
@@ -18,8 +18,8 @@ help:
 	@echo "make test             - pytest tests/"
 	@echo "make test-unit        - pytest tests/unit"
 	@echo "make test-integration - RUN_INTEGRATION=1 pytest tests/integration"
-	@echo "make qa               - lint + grace-lint + test"
-	@echo "make total-test       - full fail-fast pipeline: ruff + mypy + grace + unit + integration"
+	@echo "make test-cov         - pytest unit + coverage report (--cov-fail-under=80)"
+	@echo "make total-test       - full fail-fast pipeline: ruff + mypy + grace + inv-lint + coverage + integration"
 	@echo "make clean            - remove caches and build artifacts"
 
 install:
@@ -62,17 +62,11 @@ inv-lint:
 test-cov:
 	uv run pytest tests/unit --cov=src/ai_steward_wiki --cov-report=term-missing --cov-fail-under=80
 
-nightly: total-test test-cov
-	@echo ""
-	@echo "✓ nightly passed: total-test + coverage gate"
-
-qa: lint grace-lint inv-lint test
-
 # Full quality gate. Order is intentional: cheapest checks first so the
 # pipeline fails as early as possible. Mirrors what CI runs on every PR.
-total-test: ruff-check ruff-format-check mypy grace-lint inv-lint test-unit test-integration
+total-test: ruff-check ruff-format-check mypy grace-lint inv-lint test-cov test-integration
 	@echo ""
-	@echo "✓ total-test passed: ruff + mypy + grace lint + unit + integration"
+	@echo "✓ total-test passed: ruff + mypy + grace lint + inv-lint + coverage (≥80%) + integration"
 
 clean:
 	rm -rf .ruff_cache .mypy_cache .pytest_cache build dist *.egg-info htmlcov .coverage
