@@ -7,8 +7,11 @@
 #   3. mypy --strict      — seconds, type errors
 #   4. grace lint         — seconds, semantic-markup + governance
 #   5. pytest unit        — fast, isolated
-#   6. pytest integration — slow, real Claude CLI / DB I/O
 # Each target shells out fresh; Make halts on the first non-zero exit.
+#
+# Integration tests (real Claude CLI) are NOT in this gate — run them
+# separately via `make test-integration` per the nightly cadence in
+# docs/runbook/operations.md §Integration testing.
 
 help:
 	@echo "make install          - uv sync (incl. dev group)"
@@ -19,7 +22,7 @@ help:
 	@echo "make test-unit        - pytest tests/unit"
 	@echo "make test-integration - RUN_INTEGRATION=1 pytest tests/integration"
 	@echo "make test-cov         - pytest unit + coverage report (--cov-fail-under=80)"
-	@echo "make total-test       - full fail-fast pipeline: ruff + mypy + grace + inv-lint + coverage + integration"
+	@echo "make total-test       - pre-merge gate: ruff + mypy + grace + inv-lint + coverage (NO integration)"
 	@echo "make clean            - remove caches and build artifacts"
 
 install:

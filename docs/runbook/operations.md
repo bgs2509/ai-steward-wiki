@@ -112,6 +112,7 @@ make test-integration
 ### Cadence
 
 - **Manual nightly** before each cutover window. No CI auto-trigger (subscription token cost; recursive `claude` invocation footgun).
+- **Not part of `make total-test`** — integration is intentionally excluded from the pre-merge gate (env-sensitive: requires `socat`/`bubblewrap` for sandbox, valid subscription auth, and parent shell with `CLAUDECODE` unset). Run separately via `make test-integration`.
 - Run from the dev VPS (`/opt/ai-steward-wiki`) or a developer workstation with the same `CLAUDE_CONFIG_DIR` mounted/copied.
 
 ### Scenarios

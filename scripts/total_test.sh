@@ -9,7 +9,13 @@
 #   4. grace lint --failOn errors
 #   5. inv-lint   (scripts/lint_invariants.py)
 #   6. test-cov   (pytest unit + coverage ≥80%)
-#   7. integration (pytest tests/integration, if present)
+#
+# Integration suite (tests/integration) is intentionally NOT part of this
+# pre-merge gate. It hits the real Claude CLI subprocess (paid quota,
+# subscription auth, sandbox deps like socat/bubblewrap) and is therefore
+# environment-sensitive and non-deterministic. Run separately via
+# `make test-integration` per docs/runbook/operations.md §Integration testing
+# (cadence: manual nightly + pre-cutover).
 
 set -u
 set -o pipefail
@@ -47,17 +53,6 @@ step_mypy()              { uv run mypy src; }
 step_grace_lint()        { grace lint --failOn errors; }
 step_inv_lint()          { uv run python scripts/lint_invariants.py; }
 step_test_cov()          { uv run pytest tests/unit --cov=src/ai_steward_wiki --cov-report=term-missing --cov-fail-under=80; }
-step_integration() {
-  if [ ! -d tests/integration ]; then
-    echo "tests/integration not present — skipping"
-    return 0
-  fi
-  if [ "${CLAUDECODE:-}" = "1" ]; then
-    echo "CLAUDECODE=1 detected — skipping integration (recursive claude invocation breaks subscription auth)"
-    return 0
-  fi
-  RUN_INTEGRATION=1 CLAUDECODE="${CLAUDECODE:-}" uv run pytest tests/integration -v
-}
 
 # --- key-metric extractors ---------------------------------------------------
 
@@ -139,12 +134,6 @@ summary_pytest() {
   [ -n "$cov" ] && result="${result} | coverage=${cov}"
   echo "$result"
 }
-summary_integration() {
-  local log="$1"
-  if grep -q "skipping" "$log"; then echo "skipped=0 (tests/integration absent)"; return; fi
-  summary_pytest "$log"
-}
-
 # --- run pipeline (fail-fast) -----------------------------------------------
 
 OVERALL=0
@@ -164,7 +153,6 @@ run_one ruff-check        step_ruff_check        summary_ruff_check        && [ 
 [ $OVERALL -eq 0 ] && run_one grace-lint        step_grace_lint        summary_grace
 [ $OVERALL -eq 0 ] && run_one inv-lint          step_inv_lint          summary_inv_lint
 [ $OVERALL -eq 0 ] && run_one test-cov          step_test_cov          summary_pytest
-[ $OVERALL -eq 0 ] && run_one integration       step_integration       summary_integration
 
 # --- final report -----------------------------------------------------------
 
