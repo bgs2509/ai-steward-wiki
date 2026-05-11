@@ -23,7 +23,7 @@
     <Phase-21 NAME="TG pipeline streaming" STATUS="done" bd_id="aisw-a3z">
       <description>Wrap WikiRunner with StreamEditor (1.5s throttle, Δ50, chain-split 4000) when estimated_duration_s > 5 (DEC-L2). Placeholder edit-in-place + final flush guarantee. SSoT: launch breakdown chunk-21.</description>
     </Phase-21>
-    <Phase-22 NAME="TG document full handler" STATUS="planned">
+    <Phase-22 NAME="TG document full handler" STATUS="planned" bd_id="aisw-wku">
       <description>Mime-routing in on_document (DEC-L3): pdf→OCR, text/*→inline, image/*→photo path, else reject. L2 dedup on doc_sha256. Filename PII tier-2 hash. SSoT: launch breakdown chunk-22.</description>
     </Phase-22>
     <Phase-23 NAME="Integration E2E suite" STATUS="planned">

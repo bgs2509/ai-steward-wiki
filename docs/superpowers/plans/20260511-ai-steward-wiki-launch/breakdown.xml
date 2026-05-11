@@ -75,7 +75,7 @@
       <rationale>UX: 60s+ Claude responses without feedback feel like timeout. Streaming closes the perceived-latency gap.</rationale>
     </Chunk>
 
-    <Chunk id="22" bd_id="" title="M-TG-DOCUMENT-FULL — document handler mime routing, staging, L2 dedup" est_window="0.35" depends_on="20" module_id="M-TG-DOCUMENT-FULL">
+    <Chunk id="22" bd_id="aisw-wku" title="M-TG-DOCUMENT-FULL — document handler mime routing, staging, L2 dedup" est_window="0.35" depends_on="20" module_id="M-TG-DOCUMENT-FULL">
       <scope>
         Replace ack-only DefaultPipeline.on_document with mime-based routing (DEC-L3):
         pdf → OCR stage (reuse photo OCR path), text/* → inline as text input, image/* → photo stage, else → polite rejection.

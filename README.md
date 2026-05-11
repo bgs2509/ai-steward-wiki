@@ -27,9 +27,11 @@ uv run python -m ai_steward_wiki
 The bot starts, the allowlist middleware gates updates by `telegram_id`, and
 allowlisted text / voice / photo / document messages and confirm-callbacks
 flow through `M-TG-HANDLERS-WIRING` → `DefaultPipeline` (L1 idempotency dedup,
-optional voice/photo staging, ack delivery, confirmation resolve). The
-classifier + WikiRunner + `deliver_output` wiring lands in a follow-up chunk;
-until then the pipeline replies with short Russian acks.
+optional voice/photo staging, ack delivery, confirmation resolve). Document
+messages route by MIME (`M-TG-DOCUMENT-FULL`): `application/pdf` → pypdf text
+extract → text pipeline, `text/*` → UTF-8 decode → text pipeline, `image/*` →
+photo stage, else → polite rejection. L2 dedup on `doc_sha256` and tier-2
+filename hashing protect against duplicates and PII leakage in logs.
 
 ## Quality gates
 

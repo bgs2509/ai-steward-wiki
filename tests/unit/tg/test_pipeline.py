@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from ai_steward_wiki.tg.pipeline import (
-    ACK_DOC_RU,
     ACK_PHOTO_RU,
     ACK_TEXT_RU,
     ACK_VOICE_RU,
@@ -147,26 +146,12 @@ async def test_on_photo_without_ingestor_falls_back() -> None:
 
 
 @pytest.mark.asyncio
-async def test_on_document_logs_and_acks() -> None:
-    sender = FakeSender()
-    pipe = DefaultPipeline(
-        sender=sender,
-        idempotency=_make_idem(),
-        confirmation=_make_confirm(),
-    )
-    await pipe.on_document(
-        telegram_id=1,
-        chat_id=10,
-        update_id=100,
-        doc_bytes=b"hello",
-        mime="text/plain",
-        filename="x.txt",
-    )
-    assert sender.sends[0]["text"] == ACK_DOC_RU
-
-
-@pytest.mark.asyncio
 async def test_on_document_skips_on_l1_duplicate() -> None:
+    """L1 dup short-circuits before any L2/mime processing.
+
+    Broader on_document coverage (mime routing, L2 dedup, PII hashing) lives in
+    tests/unit/tg/test_pipeline_document.py — see chunk 22 M-TG-DOCUMENT-FULL.
+    """
     sender = FakeSender()
     pipe = DefaultPipeline(
         sender=sender,

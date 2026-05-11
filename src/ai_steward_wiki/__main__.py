@@ -56,6 +56,7 @@ from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
 from ai_steward_wiki.classifier.stage0 import PromptCache, classify
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
 from ai_steward_wiki.logging_setup import configure_logging
+from ai_steward_wiki.ops.pii import PIIRedactor
 from ai_steward_wiki.scheduler.core import build_scheduler
 from ai_steward_wiki.scheduler.locks import WikiLockManager
 from ai_steward_wiki.settings import Settings, get_settings
@@ -399,6 +400,7 @@ async def _amain() -> None:
         runner=runner_adapter,
         output=output_adapter,
         streaming=streaming_delivery,
+        pii=PIIRedactor(hash_secret=settings.pii_hash_secret.get_secret_value().encode("utf-8")),
     )
     dp = build_dispatcher(allowlist, pipeline=pipeline)
     logger.info("runtime.handlers.registered")

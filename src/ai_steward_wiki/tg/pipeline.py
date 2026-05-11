@@ -1,26 +1,32 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.2.0
+# VERSION: 0.3.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
 #            orchestration is unit-testable without a live Telegram bot.
 #            v0.1.0 (chunk 20): wires Classifier (Stage-0) → Inbox L2 dedup →
 #            WikiRunner (Stage-1a/1b) → OutputDelivery into on_text and
-#            on_voice. Building blocks pre-existed; this module owns the
-#            composition + safe-by-default error handling at the boundary.
+#            on_voice. v0.3.0 (chunk 22, M-TG-DOCUMENT-FULL): on_document
+#            performs mime-based routing (DEC-L3) — pdf → pypdf text extract
+#            → text pipeline; text/* → utf-8 decode → text pipeline; image/*
+#            → PhotoIngestor; else → ru-only reject. L2 dedup on doc_sha256
+#            (D-018) and tier-2 PII filename hashing in all log lines.
 #   SCOPE: MessagePipeline Protocol + Classifier/WikiRunner/OutputDelivery
 #          Protocols + WikiRunOutcome dataclass + DefaultPipeline
-#          implementation with optional injection (None → ack fallback).
+#          implementation with optional injection (None → ack fallback) +
+#          document mime router with size cap, L2 dedup and PII-safe logs.
 #   DEPENDS: ai_steward_wiki.classifier.schema (ClassifierResult, Intent,
 #            ClassifierError),
 #            ai_steward_wiki.inbox.idempotency.IdempotencyService,
 #            ai_steward_wiki.inbox.staging.MediaRef,
+#            ai_steward_wiki.ops.pii.PIIRedactor,
 #            ai_steward_wiki.tg.voice.VoiceHandler (optional),
 #            ai_steward_wiki.tg.photo.PhotoIngestor (optional),
 #            ai_steward_wiki.tg.confirm.ConfirmationService,
-#            ai_steward_wiki.tg.bot.TgSender, structlog
-#   LINKS: M-TG-PIPELINE-CLASSIFIER (chunk 20), M-TG-HANDLERS-WIRING
-#          (chunk 19), D-016, D-017, D-018, DEC-TPC-1..6
+#            ai_steward_wiki.tg.bot.TgSender, structlog, pypdf
+#   LINKS: M-TG-PIPELINE-CLASSIFIER (chunk 20), M-TG-PIPELINE-STREAMING
+#          (chunk 21), M-TG-DOCUMENT-FULL (chunk 22), M-TG-HANDLERS-WIRING
+#          (chunk 19), D-016, D-017, D-018, D-022, D-034, DEC-L3, DEC-TPC-1..6
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -29,10 +35,16 @@
 #   ACK_TEXT_RU - default ack copy (fallback when classifier/runner/output missing)
 #   ACK_VOICE_RU - prefix for voice-transcript reply (fallback)
 #   ACK_PHOTO_RU - ack for staged photo
-#   ACK_DOC_RU - ack for staged document
+#   ACK_DOC_RU - ack for staged document (legacy fallback when pipeline incomplete)
+#   ACK_DOC_UNSUPPORTED_RU - reject for unsupported document mime (DEC-L3)
+#   ACK_DOC_PDF_NO_TEXT_RU - hint when PDF has no extractable text
+#   ACK_DOC_TOO_LARGE_RU - reject above MAX_DOC_BYTES
 #   ACK_DEDUP_RU - reply on L2 dedup hit
 #   ACK_CLASSIFY_ERR_RU - safe ack on classifier failure
 #   ACK_RUNNER_ERR_RU - safe ack on runner failure
+#   MAX_DOC_BYTES - hard cap on incoming document size (25 MB)
+#   PDF_MAX_EXTRACT_CHARS - truncate point for pypdf-extracted text
+#   SUPPORTED_IMAGE_MIMES - frozenset of mimes routed to PhotoIngestor
 #   ConfirmKeyboardAction - Literal[confirm|correct|cancel]
 #   Classifier - Protocol (Stage-0 wrapper, narrow API)
 #   WikiRunOutcome - frozen dataclass returned by WikiRunner.run
@@ -45,7 +57,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.2.0 - chunk 21: StreamingDelivery race+stream wrapper
+#   LAST_CHANGE: v0.3.0 - chunk 22: on_document mime router (DEC-L3) +
+#                L2 dedup on doc_sha256 + PII tier-2 filename hash in logs
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -64,6 +77,7 @@ from ai_steward_wiki.classifier.schema import (
     Intent,
 )
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
+from ai_steward_wiki.ops.pii import PIIRedactor
 from ai_steward_wiki.tg.bot import TgSender
 from ai_steward_wiki.tg.confirm import ConfirmationService
 from ai_steward_wiki.tg.photo import PhotoIngestor
@@ -73,11 +87,17 @@ from ai_steward_wiki.wiki.runner import WikiRunnerError
 __all__ = [
     "ACK_CLASSIFY_ERR_RU",
     "ACK_DEDUP_RU",
+    "ACK_DOC_PDF_NO_TEXT_RU",
     "ACK_DOC_RU",
+    "ACK_DOC_TOO_LARGE_RU",
+    "ACK_DOC_UNSUPPORTED_RU",
     "ACK_PHOTO_RU",
     "ACK_RUNNER_ERR_RU",
     "ACK_TEXT_RU",
     "ACK_VOICE_RU",
+    "MAX_DOC_BYTES",
+    "PDF_MAX_EXTRACT_CHARS",
+    "SUPPORTED_IMAGE_MIMES",
     "Classifier",
     "ConfirmKeyboardAction",
     "DefaultPipeline",
@@ -101,6 +121,15 @@ ACK_DOC_RU = "Файл получен."
 ACK_DEDUP_RU = "Уже видел такое сообщение — повторно не запускаю."
 ACK_CLASSIFY_ERR_RU = "Не удалось распознать запрос, попробуйте ещё раз."  # noqa: RUF001
 ACK_RUNNER_ERR_RU = "Задача заняла слишком много времени, попробуйте позже."
+# DEC-L3 reject + edge-case strings (chunk 22 M-TG-DOCUMENT-FULL).
+ACK_DOC_UNSUPPORTED_RU = "Этот тип файла пока не поддерживается."
+ACK_DOC_PDF_NO_TEXT_RU = "Не вижу текста в PDF. Попробуйте отправить страницу как фото."  # noqa: RUF001
+ACK_DOC_TOO_LARGE_RU = "Файл слишком большой (лимит 25 МБ)."
+
+# Document handler limits (chunk 22).
+MAX_DOC_BYTES = 25 * 1024 * 1024
+PDF_MAX_EXTRACT_CHARS = 50_000
+SUPPORTED_IMAGE_MIMES = frozenset({"image/jpeg", "image/jpg", "image/png", "image/webp"})
 
 ConfirmKeyboardAction = Literal["confirm", "correct", "cancel"]
 
@@ -220,6 +249,36 @@ class MessagePipeline(Protocol):
     ) -> None: ...
 
 
+# START_CONTRACT: _extract_pdf_text
+#   PURPOSE: Pure-python text extraction from PDF bytes via pypdf.
+#   INPUTS: { data: bytes - raw PDF bytes,
+#             max_chars: int - cap on returned string length }
+#   OUTPUTS: { str - concatenated page text (truncated with suffix if too long),
+#              or "" if no text extractable / parse error }
+#   SIDE_EFFECTS: none (memory-only parse).
+#   LINKS: DEC-L3 (PDF branch), D-022, R-3, R-4 (Discovery)
+# END_CONTRACT: _extract_pdf_text
+def _extract_pdf_text(data: bytes, *, max_chars: int = PDF_MAX_EXTRACT_CHARS) -> str:
+    # START_BLOCK_PDF_EXTRACT
+    import io
+
+    import pypdf
+    from pypdf.errors import PdfReadError
+
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(data))
+        pages = [(page.extract_text() or "") for page in reader.pages]
+    except (PdfReadError, ValueError, OSError, KeyError, IndexError):
+        return ""
+    except Exception:
+        return ""
+    text = "\n\n".join(s.strip() for s in pages if s.strip())
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n[truncated]"
+    return text
+    # END_BLOCK_PDF_EXTRACT
+
+
 class DefaultPipeline:
     """Default coordinator. Composes building blocks; safe-by-default acks."""
 
@@ -235,6 +294,7 @@ class DefaultPipeline:
         runner: WikiRunner | None = None,
         output: OutputDelivery | None = None,
         streaming: StreamingDelivery | None = None,
+        pii: PIIRedactor | None = None,
     ) -> None:
         self._sender = sender
         self._idem = idempotency
@@ -245,6 +305,7 @@ class DefaultPipeline:
         self._runner = runner
         self._output = output
         self._streaming = streaming
+        self._pii = pii or PIIRedactor()
 
     async def _l1_check(self, *, update_id: int, telegram_id: int, kind: str) -> bool:
         """Return True iff the update is new (proceed). Logs on duplicate."""
@@ -272,7 +333,7 @@ class DefaultPipeline:
         chat_id: int,
         update_id: int,
         text: str,
-        source: Literal["text", "voice"],
+        source: Literal["text", "voice", "document"],
     ) -> None:
         """Shared body: L2 dedup → classify → run → deliver. Errors → safe acks."""
         assert self._classifier is not None
@@ -498,6 +559,12 @@ class DefaultPipeline:
         )
         await self._sender.send_message(chat_id, ACK_PHOTO_RU)
 
+    def _safe_filename_log(self, filename: str) -> str:
+        """Return tier-2 PII-hashed filename token for use in log lines."""
+        normalized = (filename or "unnamed").lower().strip() or "unnamed"
+        return self._pii.hash_token(normalized)
+
+    # START_BLOCK_ON_DOCUMENT
     async def on_document(
         self,
         *,
@@ -508,20 +575,226 @@ class DefaultPipeline:
         mime: str,
         filename: str,
     ) -> None:
+        """Mime-routed document ingest (DEC-L3, chunk 22 M-TG-DOCUMENT-FULL).
+
+        Branches:
+          - application/pdf      → pypdf text extract → _run_text_pipeline
+          - text/*               → utf-8 decode (BOM-tolerant) → _run_text_pipeline
+          - image/* (supported)  → PhotoIngestor.handle, ack
+          - else                 → ru-only reject, no audit error
+        L2 dedup on raw doc bytes runs before branching; filenames are PII-hashed.
+        """
         if not await self._l1_check(update_id=update_id, telegram_id=telegram_id, kind="document"):
             return
-        # Document staging is reserved for a future chunk (chunk 22 M-TG-DOCUMENT-FULL, D-022).
-        # MVP: log + ack so the wire is observable in journald.
+
+        hashed_filename = self._safe_filename_log(filename)
+        size = len(doc_bytes)
+        mime_lc = mime.lower()
+
+        # Size cap (R-3).
+        if size > MAX_DOC_BYTES:
+            _log.info(
+                "tg.pipeline.document.rejected",
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                update_id=update_id,
+                hashed_filename=hashed_filename,
+                mime=mime_lc,
+                size=size,
+                reason="too_large",
+            )
+            await self._sender.send_message(chat_id, ACK_DOC_TOO_LARGE_RU)
+            return
+
+        # L2 dedup on raw doc bytes (D-018).
+        sha256, match = await self._idem.check_content(telegram_id, "file", doc_bytes)
+        if match is not None:
+            _log.info(
+                "tg.pipeline.document.dedup_hit",
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                update_id=update_id,
+                hashed_filename=hashed_filename,
+                sha256_short=sha256[:8],
+                mime=mime_lc,
+            )
+            await self._idem.record_dedup_choice(sha256, telegram_id, "duplicate_doc")
+            await self._sender.send_message(chat_id, ACK_DEDUP_RU)
+            return
+
         _log.info(
-            "tg.pipeline.document",
+            "tg.pipeline.document.received",
             telegram_id=telegram_id,
             chat_id=chat_id,
             update_id=update_id,
-            mime=mime,
-            filename=filename,
-            size=len(doc_bytes),
+            hashed_filename=hashed_filename,
+            mime=mime_lc,
+            size=size,
+            sha256_short=sha256[:8],
         )
-        await self._sender.send_message(chat_id, ACK_DOC_RU)
+
+        # Mime dispatch (DEC-L3).
+        if mime_lc == "application/pdf":
+            await self._handle_pdf_branch(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                update_id=update_id,
+                doc_bytes=doc_bytes,
+                hashed_filename=hashed_filename,
+            )
+            return
+        if mime_lc.startswith("text/"):
+            await self._handle_text_branch(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                update_id=update_id,
+                doc_bytes=doc_bytes,
+                hashed_filename=hashed_filename,
+                mime=mime_lc,
+            )
+            return
+        if mime_lc in SUPPORTED_IMAGE_MIMES:
+            await self._handle_image_branch(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                update_id=update_id,
+                doc_bytes=doc_bytes,
+                mime=mime_lc,
+                hashed_filename=hashed_filename,
+            )
+            return
+
+        _log.info(
+            "tg.pipeline.document.rejected",
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            update_id=update_id,
+            hashed_filename=hashed_filename,
+            mime=mime_lc,
+            reason="unsupported_mime",
+        )
+        await self._sender.send_message(chat_id, ACK_DOC_UNSUPPORTED_RU)
+
+    async def _handle_pdf_branch(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        update_id: int,
+        doc_bytes: bytes,
+        hashed_filename: str,
+    ) -> None:
+        text = _extract_pdf_text(doc_bytes)
+        if not text:
+            _log.info(
+                "tg.pipeline.document.rejected",
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                update_id=update_id,
+                hashed_filename=hashed_filename,
+                mime="application/pdf",
+                reason="pdf_no_text",
+            )
+            await self._sender.send_message(chat_id, ACK_DOC_PDF_NO_TEXT_RU)
+            return
+        _log.info(
+            "tg.pipeline.document.routed_text",
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            update_id=update_id,
+            hashed_filename=hashed_filename,
+            source="pdf",
+            chars=len(text),
+        )
+        if not self._full_pipeline_available():
+            await self._sender.send_message(chat_id, ACK_DOC_RU)
+            return
+        await self._run_text_pipeline(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            update_id=update_id,
+            text=text,
+            source="document",
+        )
+
+    async def _handle_text_branch(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        update_id: int,
+        doc_bytes: bytes,
+        hashed_filename: str,
+        mime: str,
+    ) -> None:
+        try:
+            text = doc_bytes.decode("utf-8-sig", errors="strict")
+        except UnicodeDecodeError:
+            _log.info(
+                "tg.pipeline.document.rejected",
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                update_id=update_id,
+                hashed_filename=hashed_filename,
+                mime=mime,
+                reason="text_not_utf8",
+            )
+            await self._sender.send_message(chat_id, ACK_DOC_UNSUPPORTED_RU)
+            return
+        _log.info(
+            "tg.pipeline.document.routed_text",
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            update_id=update_id,
+            hashed_filename=hashed_filename,
+            source="text",
+            chars=len(text),
+        )
+        if not self._full_pipeline_available():
+            await self._sender.send_message(chat_id, ACK_DOC_RU)
+            return
+        await self._run_text_pipeline(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            update_id=update_id,
+            text=text,
+            source="document",
+        )
+
+    async def _handle_image_branch(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        update_id: int,
+        doc_bytes: bytes,
+        mime: str,
+        hashed_filename: str,
+    ) -> None:
+        if self._photo is None:
+            _log.warning(
+                "tg.pipeline.document.image_no_handler",
+                telegram_id=telegram_id,
+                hashed_filename=hashed_filename,
+                mime=mime,
+            )
+            await self._sender.send_message(chat_id, ACK_PHOTO_RU)
+            return
+        run_id = f"doc-img-{uuid4().hex[:12]}"
+        ref = self._photo.handle(doc_bytes, run_id=run_id, mime=mime)
+        _log.info(
+            "tg.pipeline.document.routed_image",
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            update_id=update_id,
+            hashed_filename=hashed_filename,
+            run_id=run_id,
+            sha256_short=ref.sha256[:8],
+            ext=ref.ext,
+        )
+        await self._sender.send_message(chat_id, ACK_PHOTO_RU)
+
+    # END_BLOCK_ON_DOCUMENT
 
     async def on_confirm_callback(
         self,
