@@ -37,3 +37,14 @@ until then the pipeline replies with short Russian acks.
 make lint          # ruff + ruff format + mypy --strict
 make total-test    # lint + grace + 14 invariants + unit (≥80% coverage)
 ```
+
+## Roadmap
+
+1. **MVP** (chunks 1–17) — closed. See `docs/reports/20260511-ai-steward-wiki-mvp-report.md`.
+2. **Post-MVP done:** chunk 18 `M-RUNTIME-WIRING`, chunk 19 `M-TG-HANDLERS-WIRING`.
+3. **Path to production launch** (planned, pre-Beads draft):
+   `docs/superpowers/plans/20260511-ai-steward-wiki-launch/` —
+   `breakdown.xml` (chunks 20–23 with scope/depends/exit-criteria),
+   `breakdown-summary.md` (human-readable), and
+   `cutover-checklist.md` (one-shot production cutover runbook).
+4. **Operational runbooks** (permanent): `docs/runbook/{deploy,operations,restore}.md`.
