@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/voice.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Voice (ogg/opus) ingestion — faster-whisper CPU STT + staging hand-off.
 #   SCOPE: VoiceTranscriber Protocol, Transcript dataclass, FasterWhisperTranscriber
@@ -13,6 +13,7 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
+#   VoiceUnavailableError - raised when STT backend (faster-whisper) is missing
 #   Transcript - frozen dataclass (text, lang, duration_s, model, rtf)
 #   VoiceTranscriber - Protocol with transcribe(audio_bytes, hint_lang) -> Transcript
 #   FasterWhisperTranscriber - default impl, lazy model load, fallback lang="ru"
@@ -20,7 +21,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 11: initial voice STT + staging (D-022)
+#   LAST_CHANGE: v0.0.2 - aisw-zny (media chunk 1): _load_model raises
+#                VoiceUnavailableError on missing faster-whisper so the runtime
+#                can degrade gracefully instead of a silent generic ack.
+#   PREVIOUS:    v0.0.1 - chunk 11: initial voice STT + staging (D-022)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -38,9 +42,19 @@ __all__ = [
     "Transcript",
     "VoiceHandler",
     "VoiceTranscriber",
+    "VoiceUnavailableError",
 ]
 
 _log = get_logger(__name__)
+
+
+class VoiceUnavailableError(RuntimeError):
+    """STT backend is not installed/usable (e.g. ``faster-whisper`` missing).
+
+    Raised lazily on first transcription attempt; the pipeline maps it to a
+    user-facing ru message instead of the silent generic ack.
+    """
+
 
 _FALLBACK_LANG = "ru"
 _SUPPORTED_LANGS = ("ru", "en")
@@ -89,7 +103,10 @@ class FasterWhisperTranscriber:
 
     def _load_model(self) -> object:
         """Lazy model construction — overridden in tests via monkeypatch."""
-        from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:  # pragma: no cover - exercised via VoiceHandler path
+            raise VoiceUnavailableError("faster-whisper is not installed") from exc
 
         return WhisperModel(
             self._model_size,

@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/settings.py
-# VERSION: 0.0.3
+# VERSION: 0.0.9
 # START_MODULE_CONTRACT
 #   PURPOSE: Runtime configuration loaded from environment via pydantic-settings.
 #   SCOPE: Settings BaseSettings (frozen). Initial fields cover Chunk 1 only;
@@ -20,7 +20,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.8 - chunk 18: users_toml_path (optional) for M-RUNTIME-WIRING.
+#   LAST_CHANGE: v0.0.9 - aisw-zny (media chunk 1): media_staging_root,
+#                voice_enabled, voice_whisper_model_size, voice_stt_timeout_s,
+#                photo_enabled, photo_vision_timeout_s (D-022 wiring).
+#   PREVIOUS:    v0.0.8 - chunk 18: users_toml_path (optional) for M-RUNTIME-WIRING.
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -110,6 +113,16 @@ class Settings(BaseSettings):
     # Chunk 14: M-OPS-BACKUP (tech-spec §10.2, D-037).
     snapshot_dir: Path = Path("/var/lib/ai-steward-wiki/state/snapshots")
     snapshot_retention_days: int = 7
+
+    # Media handling (D-022). Voice → faster-whisper STT; photo → staged for vision.
+    # media_staging_root is a single pre-routing staging area for MVP; per-WIKI
+    # promotion (raw/media/) happens after Stage-1a resolution (later chunk).
+    media_staging_root: Path = Path("/var/lib/ai-steward-wiki/workspace/media-staging")
+    voice_enabled: bool = True
+    voice_whisper_model_size: Literal["small", "medium"] = "small"
+    voice_stt_timeout_s: float = 60.0
+    photo_enabled: bool = True
+    photo_vision_timeout_s: float = 30.0
 
     # Chunk 18: M-RUNTIME-WIRING. Path to users.toml for allowlist.
     # None or missing file → empty allowlist (frictionless local first-run).

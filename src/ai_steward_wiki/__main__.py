@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.1.0
+# VERSION: 0.1.1
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -13,18 +13,20 @@
 #          _ClassifierAdapter, _WikiRunnerAdapter, _OutputDeliveryAdapter.
 #   DEPENDS: aiogram, apscheduler, alembic, structlog, sqlalchemy.async,
 #            ai_steward_wiki.{settings, logging_setup, tg.bot, tg.pipeline,
-#            tg.output, scheduler.core, scheduler.locks,
+#            tg.output, tg.voice, tg.photo, scheduler.core, scheduler.locks,
 #            classifier.{backend,schema,stage0}, wiki.{runner,acquire},
 #            storage.{jobs,audit,sessions}.engine, auth.{allowlist,users_toml}}
 #   LINKS: M-FOUNDATION, M-STORAGE, M-AUTH-USERS, M-SCHEDULER,
 #          M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-OUTPUT,
-#          M-TG-PIPELINE-CLASSIFIER, M-DEPLOY
+#          M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-DEPLOY
 #   ROLE: RUNTIME
 #   MAP_MODE: NONE
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - chunk 20: wire classifier+runner+deliver_output adapters.
+#   LAST_CHANGE: v0.1.1 - aisw-zny (media chunk 1): wire VoiceHandler +
+#                PhotoIngestor into DefaultPipeline (D-022); runtime.media_pipeline.wired log.
+#   PREVIOUS:    v0.1.0 - chunk 20: wire classifier+runner+deliver_output adapters.
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -64,11 +66,13 @@ from ai_steward_wiki.storage.audit.engine import build_engine, build_sessionmake
 from ai_steward_wiki.tg.bot import AiogramSender, TgSender, build_bot, build_dispatcher
 from ai_steward_wiki.tg.confirm import ConfirmationService
 from ai_steward_wiki.tg.output import deliver_output
+from ai_steward_wiki.tg.photo import PhotoIngestor
 from ai_steward_wiki.tg.pipeline import (
     DefaultPipeline,
     DefaultStreamingDelivery,
     WikiRunOutcome,
 )
+from ai_steward_wiki.tg.voice import FasterWhisperTranscriber, VoiceHandler
 from ai_steward_wiki.wiki.acquire import WikiLockAdapter
 from ai_steward_wiki.wiki.runner import (
     AsyncioSpawner,
@@ -403,11 +407,31 @@ async def _amain() -> None:
     )
     # END_BLOCK_TEXT_PIPELINE_WIRING
 
+    # START_BLOCK_MEDIA_PIPELINE_WIRING (aisw-zny, media chunk 1, D-022)
+    voice_handler: VoiceHandler | None = None
+    if settings.voice_enabled:
+        voice_handler = VoiceHandler(
+            FasterWhisperTranscriber(model_size=settings.voice_whisper_model_size),
+            inbox_root=settings.media_staging_root,
+        )
+    photo_ingestor: PhotoIngestor | None = (
+        PhotoIngestor(inbox_root=settings.media_staging_root) if settings.photo_enabled else None
+    )
+    logger.info(
+        "runtime.media_pipeline.wired",
+        voice=voice_handler is not None,
+        photo=photo_ingestor is not None,
+        whisper_model=settings.voice_whisper_model_size if voice_handler is not None else None,
+    )
+    # END_BLOCK_MEDIA_PIPELINE_WIRING
+
     streaming_delivery = DefaultStreamingDelivery(sender=sender)
     pipeline = DefaultPipeline(
         sender=sender,
         idempotency=IdempotencyService(audit_maker),
         confirmation=ConfirmationService(sender, sessions_maker),
+        voice=voice_handler,
+        photo=photo_ingestor,
         classifier=classifier_adapter,
         runner=runner_adapter,
         output=output_adapter,

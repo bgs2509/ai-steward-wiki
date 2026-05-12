@@ -11,8 +11,10 @@ from ai_steward_wiki.tg.pipeline import (
     ACK_PHOTO_RU,
     ACK_TEXT_RU,
     ACK_VOICE_RU,
+    ACK_VOICE_UNAVAILABLE_RU,
     DefaultPipeline,
 )
+from ai_steward_wiki.tg.voice import VoiceUnavailableError
 from tests.unit.tg.conftest import FakeSender
 
 
@@ -111,6 +113,25 @@ async def test_on_voice_empty_transcript_falls_back_to_default_ack() -> None:
     )
     await pipe.on_voice(telegram_id=1, chat_id=10, update_id=100, audio_bytes=b"\x00")
     assert sender.sends[0]["text"] == ACK_TEXT_RU
+
+
+@pytest.mark.asyncio
+async def test_on_voice_stt_unavailable_sends_specific_ack() -> None:
+    sender = FakeSender()
+    voice = MagicMock()
+    voice.handle = AsyncMock(side_effect=VoiceUnavailableError("faster-whisper not installed"))
+    classifier = MagicMock()
+    classifier.classify = AsyncMock()
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=_make_confirm(),
+        voice=voice,
+        classifier=classifier,
+    )
+    await pipe.on_voice(telegram_id=1, chat_id=10, update_id=100, audio_bytes=b"\x00")
+    assert sender.sends[0]["text"] == ACK_VOICE_UNAVAILABLE_RU
+    classifier.classify.assert_not_called()
 
 
 @pytest.mark.asyncio

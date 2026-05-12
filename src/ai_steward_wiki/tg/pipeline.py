@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.3.1
+# VERSION: 0.3.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -34,6 +34,7 @@
 # START_MODULE_MAP
 #   ACK_TEXT_RU - default ack copy (fallback when classifier/runner/output missing)
 #   ACK_VOICE_RU - prefix for voice-transcript reply (fallback)
+#   ACK_VOICE_UNAVAILABLE_RU - reply when STT backend (faster-whisper) missing
 #   ACK_PHOTO_RU - ack for staged photo
 #   ACK_DOC_RU - ack for staged document (legacy fallback when pipeline incomplete)
 #   ACK_DOC_UNSUPPORTED_RU - reject for unsupported document mime (DEC-L3)
@@ -57,7 +58,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.3.1 - aisw-x92: streaming slow-path deliver(tg_send=False)
+#   LAST_CHANGE: v0.3.2 - aisw-zny (media chunk 1): on_voice maps
+#                VoiceUnavailableError → ACK_VOICE_UNAVAILABLE_RU + log
+#                tg.pipeline.voice.stt_unavailable (graceful STT degradation).
+#   PREVIOUS:    v0.3.1 - aisw-x92: streaming slow-path deliver(tg_send=False)
 #                — reply already sent via StreamEditor, no duplicate TG message;
 #                OutputDelivery.deliver gains tg_send param.
 #                v0.3.0 - chunk 22: on_document mime router (DEC-L3) +
@@ -84,7 +88,7 @@ from ai_steward_wiki.ops.pii import PIIRedactor
 from ai_steward_wiki.tg.bot import TgSender
 from ai_steward_wiki.tg.confirm import ConfirmationService
 from ai_steward_wiki.tg.photo import PhotoIngestor
-from ai_steward_wiki.tg.voice import VoiceHandler
+from ai_steward_wiki.tg.voice import VoiceHandler, VoiceUnavailableError
 from ai_steward_wiki.wiki.runner import WikiRunnerError
 
 __all__ = [
@@ -98,6 +102,7 @@ __all__ = [
     "ACK_RUNNER_ERR_RU",
     "ACK_TEXT_RU",
     "ACK_VOICE_RU",
+    "ACK_VOICE_UNAVAILABLE_RU",
     "MAX_DOC_BYTES",
     "PDF_MAX_EXTRACT_CHARS",
     "SUPPORTED_IMAGE_MIMES",
@@ -119,6 +124,7 @@ _log = structlog.get_logger("tg.pipeline")
 
 ACK_TEXT_RU = "Принято."
 ACK_VOICE_RU = "Распознано:"
+ACK_VOICE_UNAVAILABLE_RU = "Голосовые сообщения сейчас недоступны — напишите текстом."
 ACK_PHOTO_RU = "Фото получено."
 ACK_DOC_RU = "Файл получен."
 ACK_DEDUP_RU = "Уже видел такое сообщение — повторно не запускаю."
@@ -509,7 +515,12 @@ class DefaultPipeline:
             await self._sender.send_message(chat_id, ACK_TEXT_RU)
             return
         run_id = f"voice-{uuid4().hex[:12]}"
-        ref, transcript = await self._voice.handle(audio_bytes, run_id=run_id)
+        try:
+            ref, transcript = await self._voice.handle(audio_bytes, run_id=run_id)
+        except VoiceUnavailableError:
+            _log.warning("tg.pipeline.voice.stt_unavailable", telegram_id=telegram_id)
+            await self._sender.send_message(chat_id, ACK_VOICE_UNAVAILABLE_RU)
+            return
         _log.info(
             "tg.pipeline.voice",
             telegram_id=telegram_id,
