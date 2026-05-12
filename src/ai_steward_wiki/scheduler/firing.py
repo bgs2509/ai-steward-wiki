@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/scheduler/firing.py
-# VERSION: 0.4.0
+# VERSION: 0.5.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Cron/date job firing bridge — one-shot reminder (DateTrigger → plain
 #            TG message, no Claude; aisw-kcz, Phase-D.a) and recurring digest
@@ -10,18 +10,21 @@
 #   SCOPE: set_firing_context/create_reminder_job/fire_job; set_digest_context/
 #          create_digest_job/fire_digest_job/_build_planner_context;
 #          list_owner_digest_job_ids/run_section_expand (slash-command accessors,
-#          aisw-269). Module-level registries set once at startup; the firing
-#          callbacks take only a picklable int (SQLAlchemyJobStore-safe).
+#          aisw-269); get_owner_digest_prefs/set_owner_digest_section (digest
+#          section toggles — aisw-pv8). Module-level registries set once at
+#          startup; the firing callbacks take only a picklable int
+#          (SQLAlchemyJobStore-safe).
 #   DEPENDS: apscheduler, sqlalchemy(.ext.asyncio), structlog, pydantic,
 #            ai_steward_wiki.storage.jobs.models.Job,
 #            ai_steward_wiki.storage.jobs.payloads (ReminderPayload, DigestPayload, parse_job_payload),
+#            ai_steward_wiki.storage.sessions.digest_prefs (get_digest_prefs, set_digest_section, DigestPrefs, SECTION_DISPLAY_NAME),
 #            ai_steward_wiki.classifier.recurrence.Recurrence,
 #            ai_steward_wiki.scheduler.queue.Lane, ai_steward_wiki.scheduler.dlq.move_to_dlq,
 #            ai_steward_wiki.tg.output.deliver_output,
 #            ai_steward_wiki.tg.bot.TgSender (typing only)
-#   LINKS: M-SCHEDULER-FIRING, M-STORAGE-JOBS, M-SCHEDULER, M-TG-TEXT, M-WIKI-RUNNER,
+#   LINKS: M-SCHEDULER-FIRING, M-STORAGE-JOBS, M-STORAGE-SESSIONS, M-SCHEDULER, M-TG-TEXT, M-WIKI-RUNNER,
 #          M-WIKI-LIFECYCLE, M-CLASSIFIER-RECURRENCE, D-002, D-010, D-019, D-022, D-024,
-#          D-025, tech-spec §3/§6, ADR-006, ADR-007, ADR-024, ADR-025, aisw-kcz, aisw-oqq, aisw-w3k, aisw-269
+#          D-025, tech-spec §3/§6, ADR-006, ADR-007, ADR-024, ADR-025, ADR-026, aisw-kcz, aisw-oqq, aisw-w3k, aisw-269, aisw-pv8
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -32,16 +35,26 @@
 #   fire_job - APScheduler callback (picklable int): load Job, guard status, send the reminder, mark done/failed
 #   FiringNotInitialisedError - raised by fire_job when set_firing_context was never called
 #   DigestRunner - Protocol: async callable running one Stage-1 digest session → assistant text
-#   set_digest_context - install the digest registry (scheduler, runner, owner-WIKI resolver, jobs+audit sessionmakers, sender)
+#   set_digest_context - install the digest registry (scheduler, runner, owner-WIKI resolver, jobs+audit+sessions sessionmakers, sender)
 #   create_digest_job - INSERT+commit a jobs.Job(kind='digest_job', wiki_scope 'all'|list[str]) then add a CronTrigger; returns job_id
-#   fire_digest_job - APScheduler callback (picklable int): resolve WIKIs (intersect with wiki_scope if a list), build planner ctx, run Claude, deliver via deliver_output, 3-strike auto-disable
+#   fire_digest_job - APScheduler callback (picklable int): resolve WIKIs (intersect with wiki_scope if a list), build planner ctx, append the ru section-skip directive when the owner disabled sections (degrade-to-all-on), run Claude, deliver via deliver_output, 3-strike auto-disable
 #   list_owner_digest_job_ids - read-only: the owner's enabled digest_job ids (for /digest_now; aisw-269)
 #   run_section_expand - re-run Claude scoped to one digest section over the owner's WIKIs via DigestRunner(section=...) (for /expand; aisw-269)
+#   get_owner_digest_prefs - the owner's digest section toggles (DigestPrefs(True,True) if unset; for /digest_sections — aisw-pv8)
+#   set_owner_digest_section - flip one digest section for the owner; returns the new DigestPrefs (for the digestsec: callback — aisw-pv8)
 #   DigestNotInitialisedError - raised by fire_digest_job / the slash-command accessors when set_digest_context was never called
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.4.0 - aisw-269 (Phase-D.b.2b): DigestRunner Protocol +section
+#   LAST_CHANGE: v0.5.0 - aisw-pv8 (Phase-D.b.2c): set_digest_context +sessions_
+#                session_maker (7-tuple _digest_ctx); get_owner_digest_prefs /
+#                set_owner_digest_section accessors over storage.sessions.digest_
+#                prefs; fire_digest_job appends the ru section-skip directive to
+#                planner_context when the owner disabled sections (degrade-to-all-
+#                on try/except → scheduler.digest.prefs_read_failed; otherwise
+#                byte-identical) — new anchor scheduler.digest.sections_filtered;
+#                runner(..., section=None) unchanged.
+#   PREVIOUS:    v0.4.0 - aisw-269 (Phase-D.b.2b): DigestRunner Protocol +section
 #                (None ⇒ full digest, byte-identical); fire_digest_job intersect-
 #                and-filter on payload.wiki_scope when a list (scheduler.digest.
 #                scope_filter; empty kept ⇒ ru notice, scheduler.digest.delivered
@@ -90,6 +103,11 @@ from ai_steward_wiki.storage.jobs.payloads import (
     ReminderPayload,
     parse_job_payload,
 )
+from ai_steward_wiki.storage.sessions.digest_prefs import (
+    DigestPrefs,
+    get_digest_prefs,
+    set_digest_section,
+)
 from ai_steward_wiki.tg.output import deliver_output
 
 if TYPE_CHECKING:
@@ -106,10 +124,12 @@ __all__ = [
     "create_reminder_job",
     "fire_digest_job",
     "fire_job",
+    "get_owner_digest_prefs",
     "list_owner_digest_job_ids",
     "run_section_expand",
     "set_digest_context",
     "set_firing_context",
+    "set_owner_digest_section",
 ]
 
 _log = structlog.get_logger("scheduler.firing")
@@ -288,7 +308,8 @@ class DigestRunner(Protocol):
 
 # Module-level digest firing context: set once at startup. fire_digest_job takes
 # only a picklable int, so everything else is read from here.
-# tuple: (scheduler, runner, resolve_owner_wikis, jobs_session_maker, audit_session_maker, sender)
+# tuple: (scheduler, runner, resolve_owner_wikis, jobs_session_maker,
+#         audit_session_maker, sender, sessions_session_maker)
 _digest_ctx: (
     tuple[
         AsyncIOScheduler,
@@ -297,6 +318,7 @@ _digest_ctx: (
         async_sessionmaker[AsyncSession],
         async_sessionmaker[AsyncSession],
         TgSender,
+        async_sessionmaker[AsyncSession],
     ]
     | None
 ) = None
@@ -310,6 +332,7 @@ def set_digest_context(
     jobs_session_maker: async_sessionmaker[AsyncSession],
     audit_session_maker: async_sessionmaker[AsyncSession],
     sender: TgSender,
+    sessions_session_maker: async_sessionmaker[AsyncSession],
 ) -> None:
     """Install the digest firing registry. Call once at startup."""
     global _digest_ctx
@@ -320,6 +343,38 @@ def set_digest_context(
         jobs_session_maker,
         audit_session_maker,
         sender,
+        sessions_session_maker,
+    )
+
+
+async def get_owner_digest_prefs(owner_telegram_id: int) -> DigestPrefs:
+    """The owner's digest section toggles (DigestPrefs(True, True) if unset).
+
+    For the /digest_sections slash command (aisw-pv8). Reads the sessions
+    sessionmaker from the digest context.
+    """
+    if _digest_ctx is None:
+        raise DigestNotInitialisedError(
+            "digest context not initialised — call set_digest_context() at startup"
+        )
+    sessions_maker = _digest_ctx[6]
+    return await get_digest_prefs(sessions_maker, owner_telegram_id)
+
+
+async def set_owner_digest_section(
+    owner_telegram_id: int, *, section: str, enabled: bool
+) -> DigestPrefs:
+    """Flip one digest section for the owner; returns the new DigestPrefs.
+
+    For the digestsec: callback (aisw-pv8).
+    """
+    if _digest_ctx is None:
+        raise DigestNotInitialisedError(
+            "digest context not initialised — call set_digest_context() at startup"
+        )
+    sessions_maker = _digest_ctx[6]
+    return await set_digest_section(
+        sessions_maker, owner_telegram_id, section=section, enabled=enabled
     )
 
 
@@ -333,7 +388,7 @@ async def list_owner_digest_job_ids(owner_telegram_id: int) -> list[int]:
         raise DigestNotInitialisedError(
             "digest context not initialised — call set_digest_context() at startup"
         )
-    _, _, _, maker, _, _ = _digest_ctx
+    _, _, _, maker, _, _, _ = _digest_ctx
     async with maker() as session:
         rows = (
             (
@@ -362,7 +417,7 @@ async def run_section_expand(owner_telegram_id: int, section: str) -> str | None
         raise DigestNotInitialisedError(
             "digest context not initialised — call set_digest_context() at startup"
         )
-    _, runner, resolve_owner_wikis, _, _, _ = _digest_ctx
+    _, runner, resolve_owner_wikis, _, _, _, _ = _digest_ctx
     wikis = list(await resolve_owner_wikis(owner_telegram_id))
     if not wikis:
         return None
@@ -545,7 +600,7 @@ async def fire_digest_job(job_id: int) -> None:
         raise DigestNotInitialisedError(
             "digest context not initialised — call set_digest_context() at startup"
         )
-    scheduler, runner, resolve_owner_wikis, maker, audit_maker, sender = _digest_ctx
+    scheduler, runner, resolve_owner_wikis, maker, audit_maker, sender, sessions_maker = _digest_ctx
     async with maker() as session:
         job = await session.get(Job, job_id)
         if job is None or job.status != "scheduled":

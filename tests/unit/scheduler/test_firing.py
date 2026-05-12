@@ -338,6 +338,7 @@ class _OkRunner:
                 "wiki_id": wiki_id,
                 "wiki_path": wiki_path,
                 "extra_add_dirs": extra_add_dirs,
+                "planner_context": planner_context,
                 "section": section,
             }
         )
@@ -398,7 +399,9 @@ async def test_create_digest_job_named_subset_scope(session_factory) -> None:
     assert len(sched.added) == 1
 
 
-async def test_list_owner_digest_job_ids(session_factory, audit_session_maker, wiki_dirs) -> None:
+async def test_list_owner_digest_job_ids(
+    session_factory, audit_session_maker, wiki_dirs, sessions_factory
+) -> None:
     # aisw-269 — only the owner's enabled (status=='scheduled') digest_job ids.
     health, finance = wiki_dirs
     sched = _FakeCronScheduler()
@@ -444,6 +447,7 @@ async def test_list_owner_digest_job_ids(session_factory, audit_session_maker, w
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
+        sessions_session_maker=sessions_factory,
     )
     ids = await list_owner_digest_job_ids(7)
     assert set(ids) == {a, b}
@@ -451,7 +455,9 @@ async def test_list_owner_digest_job_ids(session_factory, audit_session_maker, w
     assert c not in ids
 
 
-async def test_run_section_expand(session_factory, audit_session_maker, wiki_dirs) -> None:
+async def test_run_section_expand(
+    session_factory, audit_session_maker, wiki_dirs, sessions_factory
+) -> None:
     # aisw-269 — re-run Claude scoped to one section over the owner's WIKI set.
     health, finance = wiki_dirs
     sched = _FakeCronScheduler()
@@ -465,6 +471,7 @@ async def test_run_section_expand(session_factory, audit_session_maker, wiki_dir
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
+        sessions_session_maker=sessions_factory,
     )
     out = await run_section_expand(7, "trackers")
     assert isinstance(out, str)
@@ -482,12 +489,13 @@ async def test_run_section_expand(session_factory, audit_session_maker, wiki_dir
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
+        sessions_session_maker=sessions_factory,
     )
     assert await run_section_expand(7, "today") is None
 
 
 async def test_fire_digest_job_runs_and_delivers(
-    session_factory, audit_session_maker, wiki_dirs
+    session_factory, audit_session_maker, wiki_dirs, sessions_factory
 ) -> None:
     health, finance = wiki_dirs
     sched = _FakeCronScheduler()
@@ -508,6 +516,7 @@ async def test_fire_digest_job_runs_and_delivers(
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,
+        sessions_session_maker=sessions_factory,
     )
     await fire_digest_job(job_id)
     assert len(sender.sent) == 1
@@ -523,7 +532,7 @@ async def test_fire_digest_job_runs_and_delivers(
 
 
 async def test_fire_digest_job_scope_filter_keeps_named_subset(
-    session_factory, audit_session_maker, wiki_dirs
+    session_factory, audit_session_maker, wiki_dirs, sessions_factory
 ) -> None:
     # aisw-269 — a digest job scoped to ['health'] runs only that WIKI.
     health, finance = wiki_dirs
@@ -546,6 +555,7 @@ async def test_fire_digest_job_scope_filter_keeps_named_subset(
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,
+        sessions_session_maker=sessions_factory,
     )
     await fire_digest_job(job_id)
     assert runner.calls[0]["wiki_id"] == "health"
@@ -557,7 +567,7 @@ async def test_fire_digest_job_scope_filter_keeps_named_subset(
 
 
 async def test_fire_digest_job_scope_all_vanished_notice_no_strike(
-    session_factory, audit_session_maker, wiki_dirs
+    session_factory, audit_session_maker, wiki_dirs, sessions_factory
 ) -> None:
     # aisw-269 — scoped to a WIKI that no longer exists → ru notice, no run, no strike.
     health, _finance = wiki_dirs
@@ -584,6 +594,7 @@ async def test_fire_digest_job_scope_all_vanished_notice_no_strike(
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,
+        sessions_session_maker=sessions_factory,
     )
     await fire_digest_job(job_id)
     assert runner.calls == []  # never ran Claude
@@ -597,7 +608,7 @@ async def test_fire_digest_job_scope_all_vanished_notice_no_strike(
 
 
 async def test_fire_digest_job_delivers_via_deliver_output(
-    session_factory, audit_session_maker, wiki_dirs
+    session_factory, audit_session_maker, wiki_dirs, sessions_factory
 ) -> None:
     from ai_steward_wiki.storage.audit.models import RunOutput
 
@@ -619,6 +630,7 @@ async def test_fire_digest_job_delivers_via_deliver_output(
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,
+        sessions_session_maker=sessions_factory,
     )
     await fire_digest_job(job_id)
     runs_root = health / "data" / "runs"
@@ -636,7 +648,7 @@ async def test_fire_digest_job_delivers_via_deliver_output(
 
 
 async def test_fire_digest_job_deliver_failure_strikes(
-    session_factory, audit_session_maker, wiki_dirs
+    session_factory, audit_session_maker, wiki_dirs, sessions_factory
 ) -> None:
     health, finance = wiki_dirs
     sched = _FakeCronScheduler()
@@ -655,6 +667,7 @@ async def test_fire_digest_job_deliver_failure_strikes(
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(fail=True),
+        sessions_session_maker=sessions_factory,
     )
     await fire_digest_job(job_id)
     async with session_factory() as s:
@@ -727,7 +740,9 @@ async def test_build_planner_context_empty(session_factory) -> None:
     assert ctx == "На ближайшие 24 ч ничего не запланировано."
 
 
-async def test_fire_digest_job_no_wiki_set(session_factory, audit_session_maker) -> None:
+async def test_fire_digest_job_no_wiki_set(
+    session_factory, audit_session_maker, sessions_factory
+) -> None:
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -745,6 +760,7 @@ async def test_fire_digest_job_no_wiki_set(session_factory, audit_session_maker)
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,
+        sessions_session_maker=sessions_factory,
     )
     await fire_digest_job(job_id)
     assert len(sender.sent) == 1
@@ -755,7 +771,9 @@ async def test_fire_digest_job_no_wiki_set(session_factory, audit_session_maker)
         assert row.retry_count == 0
 
 
-async def test_fire_digest_job_third_failure_disables(session_factory, audit_session_maker) -> None:
+async def test_fire_digest_job_third_failure_disables(
+    session_factory, audit_session_maker, sessions_factory
+) -> None:
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -772,6 +790,7 @@ async def test_fire_digest_job_third_failure_disables(session_factory, audit_ses
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
+        sessions_session_maker=sessions_factory,
     )
     await fire_digest_job(job_id)
     await fire_digest_job(job_id)
@@ -789,7 +808,9 @@ async def test_fire_digest_job_third_failure_disables(session_factory, audit_ses
     assert f"digest:{job_id}" in sched.removed
 
 
-async def test_fire_digest_job_bad_payload_disables(session_factory, audit_session_maker) -> None:
+async def test_fire_digest_job_bad_payload_disables(
+    session_factory, audit_session_maker, sessions_factory
+) -> None:
     async with session_factory() as s:
         job = Job(
             owner_telegram_id=7,
@@ -811,6 +832,7 @@ async def test_fire_digest_job_bad_payload_disables(session_factory, audit_sessi
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
+        sessions_session_maker=sessions_factory,
     )
     await fire_digest_job(job_id)
     async with session_factory() as s:
@@ -820,7 +842,9 @@ async def test_fire_digest_job_bad_payload_disables(session_factory, audit_sessi
         assert len(dlq) == 1
 
 
-async def test_fire_digest_job_skips_non_scheduled(session_factory, audit_session_maker) -> None:
+async def test_fire_digest_job_skips_non_scheduled(
+    session_factory, audit_session_maker, sessions_factory
+) -> None:
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -841,6 +865,7 @@ async def test_fire_digest_job_skips_non_scheduled(session_factory, audit_sessio
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
+        sessions_session_maker=sessions_factory,
     )
     await fire_digest_job(job_id)
     assert runner.calls == []
@@ -849,3 +874,62 @@ async def test_fire_digest_job_skips_non_scheduled(session_factory, audit_sessio
 async def test_fire_digest_job_without_context_raises() -> None:
     with pytest.raises(DigestNotInitialisedError):
         await fire_digest_job(123)
+
+
+# --- digest section toggles (aisw-pv8) -------------------------------------
+
+
+@pytest.fixture
+async def sessions_factory(tmp_path):
+    from ai_steward_wiki.storage.sessions.engine import Base as SBase
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'sessions.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(SBase.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    yield maker
+    await engine.dispose()
+
+
+async def _seed_sessions_user(sessions_maker, telegram_id: int) -> None:
+    from ai_steward_wiki.storage.sessions.models import User
+
+    async with sessions_maker() as s:
+        s.add(
+            User(
+                telegram_id=telegram_id,
+                role="user",
+                display_name="t",
+                tz="Europe/Moscow",
+                enabled=True,
+                created_at_utc=datetime.now(UTC).replace(tzinfo=None),
+                updated_at_utc=datetime.now(UTC).replace(tzinfo=None),
+            )
+        )
+        await s.commit()
+
+
+async def test_owner_digest_prefs_accessors(
+    session_factory, audit_session_maker, sessions_factory
+) -> None:
+    await _seed_sessions_user(sessions_factory, 70)
+    set_digest_context(
+        scheduler=_FakeCronScheduler(),
+        runner=_OkRunner(),
+        resolve_owner_wikis=_resolve_none,
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=_DigestSender(),
+        sessions_session_maker=sessions_factory,
+    )
+    assert (await firing.get_owner_digest_prefs(70)).disabled_keys == ()
+    after = await firing.set_owner_digest_section(70, section="trackers", enabled=False)
+    assert after.disabled_keys == ("trackers",)
+    assert (await firing.get_owner_digest_prefs(70)).disabled_keys == ("trackers",)
+
+
+async def test_owner_digest_prefs_accessors_without_context_raise() -> None:
+    with pytest.raises(DigestNotInitialisedError):
+        await firing.get_owner_digest_prefs(70)
+    with pytest.raises(DigestNotInitialisedError):
+        await firing.set_owner_digest_section(70, section="trackers", enabled=False)

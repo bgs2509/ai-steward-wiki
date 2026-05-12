@@ -208,6 +208,7 @@ async def test_digest_end_to_end(sessions_maker, jobs_maker, audit_maker, tmp_pa
         jobs_session_maker=jobs_maker,
         audit_session_maker=audit_maker,
         sender=deliver_bot,
+        sessions_session_maker=sessions_maker,
     )
     await fire_digest_job(job.id)
     assert len(deliver_bot.sends) == 1

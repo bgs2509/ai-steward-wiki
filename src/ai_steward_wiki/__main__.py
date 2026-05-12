@@ -1041,6 +1041,7 @@ async def _amain() -> None:
         jobs_session_maker=jobs_maker,
         audit_session_maker=audit_maker,
         sender=sender,
+        sessions_session_maker=sessions_maker,
     )
     router_adapter = _RouterAdapter(
         wiki_root=settings.wiki_root,
