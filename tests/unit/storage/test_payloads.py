@@ -5,13 +5,19 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from ai_steward_wiki.classifier.recurrence import Recurrence
 from ai_steward_wiki.storage.jobs.payloads import (
     CronUserPayload,
+    DigestPayload,
     PurgePayload,
     ReminderPayload,
     WikiRunPayload,
     parse_job_payload,
 )
+
+
+def _rec() -> Recurrence:
+    return Recurrence(kind="daily", time_hhmm="09:00", tz="Europe/Moscow")
 
 
 def test_wiki_run_round_trip():
@@ -22,10 +28,34 @@ def test_wiki_run_round_trip():
     assert p.wiki_id == "Health-WIKI"
 
 
+def test_digest_payload_roundtrip():
+    p = DigestPayload(recurrence=_rec())
+    d = p.model_dump(mode="json")
+    assert d["kind"] == "digest"
+    assert d["wiki_scope"] == "all"
+    assert d["window_hours"] == 24
+    parsed = parse_job_payload(d)
+    assert isinstance(parsed, DigestPayload)
+    assert parsed.recurrence == _rec()
+
+
 def test_digest_window_bounds():
-    parse_job_payload({"kind": "digest", "wiki_id": "Health-WIKI", "window_hours": 24})
+    DigestPayload(recurrence=_rec(), window_hours=168)
     with pytest.raises(ValidationError):
-        parse_job_payload({"kind": "digest", "wiki_id": "Health-WIKI", "window_hours": 0})
+        DigestPayload(recurrence=_rec(), window_hours=0)
+    with pytest.raises(ValidationError):
+        DigestPayload(recurrence=_rec(), window_hours=169)
+
+
+def test_digest_extra_field_forbidden():
+    with pytest.raises(ValidationError):
+        DigestPayload(recurrence=_rec(), junk=1)  # type: ignore[call-arg]
+
+
+def test_digest_frozen():
+    p = DigestPayload(recurrence=_rec())
+    with pytest.raises(ValidationError):
+        p.window_hours = 12  # type: ignore[misc]
 
 
 def test_unknown_kind_rejected():

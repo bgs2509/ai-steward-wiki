@@ -1,17 +1,17 @@
 # FILE: src/ai_steward_wiki/storage/jobs/payloads.py
-# VERSION: 0.0.3
+# VERSION: 0.0.4
 # START_MODULE_CONTRACT
 #   PURPOSE: Pydantic v2 discriminated union for jobs.payload (D-002).
 #   SCOPE: Closed list of job kinds known at MVP. New kinds added in subsequent chunks.
-#   DEPENDS: pydantic v2
-#   LINKS: M-STORAGE-JOBS, M-SCHEDULER, M-SCHEDULER-FIRING
+#   DEPENDS: pydantic v2, ai_steward_wiki.classifier.recurrence (Recurrence)
+#   LINKS: M-STORAGE-JOBS, M-SCHEDULER, M-SCHEDULER-FIRING, M-CLASSIFIER-RECURRENCE
 #   ROLE: TYPES
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
 #   WikiRunPayload - one-shot Stage-1a/1b run against a Domain-WIKI
-#   DigestPayload - scheduled digest job (D-024)
+#   DigestPayload - recurring digest job: wiki_scope, recurrence, window_hours, prompt_hint (aisw-oqq)
 #   CronUserPayload - user-defined cron (NL-scheduled)
 #   PurgePayload - retention purge job (D-034 / §10.4)
 #   ReminderPayload - one-shot reminder job: message + optional lead_time_min (aisw-kcz)
@@ -20,7 +20,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - aisw-kcz: add ReminderPayload (kind='reminder_job') to the union
+#   LAST_CHANGE: v0.0.4 - aisw-oqq: widen DigestPayload (wiki_scope/recurrence/window_hours/prompt_hint)
+#   PREVIOUS:    v0.0.3 - aisw-kcz: add ReminderPayload (kind='reminder_job') to the union
 #   PREVIOUS:    v0.0.2 - initial discriminated union for job payloads (D-002)
 # END_CHANGE_SUMMARY
 
@@ -29,6 +30,8 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+
+from ai_steward_wiki.classifier.recurrence import Recurrence
 
 __all__ = [
     "CronUserPayload",
@@ -54,8 +57,10 @@ class WikiRunPayload(_PayloadBase):
 
 class DigestPayload(_PayloadBase):
     kind: Literal["digest"] = "digest"
-    wiki_id: str
-    window_hours: int = Field(ge=1, le=24 * 7)
+    wiki_scope: Literal["all"] = "all"
+    recurrence: Recurrence
+    window_hours: int = Field(default=24, ge=1, le=24 * 7)
+    prompt_hint: str | None = None
 
 
 class CronUserPayload(_PayloadBase):
