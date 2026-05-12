@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <KnowledgeGraph>
-  <Project NAME="ai-steward-wiki" VERSION="0.0.4">
+  <Project NAME="ai-steward-wiki" VERSION="0.0.5">
     <keywords>telegram, claude-code, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
-    <annotation>Isolated multi-user Telegram service that wraps Claude Code CLI as a personal WIKI assistant (Karpathy LLM Wiki method). Foundation chunk: settings, structured logging, three-DB storage scaffold (jobs/audit/sessions), users.toml allowlist + SIGHUP/watchdog hot-reload.</annotation>
+    <annotation>Isolated multi-user Telegram service that wraps Claude Code CLI as a personal WIKI assistant (Karpathy LLM Wiki method). Full module map: foundation (settings, logging), three-DB storage (jobs/audit/sessions), auth/onboarding/admin, scheduler core, Stage-0 classifier, Stage-1 wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer, voice STT, photo ingest, ingest pipeline (classifier + streaming), runtime wiring.</annotation>
 
     <M-FOUNDATION-SETTINGS NAME="Settings" TYPE="CONFIG" STATUS="done">
       <purpose>Pydantic-settings BaseSettings (frozen) loaded from .env with AISW_ prefix.</purpose>
@@ -119,7 +119,7 @@
     <M-RUNTIME-WIRING NAME="Runtime wiring / __main__" TYPE="RUNTIME" STATUS="done">
       <purpose>Process entrypoint (python -m ai_steward_wiki). Composes Settings, per-DB alembic migrations, engines, allowlist sync, APScheduler (incl. the daily media _staging sweep job), classifier+runner+output adapters, VoiceHandler/PhotoIngestor, aiogram Bot+Dispatcher; runs long-polling with graceful SIGINT/SIGTERM shutdown. The runner adapter promotes staged media into &lt;wiki&gt;/raw/media after a successful Stage-1 run (D-022).</purpose>
       <path>src/ai_steward_wiki/__main__.py</path>
-      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-TG-VOICE, M-TG-PHOTO, M-INBOX</depends>
+      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-OPS-PII</depends>
       <verification-ref>V-M-RUNTIME-WIRING</verification-ref>
       <annotations>
         <fn-main PURPOSE="sync wrapper: asyncio.run(_amain())"/>
@@ -133,16 +133,15 @@
     </M-RUNTIME-WIRING>
 
     <M-TG-HANDLERS-WIRING NAME="Telegram handlers wiring" TYPE="RUNTIME" STATUS="done">
-      <purpose>Compose aiogram Router (text/voice/photo/audio/video_note/document/callback) into Dispatcher; thin handlers delegate to a MessagePipeline. audio and video_note route to on_voice (STT path); photo forwards message.caption; photos and image-documents run Claude vision via the wiki pipeline (media_paths). DefaultPipeline performs L1/L2 dedup, classify→run→deliver, voice/photo/document handling, and confirmation callback resolution.</purpose>
-      <path>src/ai_steward_wiki/tg/handlers.py, src/ai_steward_wiki/tg/pipeline.py</path>
-      <depends>M-TG-TEXT, M-INBOX, M-TG-CONFIRM, M-TG-VOICE, M-TG-PHOTO, M-RUNTIME-WIRING</depends>
+      <purpose>aiogram Router that adapts Telegram message/callback events (text/voice/photo/audio/video_note/document/callback) to a MessagePipeline, composed into the Dispatcher. audio and video_note route to on_voice (STT path); photo forwards message.caption; photos and image-documents are forwarded with media_paths.</purpose>
+      <path>src/ai_steward_wiki/tg/handlers.py</path>
+      <depends>M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO</depends>
       <verification-ref>V-M-TG-HANDLERS-WIRING</verification-ref>
       <annotations>
-        <fn-build_router PURPOSE="factory wiring 7 aiogram handlers (text, voice, photo, audio, video_note, document, callback) to MessagePipeline"/>
-        <fn-parse_confirm_callback PURPOSE="parse confirm:&lt;pid&gt;:&lt;action&gt; payload"/>
+        <fn-build_router PURPOSE="factory wiring 7 aiogram handlers (text, voice, photo, audio, video_note, document, callback) to a MessagePipeline"/>
+        <fn-parse_confirm_callback PURPOSE="parse confirm:&lt;pending_id&gt;:&lt;action&gt; payload (D-023)"/>
         <fn-_download_bytes PURPOSE="bot.get_file + bot.download into BytesIO"/>
-        <fn-DefaultPipeline PURPOSE="concrete coordinator: L1/L2 dedup, classify→run→deliver, voice STT, photo→vision via media_paths, document mime router, confirm resolve"/>
-        <fn-MessagePipeline PURPOSE="Protocol with 5 entry points used by handlers (on_text/on_voice/on_photo/on_document/on_confirm_callback)"/>
+        <type-CONFIRM_CALLBACK_PREFIX PURPOSE="'confirm:' callback_data prefix (D-023)"/>
       </annotations>
     </M-TG-HANDLERS-WIRING>
 
@@ -150,6 +149,7 @@
       <purpose>Pure-function primitives shared by Stage-0 (classifier) and Stage-1 (wiki) Claude CLI backends.</purpose>
       <path>src/ai_steward_wiki/claude_cli/common.py</path>
       <depends>none</depends>
+      <verification-ref>V-M-CLAUDE-CLI-COMMON</verification-ref>
       <annotations>
         <fn-resolve_binary PURPOSE="shutil.which absolute-path resolver with /-path short-circuit"/>
         <fn-build_env PURPOSE="restricted env dict (CLAUDE_CONFIG_DIR + minimal PATH) for CLI subprocess"/>
@@ -159,9 +159,229 @@
       </annotations>
     </M-CLAUDE-CLI-COMMON>
 
+    <M-ONBOARD-ADMIN NAME="Onboarding / Admin" TYPE="RUNTIME" STATUS="done">
+      <purpose>Unknown-telegram_id onboarding (pending_users CRUD + intro template) and admin surface — approve/reject pending users, elevation, shadow channel (D-028, D-030, D-031, D-032, D-042).</purpose>
+      <path>src/ai_steward_wiki/auth/onboarding.py, src/ai_steward_wiki/auth/admin.py</path>
+      <depends>M-STORAGE-SESSIONS, M-STORAGE-AUDIT</depends>
+      <verification-ref>V-M-ONBOARD-ADMIN</verification-ref>
+      <annotations>
+        <type-PendingUserRepo PURPOSE="async CRUD facade over sessions.pending_users"/>
+        <fn-start_unknown_user PURPOSE="idempotent upsert returning the refreshed pending row"/>
+        <fn-purge_expired_pending PURPOSE="delete pending rows past TTL; returns deleted count"/>
+        <fn-format_intro_message PURPOSE="slug-validated intro template formatter (REQUIRED_SLUGS)"/>
+        <type-AdminService PURPOSE="facade: approve_pending / reject_pending / elevate / demote"/>
+        <type-ElevationToken PURPOSE="frozen dataclass returned by elevate; default 30min window"/>
+        <type-ShadowEmitter PURPOSE="Protocol emit(failure_event); LoggingShadowEmitter default"/>
+        <type-NotAnAdmin PURPOSE="raised when assert_admin fails"/>
+      </annotations>
+    </M-ONBOARD-ADMIN>
+
+    <M-SCHEDULER NAME="Scheduler core" TYPE="RUNTIME" STATUS="done">
+      <purpose>APScheduler AsyncIOScheduler factory (D-003), 5-lane priority queue, 3-tier WIKI lock manager, failure taxonomy + 3-strikes auto-disable, DLQ insert, SIGTERM→grace→SIGKILL kill sequence, periodic maintenance-job registration (D-019, D-021, D-022, D-030).</purpose>
+      <path>src/ai_steward_wiki/scheduler/</path>
+      <depends>M-STORAGE-JOBS</depends>
+      <verification-ref>V-M-SCHEDULER</verification-ref>
+      <annotations>
+        <fn-build_scheduler PURPOSE="configured AsyncIOScheduler with SQLAlchemyJobStore (D-003)"/>
+        <fn-kill_with_sequence PURPOSE="SIGTERM, wait grace seconds, SIGKILL fallback (D-021)"/>
+        <fn-classify_exception PURPOSE="exception → FailureClass heuristic (Transient/Permanent/Unknown)"/>
+        <fn-move_to_dlq PURPOSE="persist a permanently-failed job into jobs.db.jobs_dlq (D-019)"/>
+        <fn-register_all_retention_jobs PURPOSE="wire purge-expired-pending + media _staging sweep + retention jobs"/>
+        <type-PriorityJobQueue PURPOSE="asyncio.PriorityQueue[QueueItem] with FIFO tiebreaker, 5 lanes"/>
+        <type-WikiLockManager PURPOSE="3-tier acquire/release: semaphore → asyncio.Lock per WIKI → flock, stale-PID recovery"/>
+        <type-FailureCounter PURPOSE="per-job consecutive-failure tracker; 3-strikes auto-disable"/>
+      </annotations>
+    </M-SCHEDULER>
+
+    <M-CLASSIFIER-STAGE0 NAME="Classifier / Stage-0" TYPE="RUNTIME" STATUS="done">
+      <purpose>Stage-0 Haiku intent classifier — prompt cache (semver+sha256), backend abstraction (Claude CLI default / Anthropic API optional / Fake), Pydantic intent schema, NL time parser (dateparser → Haiku-fallback → escalate) (D-009, D-010, D-013, D-015).</purpose>
+      <path>src/ai_steward_wiki/classifier/</path>
+      <depends>M-CLAUDE-CLI-COMMON, M-STORAGE-AUDIT, M-FOUNDATION-SETTINGS</depends>
+      <verification-ref>V-M-CLASSIFIER-STAGE0</verification-ref>
+      <annotations>
+        <fn-classify PURPOSE="Stage-0 orchestrator: backend call + Pydantic validation + audit upsert + structlog"/>
+        <fn-parse_time PURPOSE="NL time parser: dateparser → Haiku-fallback → escalate (D-010)"/>
+        <fn-record_prompt_version PURPOSE="idempotent upsert into audit.prompt_versions (D-015)"/>
+        <type-PromptCache PURPOSE="per-process prompt cache (text+semver+sha256); reload() clears"/>
+        <type-Intent PURPOSE="closed enum of Stage-0 intents (D-009, mapped to spec §3 job kinds)"/>
+        <type-ClassifierResult PURPOSE="frozen Pydantic v2 result with intent/confidence/audit fields"/>
+        <type-TimeParseResult PURPOSE="frozen Pydantic v2 NL-time result with when_utc + escalate flag"/>
+        <type-ClassifierBackend PURPOSE="Protocol; ClaudeCliBackend default, AnthropicApiBackend optional, FakeClaudeRunner test double"/>
+        <type-Spawner PURPOSE="subprocess spawn primitive seam (chunk 16 injects systemd-run prefix)"/>
+        <type-ClassifierError PURPOSE="base error; ClassifierTimeoutError (transient) / ClassifierSchemaError (permanent) subclasses"/>
+      </annotations>
+    </M-CLASSIFIER-STAGE0>
+
+    <M-WIKI-RUNNER NAME="WIKI / Stage-1 runner" TYPE="RUNTIME" STATUS="done">
+      <purpose>Stage-1a/1b Sonnet runner orchestrator — assemble prompt (base+overlay+per-WIKI CLAUDE.md), acquire WIKI lock, spawn `claude --output-format stream-json`, parse stream events, hard timeout + kill-sequence, aggregate assistant text (D-007, D-011, D-012, D-021).</purpose>
+      <path>src/ai_steward_wiki/wiki/runner.py, src/ai_steward_wiki/wiki/streaming.py, src/ai_steward_wiki/wiki/acquire.py</path>
+      <depends>M-CLAUDE-CLI-COMMON, M-SCHEDULER</depends>
+      <verification-ref>V-M-WIKI-RUNNER</verification-ref>
+      <annotations>
+        <fn-run_wiki_session PURPOSE="public entrypoint orchestrating one Stage-1a/1b run"/>
+        <fn-assemble_prompt PURPOSE="concat base+overlay (+per-WIKI CLAUDE.md if present) → atomic write"/>
+        <fn-aggregate_text PURPOSE="extract assistant text from WikiRunResult.events (stream-json shapes)"/>
+        <fn-parse_stream_json PURPOSE="async iterator over an asyncio.StreamReader → StreamEvent"/>
+        <type-WikiRunResult PURPOSE="dataclass result of one run (run_id, exit_code, events, …)"/>
+        <type-StreamEvent PURPOSE="frozen Pydantic v2 model for one stream-json line (type+payload)"/>
+        <type-Spawner PURPOSE="Protocol; spawn(argv, env, cwd) → SpawnedProcess; AsyncioSpawner default"/>
+        <type-WikiLockAdapter PURPOSE="default LockAcquirer wrapping scheduler.locks.WikiLockManager"/>
+        <type-WikiRunnerError PURPOSE="base exception; WikiRunnerTimeoutError after kill-sequence"/>
+      </annotations>
+    </M-WIKI-RUNNER>
+
+    <M-WIKI-LIFECYCLE NAME="WIKI / lifecycle" TYPE="RUNTIME" STATUS="done">
+      <purpose>WIKI name normalisation (Cyrillic→Latin ISO 9, PascalCase), owner-scoped create/lookup/soft-delete/restore with anti-spam cap + near-duplicate detection, CLAUDE.md frontmatter + managed/user-zone markers + template loader, 5-step pre-flight grounding (D-008, D-039, D-041).</purpose>
+      <path>src/ai_steward_wiki/wiki/__init__.py, src/ai_steward_wiki/wiki/lifecycle.py, src/ai_steward_wiki/wiki/name.py, src/ai_steward_wiki/wiki/migration.py, src/ai_steward_wiki/wiki/preflight.py</path>
+      <depends>M-STORAGE-SESSIONS, M-SCHEDULER</depends>
+      <verification-ref>V-M-WIKI-LIFECYCLE</verification-ref>
+      <annotations>
+        <fn-normalize_wiki_name PURPOSE="raw NL string → WikiName (primary, hyphenated_lookup, slug)"/>
+        <fn-parse_frontmatter PURPOSE="extract Frontmatter (schema_version/template_id/sha256) + body"/>
+        <fn-load_template PURPOSE="read templates/&lt;id&gt;.md → (managed_text, sha256)"/>
+        <fn-preflight PURPOSE="run 5 pre-flight steps, return PreflightReport"/>
+        <type-WikiLifecycleManager PURPOSE="create_wiki/lookup/list_active/list_trashed/soft_delete/restore (owner-scoped)"/>
+        <type-WikiName PURPOSE="frozen Pydantic: primary, hyphenated_lookup, slug"/>
+        <type-NearDuplicateMatch PURPOSE="Levenshtein ≤2 match payload"/>
+        <type-AntiSpamCapError PURPOSE="hard cap reached on wiki creation"/>
+        <type-Frontmatter PURPOSE="CLAUDE.md frontmatter model; managed/user HTML zone markers"/>
+        <type-PreflightReport PURPOSE="aggregated pre-flight report (checks tuple + ok)"/>
+      </annotations>
+    </M-WIKI-LIFECYCLE>
+
+    <M-INBOX NAME="Inbox-WIKI materialise + hint cache" TYPE="RUNTIME" STATUS="done">
+      <purpose>Per-user Inbox-WIKI/ first-contact materialise, "## Inbox hint" Markdown parser + sessions.inbox_hint_cache repo (stat→cache-hit hot path), media staging+promotion for voice/photo ingest (D-004, D-016, D-022).</purpose>
+      <path>src/ai_steward_wiki/inbox/__init__.py, src/ai_steward_wiki/inbox/materialize.py, src/ai_steward_wiki/inbox/parser.py, src/ai_steward_wiki/inbox/hint_cache.py, src/ai_steward_wiki/inbox/staging.py</path>
+      <depends>M-STORAGE-SESSIONS</depends>
+      <verification-ref>V-M-INBOX</verification-ref>
+      <annotations>
+        <fn-ensure_inbox_wiki PURPOSE="idempotent first-contact materialise; returns Path to Inbox-WIKI dir"/>
+        <fn-extract_inbox_hint PURPOSE="parse CLAUDE.md text, return trimmed '## Inbox hint' body or None"/>
+        <fn-get_or_refresh_hint PURPOSE="hot-path helper: stat→cache-hit on (size,mtime) else read+sha256"/>
+        <fn-stage_media PURPOSE="atomically write bytes to _staging/&lt;run_id&gt;_&lt;sha8&gt;.&lt;ext&gt;"/>
+        <fn-promote_path_to_raw PURPOSE="atomic move staging→raw/media/&lt;ISO8601&gt;_&lt;sha8&gt;.&lt;ext&gt; (re-hashes)"/>
+        <fn-sweep_staging PURPOSE="delete staging files older than ttl_s; returns removed count (D-022)"/>
+        <type-InboxHintCacheRepo PURPOSE="async wrapper over sessions.inbox_hint_cache (UPSERT/get/invalidate)"/>
+        <type-MediaRef PURPOSE="dataclass (staging_path, sha256, mime, ext, size, run_id)"/>
+      </annotations>
+    </M-INBOX>
+
+    <M-INGEST-IDEM NAME="Ingest idempotency" TYPE="RUNTIME" STATUS="done">
+      <purpose>Two-layer ingest dedup (D-018): L1 TG update_id (24h) + L2 SHA-256 content hash (30d) with NFKC text normalisation; records dedup outcomes into audit.db.</purpose>
+      <path>src/ai_steward_wiki/inbox/idempotency.py</path>
+      <depends>M-STORAGE-AUDIT</depends>
+      <verification-ref>V-M-INGEST-IDEM</verification-ref>
+      <annotations>
+        <type-IdempotencyService PURPOSE="check_update_id (L1), check_content (L2), record_dedup_choice"/>
+        <fn-normalize_text PURPOSE="NFKC + strip + lower + collapse-whitespace for L2 text hashing"/>
+        <fn-compute_content_hash PURPOSE="SHA-256 hex of normalized text or raw bytes per ContentKind"/>
+        <type-SeenFileMatch PURPOSE="dataclass returned on L2 collision (hash + first-seen ts + owner)"/>
+      </annotations>
+    </M-INGEST-IDEM>
+
+    <M-OPS-PII NAME="Ops / PII + retention" TYPE="RUNTIME" STATUS="done">
+      <purpose>Tiered PII redactor (NIST SP 800-122) for structlog + DB write paths, GDPR purge_user admin endpoint (allow-listed stores), APScheduler retention jobs implementing §10.4 retention table + _trash/_staging sweeps (D-034 §10.4).</purpose>
+      <path>src/ai_steward_wiki/ops/pii.py, src/ai_steward_wiki/ops/gdpr.py, src/ai_steward_wiki/ops/retention.py</path>
+      <depends>M-STORAGE-AUDIT, M-STORAGE-JOBS, M-SCHEDULER, M-INBOX</depends>
+      <verification-ref>V-M-OPS-PII</verification-ref>
+      <annotations>
+        <type-PIIRedactor PURPOSE="stateful redactor with HMAC secret + on/off toggles; make_structlog_processor adapter"/>
+        <fn-purge_user PURPOSE="GDPR endpoint; admin-gated; allow-listed stores per D-034 §10.4"/>
+        <type-RetentionPolicy PURPOSE="Pydantic v2 model declaring one §10.4 retention rule"/>
+        <fn-run_purge PURPOSE="execute one retention policy; returns PurgeResult"/>
+        <fn-register_retention_jobs PURPOSE="add all RETENTION_POLICIES to a scheduler"/>
+        <fn-purge_staging PURPOSE="file mtime sweep wrapping inbox.staging.sweep_staging"/>
+      </annotations>
+    </M-OPS-PII>
+
+    <M-OPS-BACKUP NAME="Ops / backup + per-WIKI git" TYPE="RUNTIME" STATUS="done">
+      <purpose>Daily db_snapshot maintenance job (VACUUM INTO state/snapshots/&lt;UTC&gt;/ for jobs/audit/sessions, 7d rolling retention) and per-WIKI local git auto-commit helpers (D-037, tech-spec §10.2/§10.5).</purpose>
+      <path>src/ai_steward_wiki/ops/snapshot.py, src/ai_steward_wiki/ops/wiki_git.py</path>
+      <depends>M-SCHEDULER</depends>
+      <verification-ref>V-M-OPS-BACKUP</verification-ref>
+      <annotations>
+        <fn-snapshot_databases PURPOSE="run VACUUM INTO for each configured DB into per-day dir (0700)"/>
+        <fn-purge_old_snapshots PURPOSE="rolling 7d retention sweep"/>
+        <fn-register_db_snapshot_job PURPOSE="register cron 03:00 UTC daily db_snapshot job"/>
+        <fn-init_wiki_git PURPOSE="idempotent git init + .gitignore writer per WIKI dir (D-037)"/>
+        <fn-format_commit_message PURPOSE="render canonical per-WIKI commit message '&lt;job_id&gt;(&lt;category&gt;): &lt;title&gt;'"/>
+        <fn-auto_commit PURPOSE="stage-all + commit; no-op when nothing staged"/>
+        <type-SnapshotResult PURPOSE="Pydantic v2 frozen model with per-store outcomes"/>
+      </annotations>
+    </M-OPS-BACKUP>
+
+    <M-TG-TEXT NAME="Telegram I/O text layer" TYPE="RUNTIME" STATUS="done">
+      <purpose>aiogram 3 dispatcher + allowlist outer-middleware, graduated 3-tier confirmations (auto/implicit/explicit + 10min TTL), D-025 output-size hybrid policy (≤3500 inline / ≤10000 chain-split / &gt;10000 summary) + persistence, D-026 HTML-balanced throttled streaming edits (D-023, D-024, D-025, D-026, D-031, D-042).</purpose>
+      <path>src/ai_steward_wiki/tg/__init__.py, src/ai_steward_wiki/tg/bot.py, src/ai_steward_wiki/tg/middleware_auth.py, src/ai_steward_wiki/tg/confirm.py, src/ai_steward_wiki/tg/output.py, src/ai_steward_wiki/tg/stream_edit.py</path>
+      <depends>M-AUTH-USERS, M-STORAGE-SESSIONS, M-STORAGE-AUDIT</depends>
+      <verification-ref>V-M-TG-TEXT</verification-ref>
+      <annotations>
+        <fn-build_bot PURPOSE="construct aiogram.Bot with HTML default parse_mode"/>
+        <fn-build_dispatcher PURPOSE="construct Dispatcher + register AllowlistMiddleware"/>
+        <fn-deliver_output PURPOSE="D-025 hybrid size policy + persistence; returns DeliveryReceipt"/>
+        <type-AiogramSender PURPOSE="adapter wrapping aiogram.Bot to satisfy the TgSender Protocol"/>
+        <type-AllowlistMiddleware PURPOSE="aiogram outer-middleware gating updates by telegram_id (D-031)"/>
+        <type-ConfirmationService PURPOSE="graduated auto/implicit/explicit confirmation flow + 10min TTL (D-023)"/>
+        <type-HtmlBalancer PURPOSE="tokeniser-based open/close balancer for whitelisted TG HTML tags"/>
+        <type-ChainSplitter PURPOSE="split text into ≤3 parts at semantic boundaries with (i/M) footer"/>
+        <type-StreamEditor PURPOSE="D-026 throttled streaming edits: 1.5s OR Δ≥50 + chain-split at 4000 + final-flush"/>
+        <type-HaikuSummarizer PURPOSE="Protocol for &gt;10000-char summary path; LengthCapSummarizer safe fallback"/>
+      </annotations>
+    </M-TG-TEXT>
+
+    <M-TG-VOICE NAME="Telegram / voice STT" TYPE="RUNTIME" STATUS="done">
+      <purpose>Voice (ogg/opus) ingestion — faster-whisper CPU STT (CTranslate2 int8, ru/en, RTF ≤ 0.5) + staging hand-off (D-022, tech-spec §9). audio and video_note also route here.</purpose>
+      <path>src/ai_steward_wiki/tg/voice.py</path>
+      <depends>M-INBOX</depends>
+      <verification-ref>V-M-TG-VOICE</verification-ref>
+      <annotations>
+        <type-VoiceTranscriber PURPOSE="Protocol with transcribe(audio_bytes, hint_lang) → Transcript"/>
+        <type-FasterWhisperTranscriber PURPOSE="default impl, lazy CTranslate2 int8 CPU model load, fallback lang ru"/>
+        <type-Transcript PURPOSE="frozen dataclass (text, lang, duration_s, model, rtf)"/>
+        <type-VoiceHandler PURPOSE="stages bytes + transcribes; returns (MediaRef, Transcript)"/>
+        <type-VoiceUnavailableError PURPOSE="raised when faster-whisper STT backend is missing"/>
+      </annotations>
+    </M-TG-VOICE>
+
+    <M-TG-PHOTO NAME="Telegram / photo ingest" TYPE="RUNTIME" STATUS="done">
+      <purpose>Photo ingestion — stage bytes to _staging/, return a MediaRef; photos (and image-documents) run Claude vision via the wiki pipeline (D-022, tech-spec §9).</purpose>
+      <path>src/ai_steward_wiki/tg/photo.py</path>
+      <depends>M-INBOX</depends>
+      <verification-ref>V-M-TG-PHOTO</verification-ref>
+      <annotations>
+        <type-PhotoIngestor PURPOSE="stages photo bytes; returns MediaRef for the wiki pipeline"/>
+        <type-PHOTO_MIME_TO_EXT PURPOSE="closed mapping of allowed photo MIME types → extension"/>
+      </annotations>
+    </M-TG-PHOTO>
+
+    <M-TG-PIPELINE-CLASSIFIER NAME="Ingest pipeline / classify→run→deliver" TYPE="RUNTIME" STATUS="done">
+      <purpose>DefaultPipeline coordinator over already-built ingest blocks — L1/L2 dedup, Stage-0 classify → Stage-1 run → deliver_output; voice transcript path; photo→vision via media_paths; document mime router (PDF text extract, size cap); Russian safe-fallback acks (chunk 20, D-022, D-023).</purpose>
+      <path>src/ai_steward_wiki/tg/pipeline.py</path>
+      <depends>M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-TEXT, M-INGEST-IDEM, M-TG-VOICE, M-TG-PHOTO, M-INBOX</depends>
+      <verification-ref>V-M-TG-PIPELINE-CLASSIFIER</verification-ref>
+      <annotations>
+        <type-DefaultPipeline PURPOSE="concrete coordinator wiring classifier/runner/output/voice/photo/document blocks"/>
+        <type-MessagePipeline PURPOSE="Protocol for the 5 handler entry points (on_text/on_voice/on_photo/on_document/on_confirm_callback)"/>
+        <type-Classifier PURPOSE="narrow Stage-0 wrapper Protocol"/>
+        <type-WikiRunner PURPOSE="narrow Stage-1a/1b wrapper Protocol; WikiRunOutcome result dataclass"/>
+        <type-OutputDelivery PURPOSE="narrow deliver_output wrapper Protocol"/>
+      </annotations>
+    </M-TG-PIPELINE-CLASSIFIER>
+
+    <M-TG-PIPELINE-STREAMING NAME="Ingest pipeline / slow-path streaming" TYPE="RUNTIME" STATUS="done">
+      <purpose>DefaultStreamingDelivery — race the Stage-1 run against a short timer; on slow runs post a placeholder and feed buffered+live stream events into a StreamEditor, finalising with the aggregated text (chunk 21, D-026).</purpose>
+      <path>src/ai_steward_wiki/tg/pipeline.py</path>
+      <depends>M-TG-PIPELINE-CLASSIFIER, M-TG-TEXT, M-WIKI-RUNNER</depends>
+      <verification-ref>V-M-TG-PIPELINE-STREAMING</verification-ref>
+      <annotations>
+        <type-StreamingDelivery PURPOSE="Protocol for the slow-path race+stream wrapper"/>
+        <type-DefaultStreamingDelivery PURPOSE="default race-and-stream impl over StreamEditor"/>
+      </annotations>
+    </M-TG-PIPELINE-STREAMING>
+
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-INBOX" relation="L1 dedup via IdempotencyService.check_update_id"/>
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-TEXT" relation="reply via TgSender (AiogramSender)"/>
-    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-CONFIRM" relation="callback action → ConfirmationService.resolve"/>
+    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-PIPELINE-CLASSIFIER" relation="thin handlers delegate to MessagePipeline (DefaultPipeline)"/>
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-VOICE" relation="VoiceHandler for STT staging — voice, audio and video_note all route to on_voice"/>
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-PHOTO" relation="PhotoIngestor; photos run Claude vision via the wiki pipeline (media_paths)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-TG-HANDLERS-WIRING" relation="constructs DefaultPipeline + include_router via build_dispatcher(pipeline=...)"/>
@@ -178,5 +398,41 @@
     <CrossLink from="M-STORAGE-JOBS" to="M-STORAGE" relation="uses apply_sqlite_pragmas in build_engine"/>
     <CrossLink from="M-STORAGE-AUDIT" to="M-STORAGE" relation="uses apply_sqlite_pragmas in build_engine"/>
     <CrossLink from="M-STORAGE-SESSIONS" to="M-STORAGE" relation="uses apply_sqlite_pragmas in build_engine"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-SCHEDULER" relation="build_scheduler + WikiLockManager + register_all_retention_jobs"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-CLASSIFIER-STAGE0" relation="builds ClaudeCliBackend/AnthropicApiBackend + PromptCache; _ClassifierAdapter calls classify()"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-WIKI-RUNNER" relation="_WikiRunnerAdapter.run → run_wiki_session via AsyncioSpawner + WikiLockAdapter"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-TG-TEXT" relation="build_bot/build_dispatcher + deliver_output via _OutputDeliveryAdapter"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-TG-PIPELINE-CLASSIFIER" relation="constructs DefaultPipeline (+ DefaultStreamingDelivery)"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-OPS-PII" relation="PIIRedactor structlog processor + register_all_retention_jobs"/>
+    <CrossLink from="M-ONBOARD-ADMIN" to="M-STORAGE-SESSIONS" relation="pending_users CRUD + pending_confirms elevation rows"/>
+    <CrossLink from="M-ONBOARD-ADMIN" to="M-STORAGE-AUDIT" relation="admin_events elevation trail (D-028)"/>
+    <CrossLink from="M-SCHEDULER" to="M-STORAGE-JOBS" relation="SQLAlchemyJobStore on jobs.db; move_to_dlq writes jobs_dlq"/>
+    <CrossLink from="M-CLASSIFIER-STAGE0" to="M-CLAUDE-CLI-COMMON" relation="ClaudeCliBackend uses resolve_binary/build_env/neutral_cwd/system_prompt_argv"/>
+    <CrossLink from="M-CLASSIFIER-STAGE0" to="M-STORAGE-AUDIT" relation="record_prompt_version upsert into audit.prompt_versions (D-015)"/>
+    <CrossLink from="M-WIKI-RUNNER" to="M-CLAUDE-CLI-COMMON" relation="assemble_prompt + restricted env/cwd for the `claude` subprocess"/>
+    <CrossLink from="M-WIKI-RUNNER" to="M-SCHEDULER" relation="WikiLockAdapter wraps WikiLockManager; kill_with_sequence on timeout"/>
+    <CrossLink from="M-WIKI-LIFECYCLE" to="M-STORAGE-SESSIONS" relation="owner-scoped wiki records + trashed-wiki retention"/>
+    <CrossLink from="M-WIKI-LIFECYCLE" to="M-SCHEDULER" relation="acquires the WIKI lock during create/migrate"/>
+    <CrossLink from="M-INBOX" to="M-STORAGE-SESSIONS" relation="inbox_hint_cache repo over sessions.inbox_hint_cache"/>
+    <CrossLink from="M-INGEST-IDEM" to="M-STORAGE-AUDIT" relation="L1 tg_updates + L2 seen_files / dedup_hits tables"/>
+    <CrossLink from="M-OPS-PII" to="M-STORAGE-AUDIT" relation="retention purge of audit.db tables (§10.4)"/>
+    <CrossLink from="M-OPS-PII" to="M-STORAGE-JOBS" relation="retention purge of jobs.db tables (§10.4)"/>
+    <CrossLink from="M-OPS-PII" to="M-SCHEDULER" relation="register_retention_jobs adds §10.4 cron jobs"/>
+    <CrossLink from="M-OPS-PII" to="M-INBOX" relation="purge_staging wraps inbox.staging.sweep_staging"/>
+    <CrossLink from="M-OPS-BACKUP" to="M-SCHEDULER" relation="register_db_snapshot_job adds the daily 03:00 UTC VACUUM INTO job"/>
+    <CrossLink from="M-TG-TEXT" to="M-AUTH-USERS" relation="AllowlistMiddleware gates updates by Allowlist (D-031)"/>
+    <CrossLink from="M-TG-TEXT" to="M-STORAGE-AUDIT" relation="deliver_output persists RunOutput index (D-025); chat_logs"/>
+    <CrossLink from="M-TG-TEXT" to="M-STORAGE-SESSIONS" relation="ConfirmationService persists pending_confirms (D-023)"/>
+    <CrossLink from="M-TG-VOICE" to="M-INBOX" relation="VoiceHandler stages bytes via inbox.staging.stage_media (D-022)"/>
+    <CrossLink from="M-TG-PHOTO" to="M-INBOX" relation="PhotoIngestor stages bytes via inbox.staging.stage_media (D-022)"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-CLASSIFIER-STAGE0" relation="Classifier Protocol → classify()"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-WIKI-RUNNER" relation="WikiRunner Protocol → run_wiki_session()"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-TG-TEXT" relation="OutputDelivery Protocol → deliver_output()"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-INGEST-IDEM" relation="L1/L2 dedup via IdempotencyService"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-TG-VOICE" relation="voice transcript path → on_voice"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-TG-PHOTO" relation="photo→vision via media_paths"/>
+    <CrossLink from="M-TG-PIPELINE-STREAMING" to="M-TG-PIPELINE-CLASSIFIER" relation="wraps the run→deliver slow path"/>
+    <CrossLink from="M-TG-PIPELINE-STREAMING" to="M-TG-TEXT" relation="feeds stream events into StreamEditor (D-026)"/>
+    <CrossLink from="M-TG-PIPELINE-STREAMING" to="M-WIKI-RUNNER" relation="consumes on_event stream callback from run_wiki_session"/>
   </Project>
 </KnowledgeGraph>

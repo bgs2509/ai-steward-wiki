@@ -1,16 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
-<DevelopmentPlan VERSION="0.0.3">
+<DevelopmentPlan VERSION="0.0.4">
   <ArchitectureNotes>
-    <objective>Multi-user Telegram → Claude Code CLI WIKI assistant. Foundation chunk delivers settings, structured logging, three-DB SQLite scaffold, and users.toml allowlist with hot-reload.</objective>
-    <non-goal>No classifier, scheduler, inbox, or wiki orchestration in this chunk; those land in subsequent chunks.</non-goal>
+    <objective>Multi-user Telegram → Claude Code CLI WIKI assistant (Karpathy LLM Wiki method). MVP delivers: foundation (settings/logging/three-DB SQLite), auth + onboarding + admin, scheduler core, Stage-0 Haiku classifier, Stage-1 Sonnet wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer + voice STT + photo ingest, ingest pipeline (classifier + streaming), runtime wiring, integration E2E.</objective>
+    <non-goal>No i18n catalog (ru-only, D-032); off-site backup deferred; web UI / non-Telegram channels out of scope.</non-goal>
     <risk-1>users.toml drift between SSoT file and sessions.db cache — mitigated by SIGHUP+watchdog reload + sha256 short-circuit (D-031).</risk-1>
     <risk-2>SQLite three-DB topology requires per-engine PRAGMAs; missed PRAGMA = silent corruption — mitigated by shared apply_sqlite_pragmas listener.</risk-2>
+    <risk-3>Claude CLI subprocess invocation drift between Stage-0 and Stage-1 (system prompt, cwd, stdin, --verbose) — mitigated by shared M-CLAUDE-CLI-COMMON primitives + integration test against the real CLI.</risk-3>
   </ArchitectureNotes>
 
   <Phases>
     <Phase-0 NAME="Foundation scaffold" STATUS="done" bd_id="aisw-fm0">
       <description>Repo skeleton, pyproject + uv lock, ruff/mypy, pre-commit, settings, structured logging, three-DB engines + ORM models, users.toml allowlist with SIGHUP/watchdog hot-reload.</description>
     </Phase-0>
+    <Phase-4 NAME="Scheduler core" STATUS="done" bd_id="aisw-kty">
+      <description>APScheduler AsyncIOScheduler factory (D-003), 5-lane priority queue, 3-tier WIKI lock manager, failure taxonomy + 3-strikes auto-disable (D-019), DLQ insert, SIGTERM→grace→SIGKILL kill sequence (D-021), periodic maintenance-job registration.</description>
+    </Phase-4>
+    <Phase-5 NAME="Stage-0 classifier" STATUS="done" bd_id="aisw-v77">
+      <description>Stage-0 Haiku intent classifier: prompt cache (semver+sha256), backend abstraction (Claude CLI / Anthropic API / Fake), Pydantic intent schema, NL time parser (dateparser → Haiku-fallback → escalate). Hardened by aisw-p5b (CLI envelope) and aisw-d3i (CLI alignment).</description>
+    </Phase-5>
+    <Phase-6 NAME="Inbox-WIKI materialise + hint cache" STATUS="done" bd_id="aisw-qoi">
+      <description>Per-user Inbox-WIKI/ first-contact materialise, "## Inbox hint" parser + sessions.inbox_hint_cache repo (stat→cache-hit hot path), media staging+promotion (D-004, D-016, D-022). Extended by aisw-8r9 (promote-on-success + 24h sweep).</description>
+    </Phase-6>
+    <Phase-7 NAME="Wiki Stage-1 runner" STATUS="done" bd_id="aisw-x30">
+      <description>Stage-1a/1b Sonnet runner: assemble prompt (base+overlay+per-WIKI CLAUDE.md), acquire WIKI lock, spawn `claude --output-format stream-json --verbose`, parse stream events, hard timeout + kill-sequence, aggregate assistant text. Hardened by aisw-d3i/aisw-kpb/aisw-w83; aisw-m2m (media paths) + aisw-t0n (per-call vision timeout).</description>
+    </Phase-7>
+    <Phase-8 NAME="Wiki lifecycle" STATUS="done" bd_id="aisw-9s4">
+      <description>WIKI name normalisation (Cyrillic→Latin ISO 9, PascalCase), owner-scoped create/lookup/soft-delete/restore with anti-spam cap + near-duplicate detection, CLAUDE.md frontmatter + managed/user-zone markers + template loader, 5-step pre-flight grounding (D-008, D-039, D-041).</description>
+    </Phase-8>
+    <Phase-9 NAME="Ingest idempotency" STATUS="done" bd_id="aisw-6t5">
+      <description>Two-layer ingest dedup (D-018): L1 tg_updates (24h) + L2 seen_files (SHA-256, 30d) with NFKC text normalisation; records dedup outcomes into audit.db.</description>
+    </Phase-9>
+    <Phase-10 NAME="TG text layer" STATUS="done" bd_id="aisw-187">
+      <description>aiogram bot + allowlist outer-middleware (D-031), graduated 3-tier confirmations + 10min TTL (D-023), output-size hybrid policy + persistence (D-024, D-025), HTML-balanced throttled streaming edits (D-026).</description>
+    </Phase-10>
+    <Phase-11 NAME="TG media — voice + photo" STATUS="done" bd_id="aisw-dbe">
+      <description>Voice (ogg/opus) faster-whisper CPU STT + staging hand-off; photo ingestion → MediaRef → Claude vision via the wiki pipeline; staging→raw promotion (D-022). audio + video_note route to the voice path (aisw-hcl).</description>
+    </Phase-11>
+    <Phase-12 NAME="Onboarding + admin" STATUS="done" bd_id="aisw-zsg">
+      <description>Unknown-telegram_id onboarding (pending_users CRUD + intro template + slug lint), admin surface (approve/reject pending, /admin elevate + 30min token, demote, shadow channel), TENANCY_MODE (D-028, D-030, D-031, D-032).</description>
+    </Phase-12>
+    <Phase-13 NAME="Ops — PII + retention + GDPR" STATUS="done" bd_id="aisw-p79">
+      <description>Tiered PII redactor (NIST SP 800-122) for structlog + DB writes, §10.4 retention purge jobs + _trash/_staging sweeps, GDPR purge_user admin endpoint with allow-listed stores (D-034 §10.4). Wired into __main__ by aisw-7k0.</description>
+    </Phase-13>
+    <Phase-14 NAME="Ops — backup + per-WIKI git" STATUS="done" bd_id="aisw-oqb">
+      <description>Daily db_snapshot (VACUUM INTO state/snapshots/&lt;UTC&gt;/, 7d rolling retention), per-WIKI local git auto-commit helpers, restore runbook (D-037, tech-spec §10.2/§10.5).</description>
+    </Phase-14>
     <Phase-18 NAME="Runtime wiring" STATUS="done" bd_id="aisw-cq4">
       <description>Process entrypoint (__main__.py) composing existing modules into a runnable bot: Settings → per-DB alembic upgrade → engines → allowlist sync → APScheduler → aiogram polling → graceful SIGINT/SIGTERM shutdown. Enables `uv run python -m ai_steward_wiki` locally with AISW_TG_BOT_TOKEN_LOCAL. No production handlers yet; unrouted updates silently ignored (separate future chunk).</description>
     </Phase-18>
@@ -23,7 +57,7 @@
     <Phase-21 NAME="TG pipeline streaming" STATUS="done" bd_id="aisw-a3z">
       <description>Wrap WikiRunner with StreamEditor (1.5s throttle, Δ50, chain-split 4000) when estimated_duration_s > 5 (DEC-L2). Placeholder edit-in-place + final flush guarantee. SSoT: launch breakdown chunk-21.</description>
     </Phase-21>
-    <Phase-22 NAME="TG document full handler" STATUS="planned" bd_id="aisw-wku">
+    <Phase-22 NAME="TG document full handler" STATUS="done" bd_id="aisw-wku">
       <description>Mime-routing in on_document (DEC-L3): pdf→OCR, text/*→inline, image/*→photo path, else reject. L2 dedup on doc_sha256. Filename PII tier-2 hash. SSoT: launch breakdown chunk-22.</description>
     </Phase-22>
     <Phase-23 NAME="Integration E2E suite" STATUS="done" bd_id="aisw-vb9">
@@ -90,7 +124,6 @@
     <M-TG-HANDLERS-WIRING bd_id="aisw-ps8">
       <target>
         <source>src/ai_steward_wiki/tg/handlers.py</source>
-        <source>src/ai_steward_wiki/tg/pipeline.py</source>
       </target>
       <verification-ref>V-M-TG-HANDLERS-WIRING</verification-ref>
     </M-TG-HANDLERS-WIRING>
@@ -98,6 +131,120 @@
       <target>
         <source>src/ai_steward_wiki/claude_cli/common.py</source>
       </target>
+      <verification-ref>V-M-CLAUDE-CLI-COMMON</verification-ref>
     </M-CLAUDE-CLI-COMMON>
+    <M-ONBOARD-ADMIN bd_id="aisw-zsg">
+      <target>
+        <source>src/ai_steward_wiki/auth/onboarding.py</source>
+        <source>src/ai_steward_wiki/auth/admin.py</source>
+      </target>
+      <verification-ref>V-M-ONBOARD-ADMIN</verification-ref>
+    </M-ONBOARD-ADMIN>
+    <M-SCHEDULER bd_id="aisw-kty">
+      <target>
+        <source>src/ai_steward_wiki/scheduler/__init__.py</source>
+        <source>src/ai_steward_wiki/scheduler/core.py</source>
+        <source>src/ai_steward_wiki/scheduler/queue.py</source>
+        <source>src/ai_steward_wiki/scheduler/locks.py</source>
+        <source>src/ai_steward_wiki/scheduler/failure.py</source>
+        <source>src/ai_steward_wiki/scheduler/dlq.py</source>
+        <source>src/ai_steward_wiki/scheduler/maintenance.py</source>
+      </target>
+      <verification-ref>V-M-SCHEDULER</verification-ref>
+    </M-SCHEDULER>
+    <M-CLASSIFIER-STAGE0 bd_id="aisw-v77">
+      <target>
+        <source>src/ai_steward_wiki/classifier/__init__.py</source>
+        <source>src/ai_steward_wiki/classifier/stage0.py</source>
+        <source>src/ai_steward_wiki/classifier/backend.py</source>
+        <source>src/ai_steward_wiki/classifier/schema.py</source>
+        <source>src/ai_steward_wiki/classifier/time_parse.py</source>
+      </target>
+      <verification-ref>V-M-CLASSIFIER-STAGE0</verification-ref>
+    </M-CLASSIFIER-STAGE0>
+    <M-WIKI-RUNNER bd_id="aisw-x30">
+      <target>
+        <source>src/ai_steward_wiki/wiki/runner.py</source>
+        <source>src/ai_steward_wiki/wiki/streaming.py</source>
+        <source>src/ai_steward_wiki/wiki/acquire.py</source>
+      </target>
+      <verification-ref>V-M-WIKI-RUNNER</verification-ref>
+    </M-WIKI-RUNNER>
+    <M-WIKI-LIFECYCLE bd_id="aisw-9s4">
+      <target>
+        <source>src/ai_steward_wiki/wiki/__init__.py</source>
+        <source>src/ai_steward_wiki/wiki/lifecycle.py</source>
+        <source>src/ai_steward_wiki/wiki/name.py</source>
+        <source>src/ai_steward_wiki/wiki/migration.py</source>
+        <source>src/ai_steward_wiki/wiki/preflight.py</source>
+      </target>
+      <verification-ref>V-M-WIKI-LIFECYCLE</verification-ref>
+    </M-WIKI-LIFECYCLE>
+    <M-INBOX bd_id="aisw-qoi">
+      <target>
+        <source>src/ai_steward_wiki/inbox/__init__.py</source>
+        <source>src/ai_steward_wiki/inbox/materialize.py</source>
+        <source>src/ai_steward_wiki/inbox/parser.py</source>
+        <source>src/ai_steward_wiki/inbox/hint_cache.py</source>
+        <source>src/ai_steward_wiki/inbox/staging.py</source>
+      </target>
+      <verification-ref>V-M-INBOX</verification-ref>
+    </M-INBOX>
+    <M-INGEST-IDEM bd_id="aisw-6t5">
+      <target>
+        <source>src/ai_steward_wiki/inbox/idempotency.py</source>
+      </target>
+      <verification-ref>V-M-INGEST-IDEM</verification-ref>
+    </M-INGEST-IDEM>
+    <M-OPS-PII bd_id="aisw-p79">
+      <target>
+        <source>src/ai_steward_wiki/ops/pii.py</source>
+        <source>src/ai_steward_wiki/ops/gdpr.py</source>
+        <source>src/ai_steward_wiki/ops/retention.py</source>
+      </target>
+      <verification-ref>V-M-OPS-PII</verification-ref>
+    </M-OPS-PII>
+    <M-OPS-BACKUP bd_id="aisw-oqb">
+      <target>
+        <source>src/ai_steward_wiki/ops/snapshot.py</source>
+        <source>src/ai_steward_wiki/ops/wiki_git.py</source>
+      </target>
+      <verification-ref>V-M-OPS-BACKUP</verification-ref>
+    </M-OPS-BACKUP>
+    <M-TG-TEXT bd_id="aisw-187">
+      <target>
+        <source>src/ai_steward_wiki/tg/__init__.py</source>
+        <source>src/ai_steward_wiki/tg/bot.py</source>
+        <source>src/ai_steward_wiki/tg/middleware_auth.py</source>
+        <source>src/ai_steward_wiki/tg/confirm.py</source>
+        <source>src/ai_steward_wiki/tg/output.py</source>
+        <source>src/ai_steward_wiki/tg/stream_edit.py</source>
+      </target>
+      <verification-ref>V-M-TG-TEXT</verification-ref>
+    </M-TG-TEXT>
+    <M-TG-VOICE bd_id="aisw-dbe">
+      <target>
+        <source>src/ai_steward_wiki/tg/voice.py</source>
+      </target>
+      <verification-ref>V-M-TG-VOICE</verification-ref>
+    </M-TG-VOICE>
+    <M-TG-PHOTO bd_id="aisw-dbe">
+      <target>
+        <source>src/ai_steward_wiki/tg/photo.py</source>
+      </target>
+      <verification-ref>V-M-TG-PHOTO</verification-ref>
+    </M-TG-PHOTO>
+    <M-TG-PIPELINE-CLASSIFIER bd_id="aisw-96y">
+      <target>
+        <source>src/ai_steward_wiki/tg/pipeline.py</source>
+      </target>
+      <verification-ref>V-M-TG-PIPELINE-CLASSIFIER</verification-ref>
+    </M-TG-PIPELINE-CLASSIFIER>
+    <M-TG-PIPELINE-STREAMING bd_id="aisw-a3z">
+      <target>
+        <source>src/ai_steward_wiki/tg/pipeline.py</source>
+      </target>
+      <verification-ref>V-M-TG-PIPELINE-STREAMING</verification-ref>
+    </M-TG-PIPELINE-STREAMING>
   </Modules>
 </DevelopmentPlan>

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.4">
+<VerificationPlan VERSION="0.0.5">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -62,42 +62,39 @@
 
     <V-M-STORAGE-JOBS MODULE="M-STORAGE-JOBS">
       <tests>
-        <test path="tests/unit/storage/jobs/test_models.py"/>
-        <test path="tests/unit/storage/jobs/test_payloads.py"/>
-        <test path="tests/integration/storage/test_jobs_engine.py"/>
+        <test path="tests/unit/storage/test_baselines.py"/>
+        <test path="tests/unit/storage/test_payloads.py"/>
+        <test path="tests/unit/storage/test_pragmas.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/storage/jobs -q</cmd>
-        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/storage/test_jobs_engine.py -q</cmd>
+        <cmd>uv run pytest tests/unit/storage -q</cmd>
       </commands>
       <log-markers/>
-      <evidence>jobs/tracker_answers/jobs_dlq schema; discriminated union round-trips; PRAGMAs verified on engine.</evidence>
+      <evidence>jobs/tracker_answers/jobs_dlq schema via alembic baseline; JobPayload discriminated union round-trips (parse_job_payload); PRAGMAs verified on engine.</evidence>
     </V-M-STORAGE-JOBS>
 
     <V-M-STORAGE-AUDIT MODULE="M-STORAGE-AUDIT">
       <tests>
-        <test path="tests/unit/storage/audit/test_models.py"/>
-        <test path="tests/integration/storage/test_audit_engine.py"/>
+        <test path="tests/unit/storage/test_baselines.py"/>
+        <test path="tests/unit/storage/test_pragmas.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/storage/audit -q</cmd>
-        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/storage/test_audit_engine.py -q</cmd>
+        <cmd>uv run pytest tests/unit/storage -q</cmd>
       </commands>
       <log-markers/>
-      <evidence>10 tables present per D-006 amendment; PRAGMAs verified; append-only invariants.</evidence>
+      <evidence>10 tables present per D-006 amendment (alembic baseline); PRAGMAs verified; append-only invariants.</evidence>
     </V-M-STORAGE-AUDIT>
 
     <V-M-STORAGE-SESSIONS MODULE="M-STORAGE-SESSIONS">
       <tests>
-        <test path="tests/unit/storage/sessions/test_models.py"/>
-        <test path="tests/integration/storage/test_sessions_engine.py"/>
+        <test path="tests/unit/storage/test_baselines.py"/>
+        <test path="tests/unit/storage/test_pragmas.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/storage/sessions -q</cmd>
-        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/storage/test_sessions_engine.py -q</cmd>
+        <cmd>uv run pytest tests/unit/storage -q</cmd>
       </commands>
       <log-markers/>
-      <evidence>users/pending_users/pending_confirms/inbox_hint_cache/fsm tables; PRAGMAs verified.</evidence>
+      <evidence>users/pending_users/pending_confirms/inbox_hint_cache/fsm_state tables (alembic baseline); PRAGMAs verified.</evidence>
     </V-M-STORAGE-SESSIONS>
 
     <V-M-RUNTIME-WIRING MODULE="M-RUNTIME-WIRING">
@@ -190,5 +187,262 @@
       </log-markers>
       <evidence>7 unit tests cover fast path (no placeholder, single deliver), slow path (placeholder + buffered+live feeds + final aggregate), runner exception (finalize editor + ACK_RUNNER_ERR_RU via sender), back-compat None injection, aggregate_text-as-truth, outcome.text fallback, empty-outcome ACK_TEXT_RU fallback. 3 unit tests cover run_wiki_session on_event callback (per-event delivery, exception swallow+log, no-callback back-compat). Full suite 385/385 green; make lint and grace lint clean.</evidence>
     </V-M-TG-PIPELINE-STREAMING>
+    <V-M-CLAUDE-CLI-COMMON MODULE="M-CLAUDE-CLI-COMMON">
+      <tests>
+        <test path="tests/unit/claude_cli/test_common.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/claude_cli/test_common.py -q</cmd>
+      </commands>
+      <log-markers/>
+      <evidence>resolve_binary (/-path short-circuit + shutil.which), build_env (CLAUDE_CONFIG_DIR + minimal PATH only), neutral_cwd (no project CLAUDE.md auto-discovery), system_prompt_argv (inlines prompt file content), truncate_stderr (UTF-8 decode + length cap).</evidence>
+    </V-M-CLAUDE-CLI-COMMON>
+
+    <V-M-ONBOARD-ADMIN MODULE="M-ONBOARD-ADMIN">
+      <tests>
+        <test path="tests/unit/auth/test_onboarding.py"/>
+        <test path="tests/unit/auth/test_admin.py"/>
+        <test path="tests/unit/auth/test_lint_onboarding.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/auth/test_onboarding.py tests/unit/auth/test_admin.py tests/unit/auth/test_lint_onboarding.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>auth.onboarding.pending_created</marker>
+        <marker>auth.onboarding.pending_expired</marker>
+        <marker>auth.admin.approve.ok</marker>
+        <marker>auth.admin.approve.noop</marker>
+        <marker>auth.admin.reject</marker>
+        <marker>auth.admin.elevate</marker>
+        <marker>auth.admin.demote</marker>
+        <marker>auth.admin.shadow_emit</marker>
+      </log-markers>
+      <evidence>pending_users idempotent upsert + TTL purge; intro template slug validation (REQUIRED_SLUGS, lint_onboarding); AdminService approve/reject/elevate/demote with admin gating (NotAnAdmin) + admin_events trail (D-028); ShadowEmitter default LoggingShadowEmitter.</evidence>
+    </V-M-ONBOARD-ADMIN>
+
+    <V-M-SCHEDULER MODULE="M-SCHEDULER">
+      <tests>
+        <test path="tests/unit/scheduler/test_core.py"/>
+        <test path="tests/unit/scheduler/test_queue.py"/>
+        <test path="tests/unit/scheduler/test_locks.py"/>
+        <test path="tests/unit/scheduler/test_failure.py"/>
+        <test path="tests/unit/scheduler/test_dlq.py"/>
+        <test path="tests/unit/scheduler/test_maintenance.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/scheduler -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>scheduler.maintenance</marker>
+        <marker>maintenance.media_sweep.done</marker>
+      </log-markers>
+      <evidence>build_scheduler (AsyncIOScheduler + SQLAlchemyJobStore, D-003); PriorityJobQueue 5 lanes FIFO tiebreak; WikiLockManager 3-tier acquire/release + stale-PID recovery; classify_exception taxonomy + FailureCounter 3-strikes auto-disable (D-019); move_to_dlq writes jobs_dlq; kill_with_sequence SIGTERM→grace→SIGKILL (D-021); register_all_retention_jobs wires purge-pending + media _staging sweep + retention.</evidence>
+    </V-M-SCHEDULER>
+
+    <V-M-CLASSIFIER-STAGE0 MODULE="M-CLASSIFIER-STAGE0">
+      <tests>
+        <test path="tests/unit/classifier/test_stage0.py"/>
+        <test path="tests/unit/classifier/test_schema.py"/>
+        <test path="tests/unit/classifier/test_time_parse.py"/>
+        <test path="tests/unit/classifier/test_cli_envelope.py"/>
+        <test path="tests/unit/classifier/test_fake_runner.py"/>
+        <test path="tests/unit/classifier/test_settings_inv6.py"/>
+        <test path="tests/integration/classifier/test_real_cli.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/classifier -q</cmd>
+        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/classifier/test_real_cli.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>classifier.stage0.call</marker>
+        <marker>classifier.time.parse</marker>
+      </log-markers>
+      <evidence>classify orchestrates backend call + Pydantic validation + audit prompt_versions upsert + structlog; PromptCache semver+sha256 with reload(); Intent closed enum (D-009); parse_time dateparser→Haiku-fallback→escalate (D-010); ClaudeCliBackend resolves binary + JSON-mode envelope; AnthropicApiBackend optional; FakeClaudeRunner deterministic; INV-6 settings guard; ClassifierTimeoutError/SchemaError taxonomy.</evidence>
+    </V-M-CLASSIFIER-STAGE0>
+
+    <V-M-WIKI-RUNNER MODULE="M-WIKI-RUNNER">
+      <tests>
+        <test path="tests/unit/wiki/test_runner.py"/>
+        <test path="tests/unit/wiki/test_runner_aggregate.py"/>
+        <test path="tests/unit/wiki/test_runner_on_event.py"/>
+        <test path="tests/unit/wiki/test_streaming.py"/>
+        <test path="tests/unit/wiki/test_acquire.py"/>
+        <test path="tests/integration/classifier/test_real_cli.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/wiki/test_runner.py tests/unit/wiki/test_runner_aggregate.py tests/unit/wiki/test_runner_on_event.py tests/unit/wiki/test_streaming.py tests/unit/wiki/test_acquire.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>wiki.run.start</marker>
+        <marker>wiki.run.event</marker>
+        <marker>wiki.run.finish</marker>
+        <marker>wiki.run.error</marker>
+        <marker>wiki.run.on_event_error</marker>
+        <marker>wiki.lock.acquired</marker>
+        <marker>wiki.stream.malformed_line</marker>
+        <marker>wiki.stream.non_object</marker>
+      </log-markers>
+      <evidence>run_wiki_session: assemble_prompt (base+overlay+per-WIKI CLAUDE.md atomic write), WikiLockAdapter acquire, spawn `claude --output-format stream-json`, parse_stream_json events, hard timeout + kill-sequence (WikiRunnerTimeoutError), on_event callback (per-event delivery, exception swallow); aggregate_text across stream-json shapes; classify_line pure mapping; AsyncioSpawner default.</evidence>
+    </V-M-WIKI-RUNNER>
+
+    <V-M-WIKI-LIFECYCLE MODULE="M-WIKI-LIFECYCLE">
+      <tests>
+        <test path="tests/unit/wiki/lifecycle/test_lifecycle.py"/>
+        <test path="tests/unit/wiki/lifecycle/test_name.py"/>
+        <test path="tests/unit/wiki/lifecycle/test_migration.py"/>
+        <test path="tests/unit/wiki/lifecycle/test_preflight.py"/>
+        <test path="tests/unit/wiki/lifecycle/test_templates.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/wiki/lifecycle -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>wiki.lifecycle.created</marker>
+        <marker>wiki.lifecycle.soft_deleted</marker>
+        <marker>wiki.lifecycle.restored</marker>
+        <marker>wiki.lifecycle.near_duplicate</marker>
+        <marker>wiki.lifecycle.migration.applied</marker>
+        <marker>wiki.lifecycle.migration.noop</marker>
+      </log-markers>
+      <evidence>normalize_wiki_name Cyrillic→Latin ISO 9 + PascalCase + slug (D-008); WikiLifecycleManager owner-scoped create/lookup/list/soft_delete/restore with AntiSpamCapError + NearDuplicateMatch (Levenshtein ≤2) + TrashRetentionExpiredError (D-041); parse/render_frontmatter + managed/user-zone markers + load_template sha256 (D-039); preflight 5-step grounding → PreflightReport.</evidence>
+    </V-M-WIKI-LIFECYCLE>
+
+    <V-M-INBOX MODULE="M-INBOX">
+      <tests>
+        <test path="tests/unit/inbox/test_materialize.py"/>
+        <test path="tests/unit/inbox/test_parser.py"/>
+        <test path="tests/unit/inbox/test_hint_cache.py"/>
+        <test path="tests/unit/inbox/test_staging.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/inbox/test_materialize.py tests/unit/inbox/test_parser.py tests/unit/inbox/test_hint_cache.py tests/unit/inbox/test_staging.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>inbox.materialized</marker>
+        <marker>inbox.materialize_idempotent</marker>
+        <marker>inbox.hint_cache.hit</marker>
+        <marker>inbox.hint_cache.refresh</marker>
+        <marker>inbox.hint_cache.invalidate_missing</marker>
+        <marker>media.staged</marker>
+        <marker>media.promoted</marker>
+        <marker>media.promote_idempotent</marker>
+        <marker>media.staging_swept</marker>
+      </log-markers>
+      <evidence>ensure_inbox_wiki idempotent first-contact materialise (D-004); extract_inbox_hint parses "## Inbox hint" body or None (D-016); InboxHintCacheRepo UPSERT/get/invalidate + get_or_refresh_hint stat→cache-hit on (size,mtime) else read+sha256; stage_media atomic write to _staging/&lt;run_id&gt;_&lt;sha8&gt;.&lt;ext&gt;; promote_to_raw / promote_path_to_raw atomic move to raw/media/&lt;ISO8601&gt;_&lt;sha8&gt;.&lt;ext&gt;; sweep_staging TTL delete (D-022).</evidence>
+    </V-M-INBOX>
+
+    <V-M-INGEST-IDEM MODULE="M-INGEST-IDEM">
+      <tests>
+        <test path="tests/unit/inbox/idempotency/test_idempotency.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/inbox/idempotency/test_idempotency.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>inbox.idempotency.l1_duplicate</marker>
+        <marker>inbox.idempotency.l2_duplicate</marker>
+        <marker>inbox.idempotency.l2_new</marker>
+        <marker>inbox.idempotency.dedup_choice</marker>
+      </log-markers>
+      <evidence>IdempotencyService.check_update_id (L1 tg_updates, 24h TTL), check_content (L2 seen_files, SHA-256, 30d TTL), record_dedup_choice (dedup_hits); normalize_text NFKC+strip+lower+collapse-ws for text hashing; compute_content_hash per ContentKind; SeenFileMatch on collision (D-018 amended 2026-05-10, INV-4).</evidence>
+    </V-M-INGEST-IDEM>
+
+    <V-M-OPS-PII MODULE="M-OPS-PII">
+      <tests>
+        <test path="tests/unit/ops/pii/test_redactor_tier1.py"/>
+        <test path="tests/unit/ops/pii/test_redactor_tier2.py"/>
+        <test path="tests/unit/ops/pii/test_redactor_structlog.py"/>
+        <test path="tests/unit/ops/pii/test_redactor_dropin.py"/>
+        <test path="tests/unit/ops/retention/test_retention_matrix.py"/>
+        <test path="tests/unit/ops/retention/test_retention_dry_run.py"/>
+        <test path="tests/unit/ops/retention/test_retention_audit_trail.py"/>
+        <test path="tests/unit/ops/retention/test_gdpr_purge.py"/>
+        <test path="tests/unit/ops/retention/test_trash_purge_final_sweep.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/ops/pii tests/unit/ops/retention -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>retention.purge</marker>
+      </log-markers>
+      <evidence>PIIRedactor tiered redaction (NIST SP 800-122) with HMAC secret + on/off toggles + make_structlog_processor; module-level redact convenience; purge_user GDPR endpoint admin-gated + allow-listed stores (D-034 §10.4); RETENTION_POLICIES matrix; run_purge with dry_run + cutoff_utc/oldest_kept_utc; register_retention_jobs adds §10.4 cron; purge_trash_sweep tier-1/tier-2 final sweep; purge_staging wraps inbox.staging.sweep_staging.</evidence>
+    </V-M-OPS-PII>
+
+    <V-M-OPS-BACKUP MODULE="M-OPS-BACKUP">
+      <tests>
+        <test path="tests/unit/ops/snapshot/test_snapshot.py"/>
+        <test path="tests/unit/ops/snapshot/test_scheduler.py"/>
+        <test path="tests/unit/ops/wiki_git/test_wiki_git.py"/>
+        <test path="tests/restore/test_db_snapshot_restore.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/ops/snapshot tests/unit/ops/wiki_git -q</cmd>
+        <cmd>uv run pytest tests/restore/test_db_snapshot_restore.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>ops.db_snapshot</marker>
+      </log-markers>
+      <evidence>snapshot_databases VACUUM INTO state/snapshots/&lt;UTC&gt;/ for jobs/audit/sessions (0700 dirs); purge_old_snapshots 7d rolling retention; register_db_snapshot_job cron 03:00 UTC (D-037, INV-2/INV-3); restore test reloads a snapshot; init_wiki_git idempotent git init + .gitignore; format_commit_message "&lt;job_id&gt;(&lt;category&gt;): &lt;title&gt;"; auto_commit stage-all + commit, no-op when nothing staged; WikiGitError on CLI failure.</evidence>
+    </V-M-OPS-BACKUP>
+
+    <V-M-TG-TEXT MODULE="M-TG-TEXT">
+      <tests>
+        <test path="tests/unit/tg/test_bot.py"/>
+        <test path="tests/unit/tg/test_middleware_auth.py"/>
+        <test path="tests/unit/tg/test_middleware_start_bypass.py"/>
+        <test path="tests/unit/tg/test_confirm.py"/>
+        <test path="tests/unit/tg/test_output.py"/>
+        <test path="tests/unit/tg/test_stream_edit.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/tg/test_bot.py tests/unit/tg/test_middleware_auth.py tests/unit/tg/test_middleware_start_bypass.py tests/unit/tg/test_confirm.py tests/unit/tg/test_output.py tests/unit/tg/test_stream_edit.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>auth.deny</marker>
+        <marker>auth.deny.bypass_start</marker>
+        <marker>auth.deny.reply_failed</marker>
+        <marker>tg.confirm.auto_ack</marker>
+        <marker>tg.confirm.implicit_ack</marker>
+        <marker>tg.confirm.explicit.requested</marker>
+        <marker>tg.confirm.explicit.dup</marker>
+        <marker>tg.confirm.resolved</marker>
+        <marker>tg.confirm.expired</marker>
+        <marker>tg.output.delivered</marker>
+        <marker>tg.stream.tick</marker>
+        <marker>tg.stream.chain_split</marker>
+        <marker>tg.stream.finalized</marker>
+        <marker>tg.stream.final_flush_failed</marker>
+      </log-markers>
+      <evidence>build_bot (HTML parse_mode) + build_dispatcher (AllowlistMiddleware outer); AllowlistMiddleware denies unknown telegram_id with DENY_TEXT_RU + auth.deny, /start bypass, carries user_record (D-031, D-042); ConfirmationService auto/implicit/explicit + 10min TTL + compute_payload_hash + 3-button keyboard (D-023); deliver_output ≤3500 inline / ≤10000 ChainSplitter (i/M footer, ≤3 parts) / &gt;10000 HaikuSummarizer→LengthCapSummarizer + RunOutput persistence (D-024, D-025); HtmlBalancer tag balancing; StreamEditor 1.5s/Δ≥50 throttle + chain-split at 4000 + final-flush on end/exception/cancel (D-026).</evidence>
+    </V-M-TG-TEXT>
+
+    <V-M-TG-VOICE MODULE="M-TG-VOICE">
+      <tests>
+        <test path="tests/unit/tg/test_voice.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/tg/test_voice.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>voice.transcribed</marker>
+        <marker>media.staged</marker>
+      </log-markers>
+      <evidence>FasterWhisperTranscriber lazy CTranslate2 int8 CPU model, ru/en, RTF target ≤0.5, fallback lang ru, raises VoiceUnavailableError on missing faster-whisper; VoiceHandler stages bytes via inbox.staging.stage_media then transcribes → (MediaRef, Transcript) (D-022); audio + video_note route here from handlers.</evidence>
+    </V-M-TG-VOICE>
+
+    <V-M-TG-PHOTO MODULE="M-TG-PHOTO">
+      <tests>
+        <test path="tests/unit/tg/test_photo.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/tg/test_photo.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>photo.ingested</marker>
+        <marker>media.staged</marker>
+      </log-markers>
+      <evidence>PhotoIngestor stages photo bytes to _staging/ via inbox.staging.stage_media → MediaRef; PHOTO_MIME_TO_EXT closed mapping of allowed photo MIME types; photos (and image-documents) run Claude vision via the wiki pipeline media_paths (D-022, tech-spec §9).</evidence>
+    </V-M-TG-PHOTO>
+
   </Modules>
 </VerificationPlan>
