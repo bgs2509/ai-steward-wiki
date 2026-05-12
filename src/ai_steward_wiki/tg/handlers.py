@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/handlers.py
-# VERSION: 0.0.3
+# VERSION: 0.0.4
 # START_MODULE_CONTRACT
 #   PURPOSE: aiogram Router that adapts Telegram message/callback events to
 #            the MessagePipeline Protocol. Handlers stay thin: extract IDs,
@@ -22,9 +22,11 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - aisw-b2x: audio and document handlers also forward
+#   LAST_CHANGE: v0.0.4 - aisw-3dr: video_note handler stages as ext=mp4/mime=video/mp4,
+#                audio handler derives ext from mime/file_name — no more .ogg for mp4.
+#   PREVIOUS:    v0.0.3 - aisw-b2x: audio and document handlers also forward
 #                message.caption (to on_voice / on_document) so it reaches Stage-1.
-#   PREVIOUS:    v0.0.2 - aisw-ahv (media chunk 3): add F.audio + F.video_note
+#                v0.0.2 - aisw-ahv (media chunk 3): add F.audio + F.video_note
 #                handlers (route to on_voice STT path); photo handler forwards
 #                message.caption to on_photo (D-022).
 #                v0.0.1 - chunk 19: initial Router wiring delegating to pipeline
@@ -52,6 +54,35 @@ _log = structlog.get_logger("tg.handlers")
 
 CONFIRM_CALLBACK_PREFIX = "confirm:"
 _VALID_ACTIONS: frozenset[str] = frozenset({"confirm", "correct", "cancel"})
+
+# Map common audio MIME types to a staging-file extension (D-022). Unknown →
+# fall back to the file_name suffix, else "mp3".
+_AUDIO_MIME_TO_EXT: dict[str, str] = {
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/ogg": "ogg",
+    "audio/opus": "opus",
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/aac": "aac",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/flac": "flac",
+    "audio/x-flac": "flac",
+}
+
+
+def _audio_ext_for(mime: str | None, file_name: str | None) -> str:
+    """Pick a sane staging extension for an audio file (alnum, ≤8 chars)."""
+    if mime:
+        ext = _AUDIO_MIME_TO_EXT.get(mime.lower())
+        if ext is not None:
+            return ext
+    if file_name and "." in file_name:
+        suffix = file_name.rsplit(".", 1)[-1].lower()
+        if suffix.isalnum() and 1 <= len(suffix) <= 8:
+            return suffix
+    return "mp3"
 
 
 def parse_confirm_callback(data: str) -> tuple[int, ConfirmKeyboardAction] | None:
@@ -161,12 +192,15 @@ def build_router(pipeline: MessagePipeline) -> Router:
             _log.debug("tg.handlers.audio.skip_missing_fields")
             return
         data = await _download_bytes(message.bot, message.audio.file_id)
+        audio_mime = message.audio.mime_type or "audio/mpeg"
         await pipeline.on_voice(
             telegram_id=message.from_user.id,
             chat_id=message.chat.id,
             update_id=message.message_id,
             audio_bytes=data,
             caption=message.caption,
+            ext=_audio_ext_for(message.audio.mime_type, message.audio.file_name),
+            mime=audio_mime,
         )
         # END_BLOCK_HANDLER_AUDIO
 
@@ -189,6 +223,8 @@ def build_router(pipeline: MessagePipeline) -> Router:
             chat_id=message.chat.id,
             update_id=message.message_id,
             audio_bytes=data,
+            ext="mp4",
+            mime="video/mp4",
         )
         # END_BLOCK_HANDLER_VIDEO_NOTE
 

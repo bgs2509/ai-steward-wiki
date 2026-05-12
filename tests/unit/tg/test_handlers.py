@@ -123,6 +123,8 @@ class FakeVoice:
 class FakeAudio:
     file_id: str
     duration: int = 3
+    mime_type: str | None = None
+    file_name: str | None = None
 
 
 @dataclass
@@ -252,8 +254,33 @@ async def test_router_audio_handler_routes_to_on_voice() -> None:
     )
     await handler(msg)
     pipeline.on_voice.assert_awaited_once_with(
-        telegram_id=3, chat_id=10, update_id=600, audio_bytes=b"MP3", caption=None
+        telegram_id=3,
+        chat_id=10,
+        update_id=600,
+        audio_bytes=b"MP3",
+        caption=None,
+        ext="mp3",
+        mime="audio/mpeg",
     )
+
+
+@pytest.mark.asyncio
+async def test_router_audio_handler_derives_ext_from_mime() -> None:
+    pipeline = MagicMock()
+    pipeline.on_voice = AsyncMock()
+    router = build_router(pipeline)
+    handler = _handler_by_name(router, "_on_audio")
+    msg = FakeMessage(
+        message_id=607,
+        chat=FakeChat(id=10),
+        from_user=FakeUser(id=8),
+        audio=FakeAudio(file_id="AID3", mime_type="audio/mp4", file_name="lecture.m4a"),
+        bot=_fake_bot_returning(b"M4A"),
+    )
+    await handler(msg)
+    kwargs = pipeline.on_voice.await_args.kwargs
+    assert kwargs["ext"] == "m4a"
+    assert kwargs["mime"] == "audio/mp4"
 
 
 @pytest.mark.asyncio
@@ -277,6 +304,8 @@ async def test_router_audio_handler_forwards_caption() -> None:
         update_id=603,
         audio_bytes=b"MP3",
         caption="это лекция по биологии",
+        ext="mp3",
+        mime="audio/mpeg",
     )
 
 
@@ -321,7 +350,12 @@ async def test_router_video_note_handler_routes_to_on_voice() -> None:
     )
     await handler(msg)
     pipeline.on_voice.assert_awaited_once_with(
-        telegram_id=4, chat_id=10, update_id=601, audio_bytes=b"MP4"
+        telegram_id=4,
+        chat_id=10,
+        update_id=601,
+        audio_bytes=b"MP4",
+        ext="mp4",
+        mime="video/mp4",
     )
 
 

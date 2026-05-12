@@ -153,6 +153,30 @@ async def test_on_voice_empty_transcript_falls_back_to_default_ack() -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_voice_forwards_ext_and_mime_to_handler() -> None:
+    sender = FakeSender()
+    voice = MagicMock()
+    voice.handle = AsyncMock(return_value=(_FakeRef(ext="mp4"), _FakeTranscript(text="hi")))
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=_make_confirm(),
+        voice=voice,
+    )
+    await pipe.on_voice(
+        telegram_id=1,
+        chat_id=10,
+        update_id=100,
+        audio_bytes=b"\x00",
+        ext="mp4",
+        mime="video/mp4",
+    )
+    voice.handle.assert_awaited_once()
+    assert voice.handle.await_args.kwargs["ext"] == "mp4"
+    assert voice.handle.await_args.kwargs["mime"] == "video/mp4"
+
+
+@pytest.mark.asyncio
 async def test_on_voice_with_caption_prepends_caption_to_text() -> None:
     sender = FakeSender()
     voice = MagicMock()

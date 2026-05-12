@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.3.6
+# VERSION: 0.3.7
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -63,11 +63,14 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.3.6 - aisw-b2x: on_document + on_voice accept an optional
+#   LAST_CHANGE: v0.3.7 - aisw-3dr: on_voice accepts ext/mime (default ogg) and
+#                forwards them to VoiceHandler.handle so video notes (mp4) and
+#                audio files are staged with the right extension, not .ogg.
+#   PREVIOUS:    v0.3.6 - aisw-b2x: on_document + on_voice accept an optional
 #                caption — _with_caption() prepends "Подпись пользователя: …" to
 #                the extracted text / transcript, image-document uses
 #                PHOTO_CAPTION_PROMPT_RU; MessagePipeline Protocol updated.
-#   PREVIOUS:    v0.3.5 - aisw-t0n: DefaultPipeline gains photo_vision_timeout_s;
+#                v0.3.5 - aisw-t0n: DefaultPipeline gains photo_vision_timeout_s;
 #                on_photo + image-document run with that per-call runner timeout
 #                (D-022 ~30s vision vs ~300s text); WikiRunner.run + _run_text_pipeline
 #                gain timeout_s.
@@ -276,6 +279,8 @@ class MessagePipeline(Protocol):
         update_id: int,
         audio_bytes: bytes,
         caption: str | None = None,
+        ext: str = "ogg",
+        mime: str = "audio/ogg",
     ) -> None: ...
 
     async def on_photo(
@@ -576,6 +581,8 @@ class DefaultPipeline:
         update_id: int,
         audio_bytes: bytes,
         caption: str | None = None,
+        ext: str = "ogg",
+        mime: str = "audio/ogg",
     ) -> None:
         if not await self._l1_check(update_id=update_id, telegram_id=telegram_id, kind="voice"):
             return
@@ -585,7 +592,9 @@ class DefaultPipeline:
             return
         run_id = f"voice-{uuid4().hex[:12]}"
         try:
-            ref, transcript = await self._voice.handle(audio_bytes, run_id=run_id)
+            ref, transcript = await self._voice.handle(
+                audio_bytes, run_id=run_id, ext=ext, mime=mime
+            )
         except VoiceUnavailableError:
             _log.warning("tg.pipeline.voice.stt_unavailable", telegram_id=telegram_id)
             await self._sender.send_message(chat_id, ACK_VOICE_UNAVAILABLE_RU)
@@ -597,6 +606,7 @@ class DefaultPipeline:
             update_id=update_id,
             run_id=run_id,
             sha256=ref.sha256,
+            ext=ref.ext,
             lang=transcript.lang,
             chars=len(transcript.text),
             has_caption=bool(caption),
