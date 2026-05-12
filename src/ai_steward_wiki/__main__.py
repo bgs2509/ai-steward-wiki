@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.5.4
+# VERSION: 0.5.5
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -32,7 +32,11 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.4 - aisw-5sd (Inbox-WIKI Phase-E.b): wire the '## Inbox hint'
+#   LAST_CHANGE: v0.5.5 - aisw-pv8 (Inbox-WIKI Phase-D.b.2c): pass the sessions
+#                sessionmaker into firing.set_digest_context(sessions_session_maker=
+#                sessions_maker) so the digest firing path can read/write
+#                user_digest_prefs (per-user digest section toggles).
+#   PREVIOUS:    v0.5.4 - aisw-5sd (Inbox-WIKI Phase-E.b): wire the '## Inbox hint'
 #                fast-path — make_hint_catalog_resolver (telegram_id → {stem: hint_text}
 #                via InboxHintCacheRepo + get_or_refresh_hint per domain WIKI; surrogate
 #                user_id via storage.sessions.users.resolve_user_id) → DefaultPipeline
