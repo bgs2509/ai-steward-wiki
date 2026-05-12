@@ -231,6 +231,50 @@ async def test_on_photo_full_pipeline_runs_runner_with_media() -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_photo_uses_photo_vision_timeout() -> None:
+    sender = FakeSender()
+    photo = MagicMock()
+    photo.handle = MagicMock(return_value=_FakeRef(ext="jpg"))
+    runner = _make_runner()
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=_make_confirm(),
+        photo=photo,
+        classifier=_make_classifier(),
+        runner=runner,
+        output=_make_output(),
+        photo_vision_timeout_s=30.0,
+    )
+    await pipe.on_photo(
+        telegram_id=1, chat_id=10, update_id=100, photo_bytes=b"\xff\xd8", mime="image/jpeg"
+    )
+    runner.run.assert_awaited_once()
+    assert runner.run.await_args.kwargs["timeout_s"] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_on_photo_without_vision_timeout_passes_none() -> None:
+    sender = FakeSender()
+    photo = MagicMock()
+    photo.handle = MagicMock(return_value=_FakeRef(ext="jpg"))
+    runner = _make_runner()
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=_make_confirm(),
+        photo=photo,
+        classifier=_make_classifier(),
+        runner=runner,
+        output=_make_output(),
+    )
+    await pipe.on_photo(
+        telegram_id=1, chat_id=10, update_id=100, photo_bytes=b"\xff\xd8", mime="image/jpeg"
+    )
+    assert runner.run.await_args.kwargs["timeout_s"] is None
+
+
+@pytest.mark.asyncio
 async def test_on_photo_with_caption_passes_caption_in_prompt() -> None:
     sender = FakeSender()
     photo = MagicMock()

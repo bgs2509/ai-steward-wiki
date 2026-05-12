@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.7
+# VERSION: 0.0.8
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -29,11 +29,14 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.7 - aisw-m2m (media chunk 2): run_wiki_session accepts
+#   LAST_CHANGE: v0.0.8 - aisw-t0n: run_wiki_session accepts an optional
+#                timeout_s overriding config.timeout_s for this call (D-022:
+#                ~30s photo vision vs ~300s text turn).
+#   PREVIOUS:    v0.0.7 - aisw-m2m (media chunk 2): run_wiki_session accepts
 #                media_paths; their parent dirs are appended to `--add-dir` so
 #                Claude's Read tool can open attached images (D-022). claude CLI
 #                2.1.139 has no `--image`; this is the only viable mechanism.
-#   PREVIOUS:    v0.0.6 - aisw-kpb: add `--verbose` to argv. claude CLI rejects
+#                v0.0.6 - aisw-kpb: add `--verbose` to argv. claude CLI rejects
 #                         `--print` (-p) + `--output-format stream-json` without
 #                         `--verbose` (rc=1 "When using --print,
 #                         --output-format=stream-json requires --verbose").
@@ -341,12 +344,16 @@ async def run_wiki_session(
     on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
     user_input: str = "",
     media_paths: list[Path] | None = None,
+    timeout_s: float | None = None,
 ) -> WikiRunResult:
     """Run one Stage-1a/1b Sonnet session against `wiki_path`.
 
     `media_paths` (D-022): local image/audio files the user attached. Their
     parent directories are added to `--add-dir` so the CLI's Read tool can
     open them; the file paths themselves must be referenced from `user_input`.
+
+    `timeout_s` (D-022): per-call override of ``config.timeout_s`` — e.g. 30s for
+    photo vision vs the default 300s for a text wiki turn. None → use config.
 
     Side-effects:
       - acquires (semaphore→memlock→flock) via `acquirer`,
@@ -361,6 +368,7 @@ async def run_wiki_session(
             "run_wiki_session requires a _RunConfig (claude_config_dir is mandatory)"
         )
     cfg = config
+    effective_timeout_s = timeout_s if timeout_s is not None else cfg.timeout_s
     started = time.monotonic()
     prompt_path = assemble_prompt(
         base_path=base_prompt_path,
@@ -442,7 +450,7 @@ async def run_wiki_session(
             return await proc.wait()
 
         try:
-            exit_code = await asyncio.wait_for(_drain(), timeout=cfg.timeout_s)
+            exit_code = await asyncio.wait_for(_drain(), timeout=effective_timeout_s)
         except TimeoutError as e:
             with contextlib.suppress(ProcessLookupError):
                 await kill_with_sequence(proc, grace_seconds=cfg.term_grace_s)
@@ -457,7 +465,7 @@ async def run_wiki_session(
                 timeout=True,
             )
             _persist_transcript(events, transcript_path)
-            raise WikiRunnerTimeoutError(f"wiki run exceeded timeout {cfg.timeout_s}s") from e
+            raise WikiRunnerTimeoutError(f"wiki run exceeded timeout {effective_timeout_s}s") from e
 
     stderr_text = await _drain_stderr(proc)
     _persist_transcript(events, transcript_path)

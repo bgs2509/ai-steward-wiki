@@ -97,7 +97,14 @@ def _runner_factory(
     outcome_text: str = "финальный текст",
 ):
     async def run(
-        *, text, owner_telegram_id, correlation_id, intent, on_event=None, media_paths=None
+        *,
+        text,
+        owner_telegram_id,
+        correlation_id,
+        intent,
+        on_event=None,
+        media_paths=None,
+        timeout_s=None,
     ):
         if emit_events:
             for ev in emit_events:

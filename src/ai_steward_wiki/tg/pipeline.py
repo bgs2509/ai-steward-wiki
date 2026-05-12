@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.3.4
+# VERSION: 0.3.5
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -63,11 +63,15 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.3.4 - aisw-ahv (media chunk 3): on_photo accepts an optional
+#   LAST_CHANGE: v0.3.5 - aisw-t0n: DefaultPipeline gains photo_vision_timeout_s;
+#                on_photo + image-document run with that per-call runner timeout
+#                (D-022 ~30s vision vs ~300s text); WikiRunner.run + _run_text_pipeline
+#                gain timeout_s.
+#   PREVIOUS:    v0.3.4 - aisw-ahv (media chunk 3): on_photo accepts an optional
 #                caption — when present, PHOTO_CAPTION_PROMPT_RU carries the user
 #                request alongside the image (D-022). MessagePipeline.on_photo
 #                Protocol gains caption.
-#   PREVIOUS:    v0.3.3 - aisw-m2m (media chunk 2): on_photo + image-document
+#                v0.3.3 - aisw-m2m (media chunk 2): on_photo + image-document
 #                branch run the wiki pipeline with media_paths (PHOTO_PROMPT_RU)
 #                so Claude vision processes the image instead of a bare ack;
 #                on_photo gains L2 dedup on image bytes; WikiRunner.run and
@@ -202,6 +206,7 @@ class WikiRunner(Protocol):
         intent: Intent,
         on_event: Callable[[object], Awaitable[None]] | None = None,
         media_paths: list[Path] | None = None,
+        timeout_s: float | None = None,
     ) -> WikiRunOutcome: ...
 
 
@@ -339,6 +344,7 @@ class DefaultPipeline:
         output: OutputDelivery | None = None,
         streaming: StreamingDelivery | None = None,
         pii: PIIRedactor | None = None,
+        photo_vision_timeout_s: float | None = None,
     ) -> None:
         self._sender = sender
         self._idem = idempotency
@@ -350,6 +356,8 @@ class DefaultPipeline:
         self._output = output
         self._streaming = streaming
         self._pii = pii or PIIRedactor()
+        # D-022: shorter cap for photo→vision runs (vs the default text-turn cap).
+        self._photo_vision_timeout_s = photo_vision_timeout_s
 
     async def _l1_check(self, *, update_id: int, telegram_id: int, kind: str) -> bool:
         """Return True iff the update is new (proceed). Logs on duplicate."""
@@ -380,12 +388,15 @@ class DefaultPipeline:
         source: Literal["text", "voice", "document", "photo"],
         media_paths: list[Path] | None = None,
         skip_l2_dedup: bool = False,
+        timeout_s: float | None = None,
     ) -> None:
         """Shared body: L2 dedup → classify → run → deliver. Errors → safe acks.
 
         `media_paths` are forwarded to the runner (D-022 photo vision).
         `skip_l2_dedup` is set by callers that already deduped on the raw bytes
         (e.g. on_photo) and pass a synthetic, constant `text` here.
+        `timeout_s` is a per-call runner timeout override (D-022: shorter for
+        photo vision). None → the runner uses its configured default.
         """
         assert self._classifier is not None
         assert self._runner is not None
@@ -476,6 +487,7 @@ class DefaultPipeline:
                 correlation_id=correlation_id,
                 intent=result.intent,
                 media_paths=media_paths,
+                timeout_s=timeout_s,
             )
         except WikiRunnerError:
             _log.exception(
@@ -647,6 +659,7 @@ class DefaultPipeline:
             source="photo",
             media_paths=[ref.staging_path],
             skip_l2_dedup=True,
+            timeout_s=self._photo_vision_timeout_s,
         )
 
     def _safe_filename_log(self, filename: str) -> str:
@@ -894,6 +907,7 @@ class DefaultPipeline:
             source="photo",
             media_paths=[ref.staging_path],
             skip_l2_dedup=True,
+            timeout_s=self._photo_vision_timeout_s,
         )
 
     # END_BLOCK_ON_DOCUMENT

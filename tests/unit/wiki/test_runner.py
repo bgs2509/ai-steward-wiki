@@ -249,6 +249,33 @@ async def test_run_wiki_session_timeout_invokes_kill(
     assert transcript.exists()
 
 
+async def test_run_wiki_session_timeout_s_overrides_config(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    spawner = FakeSpawner(lines=[], exit_code=0, hang=True)
+    wiki = tmp_path / "Slow-WIKI"
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+
+    # config.timeout_s is generous (5s) — the per-call override (0.05s) wins.
+    with pytest.raises(WikiRunnerTimeoutError, match="0.05"):
+        await run_wiki_session(
+            wiki_id="Slow-WIKI",
+            wiki_path=wiki,
+            base_prompt_path=prompts_dir / "wiki.md",
+            overlay_prompt_path=prompts_dir / "domain-default.md",
+            run_id="run-to-override",
+            correlation_id="corr-to",
+            runtime_dir=tmp_path / "runtime",
+            acquirer=fake_acquirer,
+            spawner=spawner,
+            config=_cfg(cfg_dir, timeout_s=5.0, term_grace_s=0.05),
+            timeout_s=0.05,
+        )
+
+
 async def test_run_wiki_session_nonzero_exit_raises_with_stderr(
     tmp_path: Path,
     prompts_dir: Path,

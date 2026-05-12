@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.1.4
+# VERSION: 0.1.5
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -25,12 +25,15 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.4 - aisw-7k0: wire register_all_retention_jobs into _amain
+#   LAST_CHANGE: v0.1.5 - aisw-t0n: pass photo_vision_timeout_s into DefaultPipeline
+#                and timeout_s through _WikiRunnerAdapter.run → run_wiki_session
+#                (D-022 per-call vision timeout).
+#   PREVIOUS:    v0.1.4 - aisw-7k0: wire register_all_retention_jobs into _amain
 #                (was unwired — pending-purge / DB retention / db_snapshot never
 #                ran in prod); adds jobs_sessionmaker; logs registered job ids.
 #                Replaces the direct register_media_staging_sweep_job call (now
 #                inside the aggregator).
-#   PREVIOUS:    v0.1.3 - aisw-8r9 (media chunk 4): register the daily media
+#                v0.1.3 - aisw-8r9 (media chunk 4): register the daily media
 #                _staging sweep job on the scheduler; _WikiRunnerAdapter.run
 #                promotes staged media into <wiki>/raw/media/ after a successful
 #                run (D-022 two-phase storage).
@@ -208,6 +211,7 @@ class _WikiRunnerAdapter:
         intent: Intent,
         on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
         media_paths: list[Path] | None = None,
+        timeout_s: float | None = None,
     ) -> WikiRunOutcome:
         wiki_id = str(owner_telegram_id)
         wiki_path = self._wiki_root / wiki_id
@@ -235,6 +239,7 @@ class _WikiRunnerAdapter:
                 on_event=on_event,
                 user_input=text,
                 media_paths=media_paths,
+                timeout_s=timeout_s,
             )
         except WikiRunnerError:
             raise
@@ -487,6 +492,7 @@ async def _amain() -> None:
         output=output_adapter,
         streaming=streaming_delivery,
         pii=PIIRedactor(hash_secret=settings.pii_hash_secret.get_secret_value().encode("utf-8")),
+        photo_vision_timeout_s=settings.photo_vision_timeout_s,
     )
     dp = build_dispatcher(allowlist, pipeline=pipeline)
     logger.info("runtime.handlers.registered")
