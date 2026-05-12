@@ -3,7 +3,7 @@ feature: inbox-wiki-route-ingest
 bd_id: aisw-zd9
 epic: aisw-t2r
 phase: "Inbox-WIKI Phase-B"
-status: discovery
+status: done
 created: 2026-05-12
 requirements:
   functional:

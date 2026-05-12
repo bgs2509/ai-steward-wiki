@@ -3,7 +3,7 @@ feature: inbox-wiki-route-ingest
 bd_id: aisw-zd9
 epic: aisw-t2r
 phase: "Inbox-WIKI Phase-B"
-status: design
+status: done
 created: 2026-05-12
 discovery_ref: docs/superpowers/specs/20260512-inbox-wiki-route-ingest-discovery.md
 approach: "After Phase-A's router.route(), for ROUTE/CREATE_WIKI intents: resolve-or-create the target <Domain>-WIKI (WikiLifecycleManager), write a fresh raw payload + promote any media binary into the target WIKI, run a Stage-1b librarian session there (run_wiki_session + prompts/wiki.md + prompts/domain-*.md overlay), reply with notes + the ingest summary. New pure module inbox/route.py + a runtime _LibrarianAdapter behind a narrow Librarian Protocol; the pipeline orchestrates the two-step."
