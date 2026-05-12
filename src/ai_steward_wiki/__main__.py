@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.1.1
+# VERSION: 0.1.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -24,9 +24,11 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.1 - aisw-zny (media chunk 1): wire VoiceHandler +
+#   LAST_CHANGE: v0.1.2 - aisw-m2m (media chunk 2): _WikiRunnerAdapter.run
+#                forwards media_paths to run_wiki_session (photo vision, D-022).
+#   PREVIOUS:    v0.1.1 - aisw-zny (media chunk 1): wire VoiceHandler +
 #                PhotoIngestor into DefaultPipeline (D-022); runtime.media_pipeline.wired log.
-#   PREVIOUS:    v0.1.0 - chunk 20: wire classifier+runner+deliver_output adapters.
+#                v0.1.0 - chunk 20: wire classifier+runner+deliver_output adapters.
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -193,6 +195,7 @@ class _WikiRunnerAdapter:
         correlation_id: str,
         intent: Intent,
         on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
+        media_paths: list[Path] | None = None,
     ) -> WikiRunOutcome:
         wiki_id = str(owner_telegram_id)
         wiki_path = self._wiki_root / wiki_id
@@ -219,6 +222,7 @@ class _WikiRunnerAdapter:
                 config=self._run_config,
                 on_event=on_event,
                 user_input=text,
+                media_paths=media_paths,
             )
         except WikiRunnerError:
             raise

@@ -123,6 +123,70 @@ async def test_run_wiki_session_happy_path(
     assert spawner.calls[0]["stdin_data"] is None
 
 
+async def test_run_wiki_session_grants_media_dirs_via_add_dir(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
+    wiki = tmp_path / "Health-WIKI"
+    media_dir = tmp_path / "_staging"
+    media_dir.mkdir()
+    img = media_dir / "run-img_abcd1234.jpg"
+    img.write_bytes(b"\xff\xd8\xff")
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+
+    await run_wiki_session(
+        wiki_id="Health-WIKI",
+        wiki_path=wiki,
+        base_prompt_path=prompts_dir / "wiki.md",
+        overlay_prompt_path=prompts_dir / "domain-default.md",
+        run_id="run-002",
+        correlation_id="corr-2",
+        runtime_dir=tmp_path / "runtime",
+        acquirer=fake_acquirer,
+        spawner=spawner,
+        config=_cfg(cfg_dir),
+        media_paths=[img],
+    )
+    argv = spawner.calls[0]["argv"]
+    # --add-dir is variadic: wiki path first, then each media dir.
+    add_idx = argv.index("--add-dir")
+    assert argv[add_idx + 1] == str(wiki)
+    assert str(media_dir) in argv
+    # media dir appears right after the wiki path, before the system-prompt flag.
+    assert argv[add_idx + 2] == str(media_dir)
+
+
+async def test_run_wiki_session_no_media_argv_unchanged(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
+    wiki = tmp_path / "Health-WIKI"
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+    await run_wiki_session(
+        wiki_id="Health-WIKI",
+        wiki_path=wiki,
+        base_prompt_path=prompts_dir / "wiki.md",
+        overlay_prompt_path=prompts_dir / "domain-default.md",
+        run_id="run-003",
+        correlation_id="corr-3",
+        runtime_dir=tmp_path / "runtime",
+        acquirer=fake_acquirer,
+        spawner=spawner,
+        config=_cfg(cfg_dir),
+    )
+    argv = spawner.calls[0]["argv"]
+    add_idx = argv.index("--add-dir")
+    # Only the wiki path follows --add-dir; next token is the system-prompt flag.
+    assert argv[add_idx + 1] == str(wiki)
+    assert argv[add_idx + 2].startswith("--")
+
+
 async def test_run_wiki_session_pipes_user_input_to_stdin(
     tmp_path: Path,
     prompts_dir: Path,

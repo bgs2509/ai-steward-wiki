@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -121,6 +122,7 @@ def _make_output() -> MagicMock:
 class _StagedRef:
     sha256: str = "deadbeef" * 8
     ext: str = "jpg"
+    staging_path: Path = Path("/tmp/_staging/run-img_deadbeef.jpg")
 
 
 def _make_photo() -> MagicMock:
@@ -251,11 +253,37 @@ async def test_text_plain_non_utf8_rejected_as_unsupported() -> None:
 
 
 @pytest.mark.asyncio
-async def test_image_jpeg_routes_through_photo_ingestor() -> None:
+async def test_image_jpeg_routed_to_runner_with_media() -> None:
     sender = FakeSender()
     photo = _make_photo()
-    pipe = _make_pipeline(sender=sender, photo=photo)
+    runner = _make_runner()
+    output = _make_output()
+    pipe = _make_pipeline(sender=sender, photo=photo, runner=runner, output=output)
 
+    await pipe.on_document(
+        telegram_id=1,
+        chat_id=10,
+        update_id=100,
+        doc_bytes=b"\xff\xd8\xff\xe0fake-jpeg",
+        mime="image/jpeg",
+        filename="photo.jpg",
+    )
+    photo.handle.assert_called_once()
+    runner.run.assert_awaited_once()
+    assert runner.run.await_args.kwargs["media_paths"] is not None
+    output.deliver.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_image_jpeg_without_full_pipeline_acks() -> None:
+    sender = FakeSender()
+    photo = _make_photo()
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=_make_confirm(),
+        photo=photo,
+    )
     await pipe.on_document(
         telegram_id=1,
         chat_id=10,

@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.5
+# VERSION: 0.0.7
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -29,7 +29,11 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.6 - aisw-kpb: add `--verbose` to argv. claude CLI rejects
+#   LAST_CHANGE: v0.0.7 - aisw-m2m (media chunk 2): run_wiki_session accepts
+#                media_paths; their parent dirs are appended to `--add-dir` so
+#                Claude's Read tool can open attached images (D-022). claude CLI
+#                2.1.139 has no `--image`; this is the only viable mechanism.
+#   PREVIOUS:    v0.0.6 - aisw-kpb: add `--verbose` to argv. claude CLI rejects
 #                         `--print` (-p) + `--output-format stream-json` without
 #                         `--verbose` (rc=1 "When using --print,
 #                         --output-format=stream-json requires --verbose").
@@ -265,7 +269,11 @@ def _build_argv(
     prompt_path: Path,
     allowed_tools: list[str] | None,
     disallowed_tools: list[str] | None,
+    media_dirs: list[Path] | None = None,
 ) -> list[str]:
+    # claude CLI 2.1.139 has no --image flag; local media is exposed to the
+    # Read tool by granting --add-dir on the staged file's directory (D-022).
+    extra_dirs = [str(d) for d in (media_dirs or [])]
     argv: list[str] = [
         binary,
         "-p",
@@ -273,6 +281,7 @@ def _build_argv(
         model,
         "--add-dir",
         str(wiki_path),
+        *extra_dirs,
         *system_prompt_argv(prompt_path),
         "--setting-sources",
         "",
@@ -331,8 +340,13 @@ async def run_wiki_session(
     config: _RunConfig | None = None,
     on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
     user_input: str = "",
+    media_paths: list[Path] | None = None,
 ) -> WikiRunResult:
     """Run one Stage-1a/1b Sonnet session against `wiki_path`.
+
+    `media_paths` (D-022): local image/audio files the user attached. Their
+    parent directories are added to `--add-dir` so the CLI's Read tool can
+    open them; the file paths themselves must be referenced from `user_input`.
 
     Side-effects:
       - acquires (semaphore→memlock→flock) via `acquirer`,
@@ -360,6 +374,7 @@ async def run_wiki_session(
     env = build_env(cfg.claude_config_dir)
     cwd = neutral_cwd(cfg.claude_config_dir)
 
+    media_dirs = sorted({p.parent for p in media_paths}) if media_paths else None
     argv = _build_argv(
         binary=resolve_binary(cfg.binary),
         model=cfg.model,
@@ -367,6 +382,7 @@ async def run_wiki_session(
         prompt_path=prompt_path,
         allowed_tools=cfg.allowed_tools,
         disallowed_tools=cfg.disallowed_tools,
+        media_dirs=media_dirs,
     )
 
     _log.info(
@@ -375,6 +391,7 @@ async def run_wiki_session(
         wiki_id=wiki_id,
         run_id=run_id,
         model=cfg.model,
+        media_count=len(media_paths) if media_paths else 0,
     )
 
     events: list[StreamEvent] = []

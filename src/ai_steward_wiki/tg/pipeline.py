@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.3.2
+# VERSION: 0.3.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -11,6 +11,9 @@
 #            → text pipeline; text/* → utf-8 decode → text pipeline; image/*
 #            → PhotoIngestor; else → ru-only reject. L2 dedup on doc_sha256
 #            (D-018) and tier-2 PII filename hashing in all log lines.
+#            v0.3.3 (aisw-m2m): on_photo and the image-document branch run the
+#            wiki pipeline with media_paths (PHOTO_PROMPT_RU) so Claude vision
+#            actually processes the image (D-022); on_photo L2-dedups image bytes.
 #   SCOPE: MessagePipeline Protocol + Classifier/WikiRunner/OutputDelivery
 #          Protocols + WikiRunOutcome dataclass + DefaultPipeline
 #          implementation with optional injection (None → ack fallback) +
@@ -45,6 +48,7 @@
 #   ACK_RUNNER_ERR_RU - safe ack on runner failure
 #   MAX_DOC_BYTES - hard cap on incoming document size (25 MB)
 #   PDF_MAX_EXTRACT_CHARS - truncate point for pypdf-extracted text
+#   PHOTO_PROMPT_RU - synthetic Stage-1 prompt for a caption-less image (D-022)
 #   SUPPORTED_IMAGE_MIMES - frozenset of mimes routed to PhotoIngestor
 #   ConfirmKeyboardAction - Literal[confirm|correct|cancel]
 #   Classifier - Protocol (Stage-0 wrapper, narrow API)
@@ -58,10 +62,15 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.3.2 - aisw-zny (media chunk 1): on_voice maps
+#   LAST_CHANGE: v0.3.3 - aisw-m2m (media chunk 2): on_photo + image-document
+#                branch run the wiki pipeline with media_paths (PHOTO_PROMPT_RU)
+#                so Claude vision processes the image instead of a bare ack;
+#                on_photo gains L2 dedup on image bytes; WikiRunner.run and
+#                _run_text_pipeline gain media_paths (+ skip_l2_dedup) (D-022).
+#   PREVIOUS:    v0.3.2 - aisw-zny (media chunk 1): on_voice maps
 #                VoiceUnavailableError → ACK_VOICE_UNAVAILABLE_RU + log
 #                tg.pipeline.voice.stt_unavailable (graceful STT degradation).
-#   PREVIOUS:    v0.3.1 - aisw-x92: streaming slow-path deliver(tg_send=False)
+#                v0.3.1 - aisw-x92: streaming slow-path deliver(tg_send=False)
 #                — reply already sent via StreamEditor, no duplicate TG message;
 #                OutputDelivery.deliver gains tg_send param.
 #                v0.3.0 - chunk 22: on_document mime router (DEC-L3) +
@@ -73,6 +82,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
@@ -105,6 +115,7 @@ __all__ = [
     "ACK_VOICE_UNAVAILABLE_RU",
     "MAX_DOC_BYTES",
     "PDF_MAX_EXTRACT_CHARS",
+    "PHOTO_PROMPT_RU",
     "SUPPORTED_IMAGE_MIMES",
     "Classifier",
     "ConfirmKeyboardAction",
@@ -140,6 +151,14 @@ MAX_DOC_BYTES = 25 * 1024 * 1024
 PDF_MAX_EXTRACT_CHARS = 50_000
 SUPPORTED_IMAGE_MIMES = frozenset({"image/jpeg", "image/jpg", "image/png", "image/webp"})
 
+# Synthetic Stage-1 prompt for an image with no caption (D-022 — photo via Claude
+# vision). The staged file's directory is granted to the CLI Read tool by the runner.
+PHOTO_PROMPT_RU = (
+    "Пользователь прислал изображение. Файл: {path}\n"
+    "Открой его инструментом Read, опиши содержимое и, если уместно, занеси "  # noqa: RUF001
+    "информацию в подходящую WIKI. Кратко ответь, что распознал и что записал."
+)
+
 ConfirmKeyboardAction = Literal["confirm", "correct", "cancel"]
 
 
@@ -169,6 +188,7 @@ class WikiRunner(Protocol):
         correlation_id: str,
         intent: Intent,
         on_event: Callable[[object], Awaitable[None]] | None = None,
+        media_paths: list[Path] | None = None,
     ) -> WikiRunOutcome: ...
 
 
@@ -343,28 +363,36 @@ class DefaultPipeline:
         chat_id: int,
         update_id: int,
         text: str,
-        source: Literal["text", "voice", "document"],
+        source: Literal["text", "voice", "document", "photo"],
+        media_paths: list[Path] | None = None,
+        skip_l2_dedup: bool = False,
     ) -> None:
-        """Shared body: L2 dedup → classify → run → deliver. Errors → safe acks."""
+        """Shared body: L2 dedup → classify → run → deliver. Errors → safe acks.
+
+        `media_paths` are forwarded to the runner (D-022 photo vision).
+        `skip_l2_dedup` is set by callers that already deduped on the raw bytes
+        (e.g. on_photo) and pass a synthetic, constant `text` here.
+        """
         assert self._classifier is not None
         assert self._runner is not None
         assert self._output is not None
 
         correlation_id = f"tg-{update_id}-{telegram_id}"
 
-        sha256, match = await self._idem.check_content(telegram_id, "text", text)
-        if match is not None:
-            _log.info(
-                "tg.pipeline.inbox.l2_dedup_hit",
-                correlation_id=correlation_id,
-                telegram_id=telegram_id,
-                kind="text",
-                sha8=sha256[:8],
-                source=source,
-            )
-            await self._idem.record_dedup_choice(sha256, telegram_id, "auto_skip")
-            await self._sender.send_message(chat_id, ACK_DEDUP_RU)
-            return
+        if not skip_l2_dedup:
+            sha256, match = await self._idem.check_content(telegram_id, "text", text)
+            if match is not None:
+                _log.info(
+                    "tg.pipeline.inbox.l2_dedup_hit",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    kind="text",
+                    sha8=sha256[:8],
+                    source=source,
+                )
+                await self._idem.record_dedup_choice(sha256, telegram_id, "auto_skip")
+                await self._sender.send_message(chat_id, ACK_DEDUP_RU)
+                return
 
         _log.info(
             "tg.pipeline.classify.begin",
@@ -433,6 +461,7 @@ class DefaultPipeline:
                 owner_telegram_id=telegram_id,
                 correlation_id=correlation_id,
                 intent=result.intent,
+                media_paths=media_paths,
             )
         except WikiRunnerError:
             _log.exception(
@@ -572,7 +601,32 @@ class DefaultPipeline:
             sha256=ref.sha256,
             ext=ref.ext,
         )
-        await self._sender.send_message(chat_id, ACK_PHOTO_RU)
+        # L2 dedup on raw image bytes (D-018) — second copy of the same photo
+        # is a re-send, not new content.
+        sha256, match = await self._idem.check_content(telegram_id, "file", photo_bytes)
+        if match is not None:
+            _log.info(
+                "tg.pipeline.photo.dedup_hit",
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                update_id=update_id,
+                sha256_short=sha256[:8],
+            )
+            await self._idem.record_dedup_choice(sha256, telegram_id, "duplicate_photo")
+            await self._sender.send_message(chat_id, ACK_DEDUP_RU)
+            return
+        if not self._full_pipeline_available():
+            await self._sender.send_message(chat_id, ACK_PHOTO_RU)
+            return
+        await self._run_text_pipeline(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            update_id=update_id,
+            text=PHOTO_PROMPT_RU.format(path=ref.staging_path),
+            source="photo",
+            media_paths=[ref.staging_path],
+            skip_l2_dedup=True,
+        )
 
     def _safe_filename_log(self, filename: str) -> str:
         """Return tier-2 PII-hashed filename token for use in log lines."""
@@ -807,7 +861,19 @@ class DefaultPipeline:
             sha256_short=ref.sha256[:8],
             ext=ref.ext,
         )
-        await self._sender.send_message(chat_id, ACK_PHOTO_RU)
+        # doc_bytes were L2-deduped at on_document entry → skip dedup here.
+        if not self._full_pipeline_available():
+            await self._sender.send_message(chat_id, ACK_PHOTO_RU)
+            return
+        await self._run_text_pipeline(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            update_id=update_id,
+            text=PHOTO_PROMPT_RU.format(path=ref.staging_path),
+            source="photo",
+            media_paths=[ref.staging_path],
+            skip_l2_dedup=True,
+        )
 
     # END_BLOCK_ON_DOCUMENT
 

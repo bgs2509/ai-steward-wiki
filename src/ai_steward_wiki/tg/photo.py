@@ -1,8 +1,9 @@
 # FILE: src/ai_steward_wiki/tg/photo.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
-#   PURPOSE: Photo ingestion — stage bytes to _staging/, hand MediaRef to vision runner.
-#            Stage-1b vision call itself lives in M-WIKI-RUNNER (chunk 7).
+#   PURPOSE: Photo ingestion — stage bytes to _staging/, return a MediaRef. The
+#            actual Claude vision call is performed by the wiki pipeline, which
+#            passes the staged path to the runner via media_paths (D-022, aisw-m2m).
 #   SCOPE: PhotoIngestor.handle(photo_bytes, run_id) -> MediaRef; ext sniff via
 #          mime mapping (jpeg/png/webp).
 #   DEPENDS: ai_steward_wiki.inbox.staging, ai_steward_wiki.logging_setup
@@ -13,11 +14,13 @@
 #
 # START_MODULE_MAP
 #   PHOTO_MIME_TO_EXT - closed mapping of allowed photo MIME types → extension
-#   PhotoIngestor - stages photo bytes; returns MediaRef for delegation to vision
+#   PhotoIngestor - stages photo bytes; returns MediaRef for the wiki pipeline
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 11: initial photo staging (D-022)
+#   LAST_CHANGE: v0.0.2 - aisw-m2m (media chunk 2): contract clarified — vision
+#                call is owned by the wiki pipeline (media_paths); no code change.
+#   PREVIOUS:    v0.0.1 - chunk 11: initial photo staging (D-022)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations

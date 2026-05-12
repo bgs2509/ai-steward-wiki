@@ -3,7 +3,7 @@
   <Source>docs/superpowers/plans/20260512-media-handling-full-plan.md</Source>
   <Goal>Полное подключение обработки медиа (voice/photo/document/audio/video_note) end-to-end: от TG handler до Claude и обратно, со стейджингом/промоушеном, тестами и документацией.</Goal>
 
-  <RunState current_chunk="2" last_commit_sha="06b1e92" total_test_status="pass-after-chunk-1" updated_utc="2026-05-12" note="chunk 1 (aisw-zny) closed. Resume: /superautocoder --resume 20260512-media-handling-full -> starts chunk 2 (aisw-m2m)."/>
+  <RunState current_chunk="3" last_commit_sha="pending" total_test_status="pass-after-chunk-2" updated_utc="2026-05-12" note="chunks 1 (aisw-zny) + 2 (aisw-m2m) closed. Resume: /superautocoder --resume 20260512-media-handling-full -> starts chunk 3 (aisw-ahv)."/>
 
   <Chunks>
     <Chunk n="1" bd_id="aisw-zny" module="M-RUNTIME-WIRING" est_window_pct="35" depends_on="">
@@ -47,11 +47,17 @@
     <Decision chunk="1" id="DEC-C1-1" adr="ADR-002">faster-whisper moved to core deps (not extra). Voice is primary MVP feature (D-022). + defensive ImportError→VoiceUnavailableError→ACK_VOICE_UNAVAILABLE_RU. Auto-applied (one-sided dominance: correctness/just-works vs image-size; image size not a correctness concern, no voice-less deploy profile).</Decision>
     <Decision chunk="1" id="DEC-C1-2">media_staging_root = single dir (default /var/lib/ai-steward-wiki/workspace/media-staging), not per-user. Per-user Inbox-WIKI absent from lifecycle.py; promotion to target wiki deferred to chunk 4.</Decision>
     <Decision chunk="1" id="DEC-C1-3">voice_whisper_model_size default 'small' (D-022 bench RTF≤0.5 on small).</Decision>
+    <Decision chunk="2" id="DEC-C2-1">Image → Claude via --add-dir &lt;staged-file dir&gt; + path in user_input (Read tool). claude CLI 2.1.139 has no --image; --file is for remote file_id. Only viable mechanism, not a choice → auto-apply, no ADR.</Decision>
+    <Decision chunk="2" id="DEC-C2-2">on_photo gets its own L2 dedup on image bytes (kind='file'), then _run_text_pipeline(skip_l2_dedup=True) — the synthetic photo prompt is constant, text-level dedup would false-positive.</Decision>
+    <Decision chunk="2" id="DEC-C2-3">_run_text_pipeline source literal extended to Literal['text','voice','document','photo'].</Decision>
+    <Decision chunk="2" id="DEC-C2-4" deferred="true">Per-call vision timeout 30s (D-022) NOT implemented — adapter uses one _RunConfig.timeout_s (wiki_runner_timeout_s, 300s). Deferred; needs an optional timeout override in WikiRunner.run.</Decision>
   </Decisions>
   <ReassessLog>
     <Reassess after_chunk="1" ts_utc="2026-05-12">No structural drift for chunks 2-5. Note: chunk 4 (promote_to_raw) needs MediaRef threaded from on_voice/on_photo to the point where target WIKI is known — to be designed in chunk 4 Discovery. media_staging_root now exists as Settings field (chunk 4 sweep job will read it). No tail regeneration needed.</Reassess>
+    <Reassess after_chunk="2" ts_utc="2026-05-12">No structural drift for chunks 3-5. chunk 4: MediaRef threading — now both on_voice and on_photo create a MediaRef before _run_text_pipeline; chunk 4 should add an optional media_ref param to _run_text_pipeline and promote it after a successful run when target wiki is known (wiki_root/&lt;owner_telegram_id&gt; in current MVP). chunk 3 (caption) will add caption param to on_photo/on_document/on_voice — chunk 2 already routes photo via _run_text_pipeline, so chunk 3 just substitutes caption for PHOTO_PROMPT_RU when present. No tail regeneration.</Reassess>
   </ReassessLog>
   <TotalTestLog>
-    <Run chunk="1" ts_utc="2026-05-12" exit="0">ruff-check 0 errors; ruff-format-check 0 reformat; mypy 66 files 0 errors; grace-lint governed=66 xml=3 errors=0 warnings=0; inv-lint 14/14; test-cov 419 passed 0 failed coverage=90.65%. ALL STEPS PASSED.</Run>
+    <Run chunk="1" ts_utc="2026-05-12" exit="0">ruff-check 0; ruff-format 0 reformat; mypy 66 files 0 errors; grace-lint governed=66 xml=3 errors=0 warnings=0; inv-lint 14/14; test-cov 419 passed coverage=90.65%. ALL PASSED.</Run>
+    <Run chunk="2" ts_utc="2026-05-12" exit="0">ruff-check 0; ruff-format 0 reformat; mypy 66 files 0 errors; grace-lint governed=66 xml=3 errors=0 warnings=0; inv-lint 14/14; test-cov 424 passed coverage=90.70%. ALL PASSED.</Run>
   </TotalTestLog>
 </Breakdown>

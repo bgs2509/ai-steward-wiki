@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,6 +23,7 @@ from tests.unit.tg.conftest import FakeSender
 class _FakeRef:
     sha256: str = "deadbeef" * 8
     ext: str = "jpg"
+    staging_path: Path = Path("/tmp/_staging/run_dead.jpg")
 
 
 @dataclass
@@ -33,10 +35,45 @@ class _FakeTranscript:
     rtf: float = 0.1
 
 
-def _make_idem(new: bool = True) -> MagicMock:
+def _make_idem(new: bool = True, *, content_match: object | None = None) -> MagicMock:
     idem = MagicMock()
     idem.check_update_id = AsyncMock(return_value=new)
+    idem.check_content = AsyncMock(return_value=("ab" * 32, content_match))
+    idem.record_dedup_choice = AsyncMock(return_value=None)
     return idem
+
+
+def _make_runner(text: str = "распознал чек") -> MagicMock:
+    from ai_steward_wiki.tg.pipeline import WikiRunOutcome
+
+    r = MagicMock()
+    r.run = AsyncMock(return_value=WikiRunOutcome(run_id="run-x", text=text, latency_ms=10))
+    return r
+
+
+def _make_classifier() -> MagicMock:
+    from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
+
+    cls = MagicMock()
+    cls.classify = AsyncMock(
+        return_value=ClassifierResult(
+            intent=Intent.WIKI_QUERY,
+            confidence=0.9,
+            distilled_payload={},
+            backend="fake",
+            model="fake-m",
+            prompt_semver="1.0.0",
+            prompt_sha256="a" * 64,
+            latency_ms=5,
+        )
+    )
+    return cls
+
+
+def _make_output() -> MagicMock:
+    out = MagicMock()
+    out.deliver = AsyncMock(return_value=None)
+    return out
 
 
 def _make_confirm(status: str | None = "confirmed") -> MagicMock:
@@ -164,6 +201,57 @@ async def test_on_photo_without_ingestor_falls_back() -> None:
         telegram_id=1, chat_id=10, update_id=100, photo_bytes=b"\xff", mime="image/jpeg"
     )
     assert sender.sends[0]["text"] == ACK_PHOTO_RU
+
+
+@pytest.mark.asyncio
+async def test_on_photo_full_pipeline_runs_runner_with_media() -> None:
+    sender = FakeSender()
+    photo = MagicMock()
+    photo.handle = MagicMock(return_value=_FakeRef(ext="jpg"))
+    runner = _make_runner(text="на фото — кассовый чек")
+    output = _make_output()
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=_make_confirm(),
+        photo=photo,
+        classifier=_make_classifier(),
+        runner=runner,
+        output=output,
+    )
+    await pipe.on_photo(
+        telegram_id=1, chat_id=10, update_id=100, photo_bytes=b"\xff\xd8", mime="image/jpeg"
+    )
+    runner.run.assert_awaited_once()
+    media = runner.run.await_args.kwargs["media_paths"]
+    assert media is not None
+    assert len(media) == 1
+    output.deliver.assert_awaited_once()
+    assert output.deliver.await_args.kwargs["text"] == "на фото — кассовый чек"
+
+
+@pytest.mark.asyncio
+async def test_on_photo_l2_dedup_hit_sends_dedup_ack() -> None:
+    from ai_steward_wiki.tg.pipeline import ACK_DEDUP_RU
+
+    sender = FakeSender()
+    photo = MagicMock()
+    photo.handle = MagicMock(return_value=_FakeRef(ext="jpg"))
+    runner = _make_runner()
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(content_match=object()),
+        confirmation=_make_confirm(),
+        photo=photo,
+        classifier=_make_classifier(),
+        runner=runner,
+        output=_make_output(),
+    )
+    await pipe.on_photo(
+        telegram_id=1, chat_id=10, update_id=100, photo_bytes=b"\xff\xd8", mime="image/jpeg"
+    )
+    assert sender.sends[-1]["text"] == ACK_DEDUP_RU
+    runner.run.assert_not_called()
 
 
 @pytest.mark.asyncio
