@@ -113,6 +113,7 @@ def _pipe(
     sender: FakeSender,
     confirmation: MagicMock,
     recurrence_parser: Any = None,
+    owner_wikis_resolver: Any = None,
     jobs_session_maker: Any = None,
     scheduler: Any = None,
 ) -> DefaultPipeline:
@@ -125,10 +126,20 @@ def _pipe(
         output=_output(),
         time_parser=MagicMock(),  # gate only; the recurring branch returns before parse_time
         recurrence_parser=recurrence_parser,
+        owner_wikis_resolver=owner_wikis_resolver,
         jobs_session_maker=jobs_session_maker,
         scheduler=scheduler,
         clock=lambda: NOW,
     )
+
+
+def _resolver(*stems: str):
+    from pathlib import Path
+
+    async def _r(owner_id: int):
+        return [(s, Path(f"/tmp/{s}-WIKI")) for s in stems]
+
+    return _r
 
 
 def _daily() -> Recurrence:
@@ -158,6 +169,63 @@ async def test_recurring_phrasing_requests_digest_confirm() -> None:
         confirm.request_explicit.call_args.kwargs["keyboard_factory"]
         is build_route_confirm_keyboard
     )
+
+
+# --- named-subset WIKI selection (aisw-269) --------------------------------
+
+
+async def test_digest_named_subset_scopes_to_matching_wiki() -> None:
+    sender = FakeSender()
+    confirm = _confirm_request()
+    parser = _FakeRecurrenceParser(RecurrenceParseResult(recurrence=_daily()))
+    pipe = _pipe(
+        sender=sender,
+        confirmation=confirm,
+        recurrence_parser=parser,
+        owner_wikis_resolver=_resolver("Health", "Money"),
+    )
+    await pipe.on_text(
+        telegram_id=42, chat_id=42, update_id=1, text="делай сводку по Health каждый день в 9"
+    )
+    confirm.request_explicit.assert_awaited_once()
+    draft_obj = confirm.request_explicit.call_args.args[0]
+    assert draft_obj.draft["wiki_scope"] == ["Health"]
+    assert "Health" in draft_obj.recap_text
+
+
+async def test_digest_unknown_wiki_name_clarifies() -> None:
+    sender = FakeSender()
+    confirm = _confirm_request()
+    parser = _FakeRecurrenceParser(RecurrenceParseResult(recurrence=_daily()))
+    pipe = _pipe(
+        sender=sender,
+        confirmation=confirm,
+        recurrence_parser=parser,
+        owner_wikis_resolver=_resolver("Health"),
+    )
+    await pipe.on_text(
+        telegram_id=42, chat_id=42, update_id=1, text="делай сводку по Money каждый день в 9"
+    )
+    confirm.request_explicit.assert_not_awaited()
+    assert sender.sends, "expected a clarification message"
+    assert "Health" in sender.sends[-1]["text"]
+
+
+async def test_digest_no_wiki_name_stays_all() -> None:
+    sender = FakeSender()
+    confirm = _confirm_request()
+    parser = _FakeRecurrenceParser(RecurrenceParseResult(recurrence=_daily()))
+    pipe = _pipe(
+        sender=sender,
+        confirmation=confirm,
+        recurrence_parser=parser,
+        owner_wikis_resolver=_resolver("Health", "Money"),
+    )
+    await pipe.on_text(
+        telegram_id=42, chat_id=42, update_id=1, text="присылай сводку каждый день в 9"
+    )
+    confirm.request_explicit.assert_awaited_once()
+    assert confirm.request_explicit.call_args.args[0].draft["wiki_scope"] == "all"
     assert sender.sends == []  # nothing until confirm
 
 
@@ -246,6 +314,35 @@ async def test_confirm_creates_digest_job(jobs_maker) -> None:
     assert sched.calls[0]["id"] == f"digest:{rows[0].id}"
     assert sched.calls[0]["replace_existing"] is True
     assert sender.sends[-1]["text"] == DIGEST_ACK_RU.format(schedule_human="каждый день в 09:00")
+
+
+async def test_confirm_creates_scoped_digest_job(jobs_maker) -> None:
+    # aisw-269 — a draft carrying wiki_scope=['Health'] persists the list shape.
+    sender = FakeSender()
+    sched = _FakeScheduler()
+    draft = _draft_dict()
+    draft["wiki_scope"] = ["Health"]
+    store = _FakeConfirmStore(category="digest", draft=draft, resolve_status="confirmed")
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_idem(),
+        confirmation=store,  # type: ignore[arg-type]
+        classifier=_classifier(),
+        runner=_runner(),
+        output=_output(),
+        jobs_session_maker=jobs_maker,
+        scheduler=sched,
+    )
+    await pipe.on_confirm_callback(telegram_id=42, chat_id=42, pending_id=9, action="confirm")
+    async with jobs_maker() as s:
+        from sqlalchemy import select
+
+        rows = (await s.execute(select(Job).where(Job.kind == "digest_job"))).scalars().all()
+        assert len(rows) == 1
+        parsed = parse_job_payload(rows[0].payload)
+        assert isinstance(parsed, DigestPayload)
+        assert parsed.wiki_scope == ["Health"]
+    assert "Health" in sender.sends[-1]["text"]
 
 
 async def test_confirm_cancel_creates_no_job(jobs_maker) -> None:

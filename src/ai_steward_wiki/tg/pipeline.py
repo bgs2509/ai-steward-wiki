@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.8.0
+# VERSION: 0.9.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -79,9 +79,11 @@
 #   DIGEST_UNPARSEABLE_RU - reply when the recurrence phrasing is ambiguous/unparseable (aisw-oqq)
 #   DIGEST_CONFIRM_CANCELLED_RU - reply on cancel of a digest confirm (aisw-oqq)
 #   DIGEST_CONFIRM_STALE_RU - reply when a digest confirm was already resolved/expired (aisw-oqq)
+#   DIGEST_WIKI_UNKNOWN_RU - reply when a «по <Name>» token does not match any owner WIKI (aisw-269)
 #   RecurrenceParser - Protocol for the NL-recurrence parser used by the digest fast-path (aisw-oqq)
 #   humanize_recurrence - short ru rendering of a Recurrence for the digest recap/ack (aisw-oqq)
-#   build_digest_recap - build the ru recap text for a digest confirm (aisw-oqq)
+#   build_digest_recap - build the ru recap text for a digest confirm (aisw-oqq; +wiki_scope aisw-269)
+#   extract_wiki_names - heuristic WIKI-name extraction for the digest fast-path (aisw-269)
 #   SUPPORTED_IMAGE_MIMES - frozenset of mimes routed to PhotoIngestor
 #   ConfirmKeyboardAction - Literal[confirm|correct|cancel]
 #   Classifier - Protocol (Stage-0 wrapper, narrow API)
@@ -98,7 +100,14 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.7.0 - aisw-kcz (Inbox-WIKI Phase-D.a): a Stage-0 intent=reminder
+#   LAST_CHANGE: v0.9.0 - aisw-269 (Inbox-WIKI Phase-D.b.2b): named-subset WIKI in the
+#                digest fast-path — new optional owner_wikis_resolver dep; _handle_digest_intent
+#                calls extract_wiki_names(text, owner-stems) → on a «по <Name>» token that
+#                matches no WIKI a ru clarification (tg.pipeline.digest.wiki_unknown), else the
+#                category='digest' confirm draft carries wiki_scope ('all'|list[str]) and the
+#                recap/ack name the WIKIs; _handle_digest_confirm passes the list shape through
+#                to create_digest_job (no more str() coercion). build_digest_recap +wiki_scope arg.
+#   PREVIOUS:    v0.7.0 - aisw-kcz (Inbox-WIKI Phase-D.a): a Stage-0 intent=reminder
 #                fast-path runs BEFORE the routable branch — recurring-digest phrasing
 #                gets a ru "not yet" line; otherwise parse_time(prefer_future=True) →
 #                escalate→ru clarification / explicitly-past absolute date→ru rejection /
@@ -174,7 +183,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+import re
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -227,6 +237,7 @@ __all__ = [
     "DIGEST_CONFIRM_STALE_RU",
     "DIGEST_RECAP_RU",
     "DIGEST_UNPARSEABLE_RU",
+    "DIGEST_WIKI_UNKNOWN_RU",
     "MAX_DOC_BYTES",
     "PDF_MAX_EXTRACT_CHARS",
     "PHOTO_CAPTION_PROMPT_RU",
@@ -262,6 +273,7 @@ __all__ = [
     "build_digest_recap",
     "build_reminder_recap",
     "build_route_recap",
+    "extract_wiki_names",
     "humanize_recurrence",
 ]
 
@@ -339,6 +351,12 @@ DIGEST_UNPARSEABLE_RU = (
 )
 DIGEST_CONFIRM_CANCELLED_RU = "Хорошо, сводку настраивать не буду."
 DIGEST_CONFIRM_STALE_RU = "Время на подтверждение истекло — пришли заново."
+# aisw-269: a name-shaped token after «по …» that does not match any of the
+# owner's *-WIKI/ dir-stems → ask which WIKIs to use (don't silently widen to 'all').
+DIGEST_WIKI_UNKNOWN_RU = (
+    "Не нашёл такие WIKI. У тебя есть: {known}. Уточни, по каким делать сводку — "  # noqa: RUF001
+    "или скажи «по всем»."
+)
 _WEEKDAY_RU_SHORT = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")  # noqa: RUF001
 
 
@@ -378,9 +396,45 @@ def humanize_recurrence(rec: Recurrence) -> str:
     return f"по дням ({days}) в {rec.time_hhmm}"
 
 
-def build_digest_recap(rec: Recurrence) -> str:
-    """Russian recap text for a digest confirm (aisw-oqq)."""
-    return DIGEST_RECAP_RU.format(schedule_human=humanize_recurrence(rec))
+def build_digest_recap(rec: Recurrence, wiki_scope: str | list[str] = "all") -> str:
+    """Russian recap text for a digest confirm (aisw-oqq; named subset aisw-269)."""
+    schedule = humanize_recurrence(rec)
+    if isinstance(wiki_scope, list) and wiki_scope:
+        schedule = f"{schedule} по WIKI: {', '.join(wiki_scope)}"
+    return DIGEST_RECAP_RU.format(schedule_human=schedule)
+
+
+# aisw-269 — name-shaped tokens for the «по <X>» fallthrough check.
+_PO_NAME_RE = re.compile(r"\bпо\s+([^\W\d_][\w-]*)", re.UNICODE)  # noqa: RUF001
+_WORD_TOKEN_RE = re.compile(r"[^\W\d_][\w-]*", re.UNICODE)
+
+
+def extract_wiki_names(
+    text: str, owner_wiki_stems: Sequence[str]
+) -> list[str] | Literal["all"] | None:
+    """Heuristic WIKI-name extraction for the digest fast-path (aisw-269).
+
+    Whole-token, case-insensitive intersection of ``text`` with the owner's
+    ``*-WIKI/`` dir-stems. Returns the matched stems (original casing,
+    first-seen order) when any resolved; ``"all"`` when no WIKI name is
+    mentioned; ``None`` when a capitalised token follows «по …» but does not
+    match any stem (the caller should ask for clarification rather than
+    silently widen to ``"all"``).
+    """
+    stems = {s.lower(): s for s in owner_wiki_stems}
+    seen: dict[str, None] = {}
+    for tok in _WORD_TOKEN_RE.findall(text):
+        original = stems.get(tok.lower())
+        if original is not None:
+            seen.setdefault(original, None)
+    if seen:
+        return list(seen)
+    m = _PO_NAME_RE.search(text)
+    if m is not None:
+        cand = m.group(1)
+        if cand.lower() not in stems and cand[:1].isupper():
+            return None
+    return "all"
 
 
 # Stage-0 intents that mean "route this somewhere" → handled by the Inbox-WIKI
@@ -629,6 +683,7 @@ class DefaultPipeline:
         photo_vision_timeout_s: float | None = None,
         time_parser: TimeParser | None = None,
         recurrence_parser: RecurrenceParser | None = None,
+        owner_wikis_resolver: Callable[[int], Awaitable[Sequence[tuple[str, Path]]]] | None = None,
         jobs_session_maker: async_sessionmaker[AsyncSession] | None = None,
         scheduler: AsyncIOScheduler | None = None,
         user_tz_lookup: Callable[[int], str | None] | None = None,
@@ -662,6 +717,9 @@ class DefaultPipeline:
         # legacy "not yet" line; the job is created on confirm only when
         # jobs_session_maker AND scheduler are wired.
         self._recurrence_parser = recurrence_parser
+        # aisw-269: owner→[(wiki_stem, path)] resolver (same shape firing uses);
+        # None ⇒ named-subset WIKI selection degrades to wiki_scope='all'.
+        self._owner_wikis_resolver = owner_wikis_resolver
         self._jobs_session_maker = jobs_session_maker
         self._scheduler = scheduler
         self._user_tz_lookup = user_tz_lookup
@@ -1078,15 +1136,32 @@ class DefaultPipeline:
             )
             return
         rec = res.recurrence
+        # aisw-269: named-subset WIKI selection at digest-creation time.
+        wiki_scope: str | list[str] = "all"
+        if self._owner_wikis_resolver is not None:
+            stems = [stem for stem, _ in await self._owner_wikis_resolver(telegram_id)]
+            extracted = extract_wiki_names(text, stems)
+            if extracted is None:
+                await self._sender.send_message(
+                    chat_id, DIGEST_WIKI_UNKNOWN_RU.format(known=", ".join(stems) or "—")
+                )
+                _log.info(
+                    "tg.pipeline.digest.wiki_unknown",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                )
+                return
+            wiki_scope = extracted
         _log.info(
             "tg.pipeline.digest.detected",
             correlation_id=correlation_id,
             telegram_id=telegram_id,
             recurrence=rec.model_dump(mode="json"),
+            wiki_scope=wiki_scope,
         )
         draft = {
             "recurrence": rec.model_dump(mode="json"),
-            "wiki_scope": "all",
+            "wiki_scope": wiki_scope,
             "window_hours": 24,
             "user_tz": str(user_tz),
             "correlation_id": correlation_id,
@@ -1096,7 +1171,7 @@ class DefaultPipeline:
             chat_id=chat_id,
             category="digest",
             draft=draft,
-            recap_text=build_digest_recap(rec),
+            recap_text=build_digest_recap(rec, wiki_scope),
         )
         record = await self._confirm.request_explicit(
             confirm_draft, keyboard_factory=build_route_confirm_keyboard
@@ -1786,7 +1861,12 @@ class DefaultPipeline:
         draft = json.loads(draft_json or "{}")
         rec = Recurrence(**draft["recurrence"])
         window_hours = int(draft.get("window_hours") or 24)
-        wiki_scope = str(draft.get("wiki_scope") or "all")
+        raw_scope = draft.get("wiki_scope") or "all"
+        # aisw-269: 'all' or an explicit list[str] of WIKI dir-stems; anything
+        # unexpected falls back to 'all' (defensive — the draft is our own JSON).
+        wiki_scope: str | list[str] = (
+            list(raw_scope) if isinstance(raw_scope, list) and raw_scope else "all"
+        )
         correlation_id = str(
             draft.get("correlation_id") or f"digest-confirm-{pending_id}-{telegram_id}"
         )
@@ -1812,8 +1892,11 @@ class DefaultPipeline:
                 window_hours=window_hours,
                 correlation_id=correlation_id,
             )
+        schedule_human = humanize_recurrence(rec)
+        if isinstance(wiki_scope, list) and wiki_scope:
+            schedule_human = f"{schedule_human} по WIKI: {', '.join(wiki_scope)}"
         await self._sender.send_message(
-            chat_id, DIGEST_ACK_RU.format(schedule_human=humanize_recurrence(rec))
+            chat_id, DIGEST_ACK_RU.format(schedule_human=schedule_human)
         )
         _log.info(
             "tg.pipeline.digest.confirm_created",

@@ -35,7 +35,10 @@
 #                section None ⇒ prompts/digest.md (byte-identical), a section key ⇒
 #                prompts/digest_expand.md with the section name in user_input (for
 #                /expand); the firing slash-command accessors read the same digest
-#                context, so no extra wiring beyond the new prompt path.
+#                context, so no extra wiring beyond the new prompt path;
+#                owner_wikis_resolver (= _resolve_owner_wikis_factory, reused from
+#                set_digest_context) is also passed into DefaultPipeline for the
+#                digest fast-path's named-subset WIKI extraction.
 #   PREVIOUS:    v0.5.1 - aisw-w3k (Inbox-WIKI Phase-D.b.2a): digest delivery routed
 #                through tg.output.deliver_output(kind='digest') —
 #                firing.set_digest_context(...) now also gets
@@ -988,10 +991,11 @@ async def _amain() -> None:
             claude_config_dir=settings.claude_config_dir,
         ),
     )
+    owner_wikis_resolver = _resolve_owner_wikis_factory(settings.wiki_root)
     firing.set_digest_context(
         scheduler=scheduler,
         runner=digest_runner_adapter,
-        resolve_owner_wikis=_resolve_owner_wikis_factory(settings.wiki_root),
+        resolve_owner_wikis=owner_wikis_resolver,
         jobs_session_maker=jobs_maker,
         audit_session_maker=audit_maker,
         sender=sender,
@@ -1079,6 +1083,7 @@ async def _amain() -> None:
         photo_vision_timeout_s=settings.photo_vision_timeout_s,
         time_parser=time_parser_adapter,
         recurrence_parser=recurrence_parser_adapter,
+        owner_wikis_resolver=owner_wikis_resolver,
         jobs_session_maker=jobs_maker,
         scheduler=scheduler,
         user_tz_lookup=_user_tz_lookup,
