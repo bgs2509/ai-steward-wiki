@@ -72,6 +72,7 @@
         <type-JobDLQ PURPOSE="Dead-letter row for permanently-failed jobs (D-019)"/>
         <type-JobPayload PURPOSE="Annotated discriminated union over WikiRun/Digest/CronUser/Purge/Reminder"/>
         <type-ReminderPayload PURPOSE="kind='reminder_job' payload: message:str, lead_time_min:int=0 (aisw-kcz)"/>
+        <type-DigestPayload PURPOSE="kind='digest' payload: wiki_scope:Literal['all']='all', recurrence:Recurrence, window_hours:int=24 (1..168), prompt_hint:str|None (aisw-oqq)"/>
         <fn-build_engine PURPOSE="Create AsyncEngine with PRAGMAs applied"/>
         <fn-build_sessionmaker PURPOSE="async_sessionmaker bound to engine"/>
         <fn-parse_job_payload PURPOSE="Validate dict into JobPayload union"/>
@@ -120,7 +121,7 @@
     <M-RUNTIME-WIRING NAME="Runtime wiring / __main__" TYPE="RUNTIME" STATUS="done">
       <purpose>Process entrypoint (python -m ai_steward_wiki). Composes Settings, per-DB alembic migrations, engines, allowlist sync, APScheduler (incl. the daily media _staging sweep job), classifier+runner+output adapters, VoiceHandler/PhotoIngestor, aiogram Bot+Dispatcher; runs long-polling with graceful SIGINT/SIGTERM shutdown. The runner adapter promotes staged media into &lt;wiki&gt;/raw/media after a successful Stage-1 run (D-022).</purpose>
       <path>src/ai_steward_wiki/__main__.py</path>
-      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-SCHEDULER-FIRING, M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-OPS-PII</depends>
+      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-SCHEDULER-FIRING, M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-OPS-PII</depends>
       <verification-ref>V-M-RUNTIME-WIRING</verification-ref>
       <annotations>
         <fn-main PURPOSE="sync wrapper: asyncio.run(_amain())"/>
@@ -134,6 +135,8 @@
         <fn-_render_raw_sidecar PURPOSE="build (filename, content) for Inbox-WIKI/raw/&lt;ts&gt;_&lt;source&gt;.md — plain body for text, YAML front-matter + staged_path sidecar for media"/>
         <type-_LibrarianAdapter PURPOSE="Inbox-WIKI Stage-1b librarian: resolve_target_wiki → stage_raw_into_wiki → run_wiki_session in &lt;Domain&gt;-WIKI/ (wiki.md + domain overlay) → IngestOutcome; WikiRunnerError→run_failed (aisw-zd9)"/>
         <fn-_on_job_missed PURPOSE="APScheduler EVENT_JOB_MISSED listener → logs scheduler.reminder.misfired (aisw-kcz)"/>
+        <type-_RecurrenceParserAdapter PURPOSE="binds classifier.recurrence.parse_recurrence with the Stage-0 backend + prompts/recurrence.md Haiku-fallback prompt (None → escalate-on-miss); passed into DefaultPipeline (aisw-oqq)"/>
+        <fn-_resolve_owner_wikis PURPOSE="list the owner's &lt;Name&gt;-WIKI/ dirs under the workspace root (minus Inbox-WIKI) for fire_digest_job's --add-dir set; bound into firing.set_digest_context (aisw-oqq)"/>
       </annotations>
     </M-RUNTIME-WIRING>
 
@@ -199,14 +202,18 @@
     </M-SCHEDULER>
 
     <M-SCHEDULER-FIRING NAME="Scheduler / job firing" TYPE="RUNTIME" STATUS="done">
-      <purpose>One-shot reminder bridge (aisw-kcz, Inbox-WIKI Phase-D.a): create_reminder_job writes a jobs.Job row then registers an APScheduler DateTrigger with picklable int args; fire_job (module-level callable APScheduler invokes on fire) loads the Job by id and delivers it as a plain Telegram message — guarded on status, no Claude/WIKI; firing context (TgSender + jobs sessionmaker) is set once at startup (D-002, D-010, D-022, tech-spec §3/§6, ADR-006).</purpose>
+      <purpose>Cron/date job firing bridge: one-shot reminder (aisw-kcz, Phase-D.a) — create_reminder_job writes a jobs.Job row then registers an APScheduler DateTrigger, fire_job delivers it as a plain Telegram message (no Claude/WIKI); recurring digest (aisw-oqq, Phase-D.b.1) — create_digest_job writes a jobs.Job(kind='digest_job', status='scheduled') then scheduler.add_job(fire_digest_job, CronTrigger, replace_existing=True), fire_digest_job resolves the owner's WIKI set, runs run_wiki_session with extra_add_dirs under a Semaphore + per-WIKI lock, delivers the assistant text via tg/output, and on 3 consecutive failures auto-disables (status='disabled' + remove_job + move_to_dlq, D-019; 600s timeout = Transient strike); both firing callbacks take only a picklable int and read deps from module-level context registries set once at startup (D-002, D-010, D-019, D-022, D-024, D-025, tech-spec §3/§6, ADR-006, ADR-007).</purpose>
       <path>src/ai_steward_wiki/scheduler/firing.py</path>
-      <depends>M-STORAGE-JOBS, M-SCHEDULER, M-TG-TEXT</depends>
+      <depends>M-STORAGE-JOBS, M-SCHEDULER, M-TG-TEXT, M-WIKI-RUNNER, M-WIKI-LIFECYCLE</depends>
       <verification-ref>V-M-SCHEDULER-FIRING</verification-ref>
       <annotations>
-        <fn-set_firing_context PURPOSE="install the module-level (TgSender, jobs async_sessionmaker) registry once at startup"/>
+        <fn-set_firing_context PURPOSE="install the module-level (TgSender, jobs async_sessionmaker) registry for fire_job once at startup"/>
         <fn-create_reminder_job PURPOSE="INSERT+commit a jobs.Job(kind='reminder_job', status='pending', scheduled_at_utc, payload=ReminderPayload) then scheduler.add_job(fire_job, DateTrigger, args=[job_id], misfire_grace_time=None); returns job_id"/>
-        <fn-fire_job PURPOSE="APScheduler callback (picklable int arg): load Job, guard status=='pending' else skip, mark in_progress → sender.send_message('🔔 Напоминание: …') → done (or failed+last_error); fail-fast RuntimeError if context not set"/>
+        <fn-fire_job PURPOSE="APScheduler callback (picklable int arg): load Job, guard status=='pending' else skip, mark in_progress → sender.send_message('🔔 Напоминание: …') → done (or failed+last_error); fail-fast if context not set"/>
+        <fn-set_digest_context PURPOSE="install the module-level digest registry (runner adapter, Semaphore, WikiLockManager, owner-WIKI-set resolver, jobs sessionmaker, TgSender) for fire_digest_job once at startup"/>
+        <fn-create_digest_job PURPOSE="INSERT+commit a jobs.Job(kind='digest_job', status='scheduled', priority=Lane.DIGEST, payload=DigestPayload(recurrence, wiki_scope, window_hours)) then scheduler.add_job(fire_digest_job, CronTrigger(**recurrence.to_cron(), timezone=rec.tz), args=[job_id], id='digest:&lt;id&gt;', replace_existing=True); commit-before-add_job; returns job_id"/>
+        <fn-fire_digest_job PURPOSE="APScheduler callback (picklable int arg): load Job, guard status=='scheduled' else skip; resolve owner WIKI set (minus Inbox-WIKI) → primary + extra_add_dirs; assemble prompts/digest.md + jobs.db planner context; run_wiki_session under Semaphore + WikiLockManager(primary); deliver assistant text (or empty-digest line) via tg/output; success → status stays 'scheduled', retry_count=0; failure/timeout → retry_count++ and at 3 → status='disabled' + remove_job + move_to_dlq; bad payload → 'disabled' + DLQ"/>
+        <type-DigestNotInitialisedError PURPOSE="raised by fire_digest_job when set_digest_context was never called"/>
       </annotations>
     </M-SCHEDULER-FIRING>
 
@@ -229,13 +236,25 @@
       </annotations>
     </M-CLASSIFIER-STAGE0>
 
+    <M-CLASSIFIER-RECURRENCE NAME="Classifier / recurrence parsing" TYPE="RUNTIME" STATUS="planned">
+      <purpose>NL recurrence parser for the digest fast-path (aisw-oqq, Inbox-WIKI Phase-D.b.1): parse_recurrence turns ru phrasings («каждый день в 9», «по будням в 19:00», «еженедельно по понедельникам и пятницам в 8») into a Recurrence value (kind daily|weekly, time_hhmm, weekdays tuple, tz) with to_cron() → APScheduler CronTrigger kwargs; conservative rule-based regex + optional Haiku fallback (same shape as time_parse); escalate on monthly/interval/raw-cron/ambiguous (D-002, tech-spec §3).</purpose>
+      <path>src/ai_steward_wiki/classifier/recurrence.py</path>
+      <depends>M-CLAUDE-CLI-COMMON, M-FOUNDATION-SETTINGS</depends>
+      <verification-ref>V-M-CLASSIFIER-RECURRENCE</verification-ref>
+      <annotations>
+        <fn-parse_recurrence PURPOSE="ru NL → RecurrenceParseResult: rule-based regex (daily / weekly-by-weekdays) → optional Haiku fallback → escalate; conservative, escalates on monthly/interval/cron-string"/>
+        <type-Recurrence PURPOSE="frozen Pydantic v2 value: kind Literal[daily,weekly], time_hhmm, weekdays tuple[int,...], tz; to_cron() → CronTrigger kwargs (daily→hour/minute, weekly→day_of_week comma-joined+hour/minute)"/>
+        <type-RecurrenceParseResult PURPOSE="frozen Pydantic v2 result: recurrence | None + escalate flag + reason"/>
+      </annotations>
+    </M-CLASSIFIER-RECURRENCE>
+
     <M-WIKI-RUNNER NAME="WIKI / Stage-1 runner" TYPE="RUNTIME" STATUS="done">
       <purpose>Stage-1a/1b Sonnet runner orchestrator — assemble prompt (base+overlay+per-WIKI CLAUDE.md), acquire WIKI lock, spawn `claude --output-format stream-json`, parse stream events, hard timeout + kill-sequence, aggregate assistant text (D-007, D-011, D-012, D-021).</purpose>
       <path>src/ai_steward_wiki/wiki/runner.py, src/ai_steward_wiki/wiki/streaming.py, src/ai_steward_wiki/wiki/acquire.py</path>
       <depends>M-CLAUDE-CLI-COMMON, M-SCHEDULER</depends>
       <verification-ref>V-M-WIKI-RUNNER</verification-ref>
       <annotations>
-        <fn-run_wiki_session PURPOSE="public entrypoint orchestrating one Stage-1a/1b run"/>
+        <fn-run_wiki_session PURPOSE="public entrypoint orchestrating one Stage-1a/1b run; extra_add_dirs kwarg appends read-only --add-dir paths after the primary WIKI (digest multi-WIKI, aisw-oqq), alongside media_dirs"/>
         <fn-assemble_prompt PURPOSE="concat base+overlay (+per-WIKI CLAUDE.md if present) → atomic write"/>
         <fn-aggregate_text PURPOSE="extract assistant text from WikiRunResult.events (stream-json shapes)"/>
         <fn-parse_stream_json PURPOSE="async iterator over an asyncio.StreamReader → StreamEvent"/>
@@ -407,7 +426,7 @@
     <M-TG-PIPELINE-CLASSIFIER NAME="Ingest pipeline / classify→run→deliver" TYPE="RUNTIME" STATUS="done">
       <purpose>DefaultPipeline coordinator over already-built ingest blocks — L1/L2 dedup, Stage-0 classify → Stage-1 run → deliver_output; voice transcript path; photo→vision via media_paths; document mime router (PDF text extract, size cap); Inbox-WIKI routing: a ROUTE/CREATE_WIKI RouterDecision is proposed via an inline-button route confirm (persisted as a route_ingest pending row) and the Stage-1b move+ingest runs in on_confirm_callback on "confirmed" (Phase-C, aisw-e45); a Stage-0 intent=reminder fast-path (BEFORE the Stage-1a router) parses NL time (prefer_future), proposes a one-shot reminder via the same inline-button confirm and on "confirmed" calls scheduler.firing.create_reminder_job — recurring-digest phrasing answered with a ru "not yet" line (Phase-D.a, aisw-kcz); Russian safe-fallback acks (chunk 20, D-022, D-023).</purpose>
       <path>src/ai_steward_wiki/tg/pipeline.py</path>
-      <depends>M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-TEXT, M-INGEST-IDEM, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-SCHEDULER-FIRING</depends>
+      <depends>M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-TG-TEXT, M-INGEST-IDEM, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-SCHEDULER-FIRING</depends>
       <verification-ref>V-M-TG-PIPELINE-CLASSIFIER</verification-ref>
       <annotations>
         <type-DefaultPipeline PURPOSE="concrete coordinator wiring classifier/router/librarian/runner/output/voice/photo/document blocks"/>
@@ -420,6 +439,9 @@
         <type-OutputDelivery PURPOSE="narrow deliver_output wrapper Protocol"/>
         <fn-_handle_reminder_confirm PURPOSE="on_confirm_callback branch for category=='reminder' pending rows: resolve race-safely → on 'confirmed' rebuild the draft + scheduler.firing.create_reminder_job + ack; cancel/stale → ru notice (aisw-kcz)"/>
         <fn-build_reminder_recap PURPOSE="ru recap line 'Поставлю напоминание на DD.MM HH:MM (TZ): «message». Подтверждаешь?' for the reminder confirm draft (aisw-kcz)"/>
+        <fn-_handle_digest_intent PURPOSE="recurring-digest fast-path (replaces the reminder branch's recurring-keyword stub): parse_recurrence → on escalate ru clarification, else build a category='digest' confirm draft (recurrence, wiki_scope='all', window_hours=24) + recap and ConfirmationService.request_explicit (aisw-oqq)"/>
+        <fn-_handle_digest_confirm PURPOSE="on_confirm_callback branch for category=='digest': resolve race-safely → on 'confirmed' rebuild the draft + scheduler.firing.create_digest_job + ack; cancel/stale → ru notice (aisw-oqq)"/>
+        <fn-build_digest_recap PURPOSE="ru recap line 'Буду присылать сводку &lt;recurrence-human&gt; по WIKI: &lt;list&gt;. Подтверждаешь?' for the digest confirm draft (aisw-oqq)"/>
       </annotations>
     </M-TG-PIPELINE-CLASSIFIER>
 
@@ -503,5 +525,15 @@
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-SCHEDULER-FIRING" relation="the reminder confirm callback calls create_reminder_job on 'confirmed'"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-CLASSIFIER-STAGE0" relation="reminder fast-path calls parse_time(..., prefer_future=True) (aisw-kcz)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-SCHEDULER-FIRING" relation="firing.set_firing_context(sender, jobs_session_maker) after scheduler.start(); add_listener(_on_job_missed, EVENT_JOB_MISSED); passes jobs sessionmaker + scheduler to DefaultPipeline"/>
+    <CrossLink from="M-CLASSIFIER-RECURRENCE" to="M-CLAUDE-CLI-COMMON" relation="parse_recurrence's optional Haiku fallback uses the Stage-0 backend / CLI envelope"/>
+    <CrossLink from="M-CLASSIFIER-RECURRENCE" to="M-FOUNDATION-SETTINGS" relation="default_user_tz fallback for the recurrence timezone"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-CLASSIFIER-RECURRENCE" relation="the digest fast-path calls parse_recurrence (aisw-oqq)"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-SCHEDULER-FIRING" relation="the digest confirm callback calls create_digest_job on 'confirmed' (aisw-oqq)"/>
+    <CrossLink from="M-SCHEDULER-FIRING" to="M-WIKI-RUNNER" relation="fire_digest_job runs run_wiki_session(..., extra_add_dirs=[...]) under a Semaphore + WikiLockManager (aisw-oqq)"/>
+    <CrossLink from="M-SCHEDULER-FIRING" to="M-WIKI-LIFECYCLE" relation="fire_digest_job resolves the owner's &lt;Name&gt;-WIKI set (minus Inbox-WIKI) for the --add-dir list (aisw-oqq)"/>
+    <CrossLink from="M-SCHEDULER-FIRING" to="M-STORAGE-JOBS" relation="create_digest_job INSERTs a jobs.Job(kind='digest_job', payload=DigestPayload); fire_digest_job loads it, updates status/retry_count, and on 3 strikes calls move_to_dlq (aisw-oqq)"/>
+    <CrossLink from="M-SCHEDULER-FIRING" to="M-SCHEDULER" relation="create_digest_job registers a CronTrigger on the AsyncIOScheduler (picklable int args, replace_existing); priority=Lane.DIGEST; fire_digest_job uses FailureCounter semantics + move_to_dlq + remove_job (aisw-oqq)"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-CLASSIFIER-RECURRENCE" relation="_RecurrenceParserAdapter binds parse_recurrence with the Stage-0 backend + prompts/recurrence.md (aisw-oqq)"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-WIKI-LIFECYCLE" relation="binds _resolve_owner_wikis into firing.set_digest_context (aisw-oqq)"/>
   </Project>
 </KnowledgeGraph>

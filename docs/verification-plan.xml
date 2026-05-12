@@ -272,13 +272,29 @@
       <tests>
         <test path="tests/unit/scheduler/test_firing.py"/>
         <test path="tests/unit/tg/test_pipeline_reminder.py"/>
+        <test path="tests/unit/tg/test_pipeline_digest.py"/>
+        <test path="tests/unit/tg/test_digest_e2e.py"/>
+        <test path="tests/unit/wiki/test_runner.py"/>
         <test path="tests/integration/test_reminder_flow.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/scheduler/test_firing.py tests/unit/tg/test_pipeline_reminder.py -q</cmd>
+        <cmd>uv run pytest tests/unit/scheduler/test_firing.py tests/unit/tg/test_pipeline_reminder.py tests/unit/tg/test_pipeline_digest.py tests/unit/tg/test_digest_e2e.py -q</cmd>
         <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/test_reminder_flow.py -q</cmd>
       </commands>
       <log-markers>
+        <marker>tg.pipeline.digest.detected</marker>
+        <marker>tg.pipeline.digest.unparseable</marker>
+        <marker>tg.pipeline.digest.confirm_requested</marker>
+        <marker>tg.pipeline.digest.confirm_created</marker>
+        <marker>tg.pipeline.digest.confirm_cancelled</marker>
+        <marker>tg.pipeline.digest.confirm_stale</marker>
+        <marker>tg.pipeline.confirm.digest_dispatched</marker>
+        <marker>scheduler.digest.scheduled</marker>
+        <marker>scheduler.digest.fired</marker>
+        <marker>scheduler.digest.delivered</marker>
+        <marker>scheduler.digest.failed</marker>
+        <marker>scheduler.digest.disabled</marker>
+        <marker>scheduler.digest.skipped</marker>
         <marker>tg.pipeline.reminder.detected</marker>
         <marker>tg.pipeline.reminder.unparseable</marker>
         <marker>tg.pipeline.reminder.rejected_past</marker>
@@ -295,7 +311,8 @@
         <marker>scheduler.reminder.skipped</marker>
         <marker>scheduler.reminder.misfired</marker>
       </log-markers>
-      <evidence>Pipeline reminder fast-path (BEFORE the Stage-1a router): intent==REMINDER & confidence≥THRESHOLD + future time → ConfirmationService.request_explicit with category='reminder' draft (when_utc, message, lead_time_min) + 2-button keyboard, no Job row yet; message resolution = distilled_payload['reminder_text'] if non-empty str else raw text; prefer_future=True rolls a bare past wall-clock time forward; explicitly-past absolute date → ru rejection, no confirm; escalate → ru clarification, no confirm; recurring-digest phrasing → ru "not yet", no confirm. on_confirm_callback category=='reminder' + resolve→'confirmed' → create_reminder_job writes a jobs.Job(kind='reminder_job', payload round-trips through parse_job_payload, scheduled_at_utc==when_utc) + scheduler.add_job once with a DateTrigger at when_utc, id=='reminder:&lt;id&gt;', misfire_grace_time is None; ack sent. cancel→ru cancelled, no Job row; resolve→None→ru stale; double-confirm idempotent. firing.fire_job: context set + Job pending → sender.send_message(chat_id, '🔔 Напоминание: &lt;message&gt;') + row done; Job not pending → skipped, no send; send raises → row failed + last_error + scheduler.reminder.deliver_failed; context not set → RuntimeError. ReminderPayload in parse_job_payload: valid → ReminderPayload, extra key → ValidationError. Integration: reminder message → request_explicit → simulate confirm → jobs.jobs row with kind='reminder_job' & matching scheduled_at_utc → invoke fire_job(job_id) with a fake sender → one send_message + row done. Known limitation (documented, no MVP reconciliation): a crash between the Job commit and scheduler.add_job leaves a pending row with no trigger → silent miss. (aisw-kcz; D-002/D-010/D-022; tech-spec §3/§6; ADR-006.)</evidence>
+      <evidence>Pipeline reminder fast-path (BEFORE the Stage-1a router): intent==REMINDER & confidence≥THRESHOLD + future time → ConfirmationService.request_explicit with category='reminder' draft (when_utc, message, lead_time_min) + 2-button keyboard, no Job row yet; message resolution = distilled_payload['reminder_text'] if non-empty str else raw text; prefer_future=True rolls a bare past wall-clock time forward; explicitly-past absolute date → ru rejection, no confirm; escalate → ru clarification, no confirm; recurring-digest phrasing → ru "not yet", no confirm. on_confirm_callback category=='reminder' + resolve→'confirmed' → create_reminder_job writes a jobs.Job(kind='reminder_job', payload round-trips through parse_job_payload, scheduled_at_utc==when_utc) + scheduler.add_job once with a DateTrigger at when_utc, id=='reminder:&lt;id&gt;', misfire_grace_time is None; ack sent. cancel→ru cancelled, no Job row; resolve→None→ru stale; double-confirm idempotent. firing.fire_job: context set + Job pending → sender.send_message(chat_id, '🔔 Напоминание: &lt;message&gt;') + row done; Job not pending → skipped, no send; send raises → row failed + last_error + scheduler.reminder.deliver_failed; context not set → RuntimeError. ReminderPayload in parse_job_payload: valid → ReminderPayload, extra key → ValidationError. Integration: reminder message → request_explicit → simulate confirm → jobs.jobs row with kind='reminder_job' & matching scheduled_at_utc → invoke fire_job(job_id) with a fake sender → one send_message + row done. Known limitation (documented, no MVP reconciliation): a crash between the Job commit and scheduler.add_job leaves a pending row with no trigger → silent miss. (aisw-kcz; D-002/D-010/D-022; tech-spec §3/§6; ADR-006.)
+      Digest path (aisw-oqq, Phase-D.b.1): pipeline digest fast-path (replaces the reminder branch's recurring-keyword stub): recurring-digest phrasing → parse_recurrence; on escalate → ru clarification, no confirm; else → ConfirmationService.request_explicit with category='digest' draft (recurrence serialised, wiki_scope='all', window_hours=24) + 2-button keyboard, no Job row yet. on_confirm_callback category=='digest' + resolve→'confirmed' → create_digest_job writes a jobs.Job(kind='digest_job', status='scheduled', priority==Lane.DIGEST, payload round-trips through parse_job_payload) + scheduler.add_job once with a CronTrigger (kwargs == recurrence.to_cron(), timezone == recurrence.tz), id=='digest:&lt;id&gt;', replace_existing=True; ack sent. cancel→ru cancelled, no Job row; resolve→None→ru stale; double-confirm idempotent. firing.fire_digest_job: context set + Job 'scheduled' → resolve owner WIKI set (minus Inbox-WIKI) → run_wiki_session called once with extra_add_dirs == the non-primary WIKI paths, under the Semaphore + WikiLockManager(primary), timeout_s==600 → assistant text (or the ru empty-digest line) delivered via tg/output (send_message or send_document); row stays status='scheduled', retry_count==0, finished_at_utc set. Job not 'scheduled' → skipped, no run. Owner has no *-WIKI → friendly ru line, finished, no strike. run_wiki_session raises (WikiRunnerError / WikiRunnerTimeoutError) → retry_count++; third consecutive failure → status='disabled' + scheduler.remove_job('digest:&lt;id&gt;') called + jobs_dlq row written; scheduler.digest.failed logged with error_class/retry_count/disabled. Bad/parse-failing payload → status='disabled' + DLQ immediately. context not set → DigestNotInitialisedError. DigestPayload in parse_job_payload: valid (with a Recurrence) → DigestPayload, extra key → ValidationError. run_wiki_session: extra_add_dirs paths appear in argv immediately after the primary '--add-dir &lt;wiki_path&gt;'; None → unchanged argv. e2e (in-process slow unit, mirrors the reminder e2e): recurring-digest text → request_explicit → simulate confirm → jobs.jobs row kind='digest_job' status='scheduled' + add_job with a CronTrigger → set_digest_context + fire_digest_job(job_id) with a fake runner-adapter (canned assistant events) → one delivery through tg/output → row still 'scheduled', retry_count==0. (aisw-oqq; D-002/D-019/D-024/D-025; tech-spec §3; ADR-007.)</evidence>
     </V-M-SCHEDULER-FIRING>
 
     <V-M-CLASSIFIER-STAGE0 MODULE="M-CLASSIFIER-STAGE0">
@@ -318,6 +335,19 @@
       </log-markers>
       <evidence>classify orchestrates backend call + Pydantic validation + audit prompt_versions upsert + structlog; PromptCache semver+sha256 with reload(); Intent closed enum (D-009); parse_time dateparser→Haiku-fallback→escalate (D-010); ClaudeCliBackend resolves binary + JSON-mode envelope; AnthropicApiBackend optional; FakeClaudeRunner deterministic; INV-6 settings guard; ClassifierTimeoutError/SchemaError taxonomy.</evidence>
     </V-M-CLASSIFIER-STAGE0>
+
+    <V-M-CLASSIFIER-RECURRENCE MODULE="M-CLASSIFIER-RECURRENCE">
+      <tests>
+        <test path="tests/unit/classifier/test_recurrence.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/classifier/test_recurrence.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>classifier.recurrence.parse</marker>
+      </log-markers>
+      <evidence>parse_recurrence over a ru corpus: «каждый день в 9 (утра)» → Recurrence(kind='daily', time_hhmm='09:00', tz=user_tz); «по будням в 19:00» → kind='weekly', weekdays==(mon..fri), time_hhmm='19:00'; «еженедельно по понедельникам и пятницам в 8» → weekly, weekdays==(mon,fri), '08:00'; ambiguous / no time-of-day / monthly / interval / raw-cron-string → RecurrenceParseResult(recurrence=None, escalate=True, reason set); optional Haiku fallback path returns a parsed Recurrence when the rule-based regex misses and a backend+prompt are wired, else escalate. Recurrence.to_cron(): daily → {'hour': HH, 'minute': MM}; weekly → {'day_of_week': comma-joined 3-letter names in calendar order, 'hour': HH, 'minute': MM}; round-trips through model_dump(mode='json') (frozen, extra forbidden). tz defaults to Settings.default_user_tz when the caller passes none. (aisw-oqq; D-002; tech-spec §3.)</evidence>
+    </V-M-CLASSIFIER-RECURRENCE>
 
     <V-M-WIKI-RUNNER MODULE="M-WIKI-RUNNER">
       <tests>
