@@ -1,21 +1,24 @@
 # FILE: src/ai_steward_wiki/inbox/materialize.py
-# VERSION: 0.0.1
+# VERSION: 0.1.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Materialise per-user Inbox-WIKI/ on first contact (D-004, D-016).
-#   SCOPE: ensure_inbox_wiki(user_id, wiki_root, template_path); idempotent atomic write.
+#   SCOPE: inbox_wiki_path(telegram_id, wiki_root) pure path helper;
+#          ensure_inbox_wiki(user_id, wiki_root, template_path) idempotent atomic write.
 #   DEPENDS: asyncio (stdlib), hashlib, ai_steward_wiki.logging_setup
-#   LINKS: D-004, D-016, M-INBOX
+#   LINKS: D-004, D-016, D-022, M-INBOX
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
 #   INBOX_WIKI_DIRNAME - canonical Inbox-WIKI directory name
+#   inbox_wiki_path - pure path: <wiki_root>/<telegram_id>/Inbox-WIKI (no IO)
 #   ensure_inbox_wiki - idempotent first-contact materialise; returns Path to Inbox-WIKI dir
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - initial materialise (chunk 6)
+#   LAST_CHANGE: v0.1.0 - aisw-12t (Phase-E.a): + inbox_wiki_path (per-user media staging root)
+#   PREVIOUS:    v0.0.1 - initial materialise (chunk 6)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -31,12 +34,25 @@ from ai_steward_wiki.logging_setup import get_logger
 __all__ = [
     "INBOX_WIKI_DIRNAME",
     "ensure_inbox_wiki",
+    "inbox_wiki_path",
 ]
 
 _log = get_logger(__name__)
 
 INBOX_WIKI_DIRNAME = "Inbox-WIKI"
 _CLAUDE_MD = "CLAUDE.md"
+
+
+# START_CONTRACT: inbox_wiki_path
+#   PURPOSE: Compute the per-user Inbox-WIKI directory path (D-004) — used as the
+#            media-staging root (D-022): <wiki_root>/<telegram_id>/Inbox-WIKI.
+#   INPUTS: { telegram_id: int, wiki_root: Path }
+#   OUTPUTS: { Path - <wiki_root>/<telegram_id>/Inbox-WIKI; not guaranteed to exist }
+#   SIDE_EFFECTS: none (pure path arithmetic — the tree is created lazily by callers).
+#   LINKS: D-004 §"Inbox-WIKI", D-022 §"_staging path"
+# END_CONTRACT: inbox_wiki_path
+def inbox_wiki_path(telegram_id: int, *, wiki_root: Path) -> Path:
+    return wiki_root / str(telegram_id) / INBOX_WIKI_DIRNAME
 
 
 def _materialise_sync(user_dir: Path, template_path: Path) -> tuple[Path, str, bool]:

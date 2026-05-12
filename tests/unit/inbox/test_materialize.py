@@ -4,10 +4,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ai_steward_wiki.inbox.materialize import INBOX_WIKI_DIRNAME, ensure_inbox_wiki
+from ai_steward_wiki.inbox.materialize import (
+    INBOX_WIKI_DIRNAME,
+    ensure_inbox_wiki,
+    inbox_wiki_path,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE_PATH = REPO_ROOT / "templates" / "inbox-wiki" / "CLAUDE.md"
+
+
+def test_inbox_wiki_path_arithmetic() -> None:
+    # Pure path arithmetic — no IO, works on a non-existent root.
+    assert inbox_wiki_path(123, wiki_root=Path("/nonexistent-w")) == (
+        Path("/nonexistent-w/123") / INBOX_WIKI_DIRNAME
+    )
+    assert not Path("/nonexistent-w/123").exists()
 
 
 async def test_creates_dir_with_claude_md(tmp_path) -> None:

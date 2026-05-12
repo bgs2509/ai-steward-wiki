@@ -9,12 +9,14 @@ from pathlib import Path
 
 import pytest
 
+from ai_steward_wiki.inbox.materialize import INBOX_WIKI_DIRNAME
 from ai_steward_wiki.inbox.staging import (
     DEFAULT_STAGING_TTL_S,
     MediaRef,
     promote_path_to_raw,
     promote_to_raw,
     stage_media,
+    sweep_all_user_staging,
     sweep_staging,
 )
 
@@ -142,3 +144,36 @@ def test_sweep_staging_default_ttl_is_24h() -> None:
 
 def test_sweep_staging_missing_dir_is_noop(tmp_path: Path) -> None:
     assert sweep_staging(tmp_path / "nope") == 0
+
+
+def test_sweep_all_user_staging_mixed_tree(tmp_path: Path) -> None:
+    wiki_root = tmp_path / "wiki_root"
+    past = (datetime.now(UTC) - timedelta(hours=48)).timestamp()
+
+    # User 111: one fresh + one stale staged file.
+    inbox_111 = wiki_root / "111" / INBOX_WIKI_DIRNAME
+    fresh = stage_media(b"fresh", ext="ogg", run_id="fresh", inbox_root=inbox_111, mime="audio/ogg")
+    stale1 = stage_media(b"stale1", ext="ogg", run_id="s1", inbox_root=inbox_111, mime="audio/ogg")
+    os.utime(stale1.staging_path, (past, past))
+
+    # User 222: one stale staged file.
+    inbox_222 = wiki_root / "222" / INBOX_WIKI_DIRNAME
+    stale2 = stage_media(b"stale2", ext="jpg", run_id="s2", inbox_root=inbox_222, mime="image/jpeg")
+    os.utime(stale2.staging_path, (past, past))
+
+    # Noise: a _trash dir, a user dir with no Inbox-WIKI, a stray file.
+    (wiki_root / "_trash").mkdir(parents=True)
+    (wiki_root / "333").mkdir(parents=True)
+    (wiki_root / "note.txt").write_text("hi", encoding="utf-8")
+
+    removed = sweep_all_user_staging(wiki_root, ttl_s=24 * 60 * 60)
+    assert removed == 2
+    assert fresh.staging_path.exists()
+    assert not stale1.staging_path.exists()
+    assert not stale2.staging_path.exists()
+
+
+def test_sweep_all_user_staging_empty_root(tmp_path: Path) -> None:
+    assert sweep_all_user_staging(tmp_path / "nope") == 0
+    (tmp_path / "empty").mkdir()
+    assert sweep_all_user_staging(tmp_path / "empty") == 0

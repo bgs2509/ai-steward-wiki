@@ -1,11 +1,13 @@
 # FILE: src/ai_steward_wiki/inbox/staging.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Media staging+promotion for voice/photo ingest (D-022, §9 tech-spec).
 #   SCOPE: stage_media (bytes → _staging/<run_id>_<sha8>.<ext>), promote_to_raw /
 #          promote_path_to_raw (atomic move to <wiki>/raw/media/<ISO8601>_<sha8>.<ext>),
-#          sweep_staging (24h TTL retention sweep).
-#   DEPENDS: hashlib, os, datetime (stdlib), ai_steward_wiki.logging_setup
+#          sweep_staging (24h TTL retention sweep of one inbox_root),
+#          sweep_all_user_staging (sweep every <wiki_root>/<user>/Inbox-WIKI/).
+#   DEPENDS: hashlib, os, datetime (stdlib), ai_steward_wiki.logging_setup,
+#            ai_steward_wiki.inbox.materialize.INBOX_WIKI_DIRNAME
 #   LINKS: D-022, §9 tech-spec, INV-4, M-TG-MEDIA
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
@@ -19,11 +21,15 @@
 #   stage_media - atomically write bytes to _staging/<run_id>_<sha8>.<ext>
 #   promote_to_raw - atomic move staging→raw/media/<ISO8601>_<sha8>.<ext> (from MediaRef)
 #   promote_path_to_raw - same, by staging path (re-hashes); used by the runner adapter
-#   sweep_staging - delete staging files older than ttl_s; returns removed count
+#   sweep_staging - delete staging files older than ttl_s in one inbox_root; returns count
+#   sweep_all_user_staging - run sweep_staging on every per-user Inbox-WIKI under wiki_root
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-8r9 (media chunk 4): add promote_path_to_raw —
+#   LAST_CHANGE: v0.0.3 - aisw-12t (Phase-E.a): + sweep_all_user_staging — sweep
+#                every <wiki_root>/<user>/Inbox-WIKI/raw/media/_staging (per-user
+#                media staging, D-022; was a single shared dir).
+#   PREVIOUS:    v0.0.2 - aisw-8r9 (media chunk 4): add promote_path_to_raw —
 #                promote a staged file into <wiki>/raw/media/ from its path
 #                (re-hashed), for use after a successful Stage-1 run (D-022).
 #   PREVIOUS:    v0.0.1 - chunk 11: initial staging+promote+sweep (D-022)
@@ -38,6 +44,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ai_steward_wiki.inbox.materialize import INBOX_WIKI_DIRNAME
 from ai_steward_wiki.logging_setup import get_logger
 
 __all__ = [
@@ -48,6 +55,7 @@ __all__ = [
     "promote_path_to_raw",
     "promote_to_raw",
     "stage_media",
+    "sweep_all_user_staging",
     "sweep_staging",
 ]
 
@@ -236,4 +244,41 @@ def sweep_staging(
             _log.info("media.staging_swept", path=str(path))
     if removed:
         _log.info("media.staging_sweep_done", removed=removed, dir=str(staging_dir))
+    return removed
+
+
+# START_CONTRACT: sweep_all_user_staging
+#   PURPOSE: Run sweep_staging on every per-user Inbox-WIKI under wiki_root —
+#            <wiki_root>/<user>/Inbox-WIKI/raw/media/_staging (D-022 per-user staging).
+#   INPUTS: { wiki_root: Path, now: datetime | None, ttl_s: int }
+#   OUTPUTS: { int - total stale files removed across all users }
+#   SIDE_EFFECTS: unlinks stale staged files; logs media.staging_swept per file and
+#                 media.staging_sweep_all_done with the aggregate.
+#   LINKS: D-022 §"staging retention", D-004 §"Inbox-WIKI"
+# END_CONTRACT: sweep_all_user_staging
+def sweep_all_user_staging(
+    wiki_root: Path,
+    *,
+    now: datetime | None = None,
+    ttl_s: int = DEFAULT_STAGING_TTL_S,
+) -> int:
+    if not wiki_root.exists():
+        return 0
+    removed = 0
+    scanned = 0
+    for child in wiki_root.iterdir():
+        if not child.is_dir():
+            continue
+        inbox_dir = child / INBOX_WIKI_DIRNAME
+        if not inbox_dir.is_dir():
+            continue
+        scanned += 1
+        removed += sweep_staging(inbox_dir, now=now, ttl_s=ttl_s)
+    if removed:
+        _log.info(
+            "media.staging_sweep_all_done",
+            wiki_root=str(wiki_root),
+            removed=removed,
+            scanned_users=scanned,
+        )
     return removed
