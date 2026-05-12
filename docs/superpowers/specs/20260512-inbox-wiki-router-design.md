@@ -3,7 +3,7 @@ feature: inbox-wiki-router
 bd_id: aisw-dsg
 epic: aisw-t2r
 phase: "Inbox-WIKI Phase-A"
-status: design
+status: done
 created: 2026-05-12
 discovery_ref: docs/superpowers/specs/20260512-inbox-wiki-router-discovery.md
 approach: "Router-Claude run in Inbox-WIKI/ with a fenced-block reply parsed into RouterDecision; wired via a dedicated _RouterAdapter behind a narrow Router Protocol; replaces the flat Stage-1 run for routable intents."

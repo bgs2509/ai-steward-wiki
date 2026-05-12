@@ -3,7 +3,7 @@ feature: inbox-wiki-router
 bd_id: aisw-dsg
 epic: aisw-t2r
 phase: "Inbox-WIKI Phase-A"
-status: discovery
+status: done
 created: 2026-05-12
 requirements:
   functional:
