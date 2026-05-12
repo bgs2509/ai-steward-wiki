@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/handlers.py
-# VERSION: 0.1.0
+# VERSION: 0.2.0
 # START_MODULE_CONTRACT
 #   PURPOSE: aiogram Router that adapts Telegram message/callback events to
 #            the MessagePipeline Protocol (+ the bot's first slash commands).
@@ -7,30 +7,44 @@
 #            delegate; no business logic here.
 #   SCOPE: build_router(pipeline) -> Router. Message handlers: /digest_now,
 #          /expand <section> (aisw-269 — first Command-filter handlers; reach
-#          scheduler.firing accessors), text, voice, photo, audio, video_note,
-#          document; confirm callback. Audio and video_note route to on_voice
-#          (STT path); photo forwards caption. Private helper _download_bytes
-#          for file-id payloads. (The text handler already excludes "/"-prefixed
-#          messages, so command order is irrelevant.)
-#   DEPENDS: aiogram (Router, F, Bot, filters.Command, types), structlog,
+#          scheduler.firing accessors), /digest_sections (aisw-pv8 — inline
+#          on/off toggles for the optional digest sections), text, voice, photo,
+#          audio, video_note, document; confirm callback; digestsec: callback.
+#          Audio and video_note route to on_voice (STT path); photo forwards
+#          caption. Private helper _download_bytes for file-id payloads. (The
+#          text handler already excludes "/"-prefixed messages, so command
+#          order is irrelevant.)
+#   DEPENDS: aiogram (Router, F, Bot, filters.Command, types incl.
+#            InlineKeyboardButton/InlineKeyboardMarkup), structlog,
 #            ai_steward_wiki.tg.pipeline.MessagePipeline,
 #            ai_steward_wiki.scheduler.firing (list_owner_digest_job_ids /
-#            fire_digest_job / run_section_expand / DigestNotInitialisedError)
-#   LINKS: M-TG-HANDLERS-WIRING (chunk 19), M-SCHEDULER-FIRING, D-022, D-023,
-#          D-024, D-031, D-042, ADR-025, aisw-269
+#            fire_digest_job / run_section_expand / get_owner_digest_prefs /
+#            set_owner_digest_section / DigestNotInitialisedError),
+#            ai_steward_wiki.storage.sessions.digest_prefs (DigestPrefs /
+#            TOGGLEABLE_DIGEST_SECTIONS / SECTION_DISPLAY_NAME)
+#   LINKS: M-TG-HANDLERS-WIRING (chunk 19), M-SCHEDULER-FIRING, M-STORAGE-SESSIONS,
+#          D-022, D-023, D-024, D-031, D-042, ADR-025, ADR-026, aisw-269, aisw-pv8
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
 #   CONFIRM_CALLBACK_PREFIX - "confirm:" callback_data prefix (D-023)
+#   DIGESTSEC_CALLBACK_PREFIX - "digestsec:" callback_data prefix (ADR-026)
 #   EXPAND_SECTION_KEYS - the four /expand <section> keys (mirror D-024 headers)
 #   build_router - factory wiring the slash commands + message/callback handlers to a MessagePipeline
 #   parse_confirm_callback - parse `confirm:<pending_id>:<action>` payload
+#   parse_digestsec_callback - parse `digestsec:<section>:<0|1>` -> (section, target_enabled)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - aisw-269 (Inbox-WIKI Phase-D.b.2b): the bot's first
+#   LAST_CHANGE: v0.2.0 - aisw-pv8 (Inbox-WIKI Phase-D.b.2c): /digest_sections
+#                command (renders an inline keyboard of on/off toggles for the
+#                optional digest sections via firing.get_owner_digest_prefs) +
+#                digestsec: callback (firing.set_owner_digest_section, message
+#                edited in place). New anchors tg.command.digest_sections(.shown/
+#                .toggled/.bad_callback/.error). parse_digestsec_callback added.
+#   PREVIOUS:    v0.1.0 - aisw-269 (Inbox-WIKI Phase-D.b.2b): the bot's first
 #                slash commands — /digest_now (run the owner's enabled digest_job
 #                rows via firing.fire_digest_job; 0 → ru hint; per-job errors
 #                caught) and /expand <section> (today|meds|trackers|wiki →
@@ -55,22 +69,33 @@ from typing import TYPE_CHECKING, cast
 import structlog
 
 from ai_steward_wiki.scheduler import firing
+from ai_steward_wiki.storage.sessions.digest_prefs import (
+    SECTION_DISPLAY_NAME,
+    TOGGLEABLE_DIGEST_SECTIONS,
+    DigestPrefs,
+)
 from ai_steward_wiki.tg.pipeline import ConfirmKeyboardAction, MessagePipeline
 
 __all__ = [
     "CONFIRM_CALLBACK_PREFIX",
+    "DIGESTSEC_CALLBACK_PREFIX",
     "EXPAND_SECTION_KEYS",
     "build_router",
     "parse_confirm_callback",
+    "parse_digestsec_callback",
 ]
 
 if TYPE_CHECKING:
     from aiogram import Router
+    from aiogram.types import InlineKeyboardMarkup
 
 _log = structlog.get_logger("tg.handlers")
 
 CONFIRM_CALLBACK_PREFIX = "confirm:"
 _VALID_ACTIONS: frozenset[str] = frozenset({"confirm", "correct", "cancel"})
+
+# /digest_sections — inline-toggle callbacks `digestsec:<section>:<0|1>` (ADR-026).
+DIGESTSEC_CALLBACK_PREFIX = "digestsec:"
 
 # /expand <section> — the four keys mirror the D-024 <b>-headers in prompts/digest.md.
 EXPAND_SECTION_KEYS: tuple[str, ...] = ("today", "meds", "trackers", "wiki")
@@ -84,6 +109,11 @@ _EXPAND_USAGE_RU = "Используй: /expand <раздел> — today | meds 
 _EXPAND_NO_WIKI_RU = "У тебя пока нет ни одной WIKI для детализации."  # noqa: RUF001
 _EXPAND_EMPTY_RU = "По этому разделу за период ничего нет."
 _GENERIC_ERR_RU = "Что-то пошло не так. Попробуй ещё раз чуть позже."
+
+# /digest_sections ru strings (D-032: ru-only, no i18n).
+_DIGEST_SECTIONS_HEADER_RU = "Разделы твоей сводки — нажми, чтобы включить/выключить:"
+_DIGESTSEC_DONE_RU = "Готово"
+_DIGESTSEC_BAD_RU = "Не понял кнопку."  # noqa: RUF001
 
 # Map common audio MIME types to a staging-file extension (D-022). Unknown →
 # fall back to the file_name suffix, else "mp3".
@@ -130,6 +160,41 @@ def parse_confirm_callback(data: str) -> tuple[int, ConfirmKeyboardAction] | Non
     if action not in _VALID_ACTIONS:
         return None
     return pending_id, cast(ConfirmKeyboardAction, action)
+
+
+def parse_digestsec_callback(data: str) -> tuple[str, bool] | None:
+    """Parse ``digestsec:<section>:<0|1>`` → ``(section, target_enabled)`` or None.
+
+    The flag is the TARGET state (what tapping the button sets it to), so a tap
+    on a stale message is idempotent.
+    """
+    if not data.startswith(DIGESTSEC_CALLBACK_PREFIX):
+        return None
+    parts = data.split(":")
+    if len(parts) != 3:
+        return None
+    _, section, flag = parts
+    if section not in TOGGLEABLE_DIGEST_SECTIONS or flag not in ("0", "1"):
+        return None
+    return section, flag == "1"
+
+
+def _build_digest_sections_kb(prefs: DigestPrefs) -> InlineKeyboardMarkup:
+    """Render the on/off toggle keyboard for the optional digest sections (ADR-026)."""
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for key in TOGGLEABLE_DIGEST_SECTIONS:
+        on = bool(getattr(prefs, f"{key}_enabled"))
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{SECTION_DISPLAY_NAME[key]}: {'вкл ✅' if on else 'выкл ⬜'}",
+                    callback_data=f"{DIGESTSEC_CALLBACK_PREFIX}{key}:{0 if on else 1}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _download_bytes(bot: object, file_id: str) -> bytes:
@@ -247,6 +312,40 @@ def build_router(pipeline: MessagePipeline) -> Router:
             chars=len(body),
         )
         # END_BLOCK_HANDLER_EXPAND
+
+    @router.message(Command("digest_sections"))
+    async def _on_digest_sections(message: Message) -> None:
+        # START_BLOCK_HANDLER_DIGEST_SECTIONS
+        # aisw-pv8: show the owner's per-section digest toggles as an inline keyboard.
+        if message.from_user is None or message.chat is None:
+            _log.debug("tg.handlers.digest_sections.skip_missing_fields")
+            return
+        owner = message.from_user.id
+        try:
+            prefs = await firing.get_owner_digest_prefs(owner)
+        except firing.DigestNotInitialisedError:
+            _log.warning("tg.command.digest_sections.unavailable", owner_telegram_id=owner)
+            await message.answer(_DIGEST_UNAVAILABLE_RU)
+            return
+        except Exception as exc:  # defensive: never bubble to the dispatcher
+            _log.warning(
+                "tg.command.digest_sections.error",
+                owner_telegram_id=owner,
+                error_class=type(exc).__name__,
+            )
+            await message.answer(_GENERIC_ERR_RU)
+            return
+        await message.answer(
+            _DIGEST_SECTIONS_HEADER_RU,
+            reply_markup=_build_digest_sections_kb(prefs),
+        )
+        _log.info(
+            "tg.command.digest_sections.shown",
+            owner_telegram_id=owner,
+            trackers_enabled=prefs.trackers_enabled,
+            wiki_enabled=prefs.wiki_enabled,
+        )
+        # END_BLOCK_HANDLER_DIGEST_SECTIONS
 
     @router.message(F.voice)
     async def _on_voice(message: Message) -> None:
@@ -386,5 +485,43 @@ def build_router(pipeline: MessagePipeline) -> Router:
         )
         await callback.answer()
         # END_BLOCK_HANDLER_CONFIRM_CB
+
+    @router.callback_query(F.data.startswith(DIGESTSEC_CALLBACK_PREFIX))
+    async def _on_digestsec_callback(cb: CallbackQuery) -> None:
+        # START_BLOCK_HANDLER_DIGESTSEC_CB
+        # aisw-pv8: flip one digest section on/off and re-render the keyboard in place.
+        owner = cb.from_user.id if cb.from_user else 0
+        parsed = parse_digestsec_callback(cb.data or "")
+        if parsed is None:
+            _log.info(
+                "tg.command.digest_sections.bad_callback", owner_telegram_id=owner, data=cb.data
+            )
+            await cb.answer(_DIGESTSEC_BAD_RU)
+            return
+        section, target = parsed
+        try:
+            prefs = await firing.set_owner_digest_section(owner, section=section, enabled=target)
+        except Exception as exc:  # defensive: never bubble to the dispatcher
+            _log.warning(
+                "tg.command.digest_sections.error",
+                owner_telegram_id=owner,
+                section=section,
+                error_class=type(exc).__name__,
+            )
+            await cb.answer(_GENERIC_ERR_RU)
+            return
+        if cb.message is not None:
+            try:
+                await cb.message.edit_reply_markup(reply_markup=_build_digest_sections_kb(prefs))  # type: ignore[union-attr]
+            except Exception:  # stale/unmodified message — ignore, the write already happened
+                _log.debug("tg.command.digest_sections.edit_skipped", owner_telegram_id=owner)
+        await cb.answer(_DIGESTSEC_DONE_RU)
+        _log.info(
+            "tg.command.digest_sections.toggled",
+            owner_telegram_id=owner,
+            section=section,
+            enabled=target,
+        )
+        # END_BLOCK_HANDLER_DIGESTSEC_CB
 
     return router
