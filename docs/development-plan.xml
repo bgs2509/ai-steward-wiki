@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<DevelopmentPlan VERSION="0.0.5">
+<DevelopmentPlan VERSION="0.0.6">
   <ArchitectureNotes>
     <objective>Multi-user Telegram → Claude Code CLI WIKI assistant (Karpathy LLM Wiki method). MVP delivers: foundation (settings/logging/three-DB SQLite), auth + onboarding + admin, scheduler core, Stage-0 Haiku classifier, Stage-1 Sonnet wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer + voice STT + photo ingest, ingest pipeline (classifier + streaming), runtime wiring, integration E2E.</objective>
     <non-goal>No i18n catalog (ru-only, D-032); off-site backup deferred; web UI / non-Telegram channels out of scope.</non-goal>
@@ -66,6 +66,9 @@
     <Phase-A NAME="Inbox-WIKI Phase-A — stage raw content + Router-Claude invocation" STATUS="done" bd_id="aisw-dsg">
       <description>First slice of smart-inbox-routing (epic aisw-t2r). New inbox/router.py (RouterIntent, RouterDecision, RouterError, parse_router_reply); prompts/inbox.md tightened to a fenced ```router block (v1.1.0); DefaultPipeline gains an optional Router — routable intents (WIKI_INGEST/WIKI_QUERY/UNKNOWN) go through router.route(), the bot replies with RouterDecision.notes; _RouterAdapter in __main__ (ensure_inbox_wiki → stage raw payload into Inbox-WIKI/raw/ → run_wiki_session in Inbox-WIKI/ with prompts/inbox.md → parse_router_reply; WikiRunnerError→RouterError). Domain-WIKI move + Stage-1b ingest + confirm loop + cron bridge + hint fast-path are later phases (aisw-zd9/e45/kcz/12t). NOTE: do not deploy master with Phase-A until aisw-zd9 closes. Discovery/design/plan: docs/superpowers/specs|plans/20260512-inbox-wiki-router-*.md.</description>
     </Phase-A>
+    <Phase-B2 NAME="Inbox-WIKI Phase-B — RouterDecision → domain WIKI select/materialise + move + Stage-1b ingest" STATUS="done" bd_id="aisw-zd9">
+      <description>Closes the Phase-A loop (epic aisw-t2r). New inbox/route.py (RouteTarget/RouteRejection/StagedRaw; resolve_target_wiki — lookup-or-create the target &lt;Domain&gt;-WIKI, ROUTE-missing → create + warning, AntiSpamCapError/WikiNameError → rejection; stage_raw_into_wiki — write raw/&lt;ts&gt;_&lt;source&gt;.md + promote media via promote_path_to_raw; pick_domain_overlay; build_ingest_prompt). DefaultPipeline gains an optional Librarian + IngestOutcome — a ROUTE/CREATE_WIKI RouterDecision (with a wired librarian + output) → librarian.ingest() → reply notes + Stage-1b summary via OutputDelivery (ok) or send_message (rejected/run_failed); CLARIFY/REJECT and librarian=None keep Phase-A behaviour. _LibrarianAdapter in __main__ (resolve target → stage raw → run_wiki_session in &lt;Domain&gt;-WIKI/ with prompts/wiki.md + domain overlay, timeout_s=None → IngestOutcome). Confirm loop + cron bridge + hint fast-path remain later (aisw-e45/kcz/12t). With Phase-A+B done the "do not deploy master" caveat is lifted. Discovery/design/plan: docs/superpowers/specs|plans/20260512-inbox-wiki-route-ingest-*.md.</description>
+    </Phase-B2>
   </Phases>
 
   <Modules>
@@ -199,6 +202,12 @@
       </target>
       <verification-ref>V-M-INBOX-ROUTER</verification-ref>
     </M-INBOX-ROUTER>
+    <M-INBOX-ROUTE bd_id="aisw-zd9">
+      <target>
+        <source>src/ai_steward_wiki/inbox/route.py</source>
+      </target>
+      <verification-ref>V-M-INBOX-ROUTE</verification-ref>
+    </M-INBOX-ROUTE>
     <M-INGEST-IDEM bd_id="aisw-6t5">
       <target>
         <source>src/ai_steward_wiki/inbox/idempotency.py</source>

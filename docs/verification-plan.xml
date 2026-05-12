@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.6">
+<VerificationPlan VERSION="0.0.7">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -101,9 +101,10 @@
       <tests>
         <test path="tests/unit/test_runtime_wiring.py"/>
         <test path="tests/unit/test_router_adapter.py"/>
+        <test path="tests/unit/test_librarian_adapter.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/test_runtime_wiring.py tests/unit/test_router_adapter.py -q</cmd>
+        <cmd>uv run pytest tests/unit/test_runtime_wiring.py tests/unit/test_router_adapter.py tests/unit/test_librarian_adapter.py -q</cmd>
         <cmd>uv run python -m ai_steward_wiki  # manual smoke with AISW_TG_BOT_TOKEN_LOCAL</cmd>
       </commands>
       <log-markers>
@@ -123,8 +124,16 @@
         <marker>inbox.router.run.done</marker>
         <marker>inbox.router.parsed</marker>
         <marker>inbox.router.parse_error</marker>
+        <marker>inbox.route.target_resolved</marker>
+        <marker>inbox.route.route_target_was_missing</marker>
+        <marker>inbox.route.cap_reached</marker>
+        <marker>inbox.route.bad_name</marker>
+        <marker>inbox.route.raw_moved</marker>
+        <marker>inbox.route.ingest.begin</marker>
+        <marker>inbox.route.ingest.done</marker>
+        <marker>inbox.route.ingest_failed</marker>
       </log-markers>
-      <evidence>Unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. aisw-hcl: VoiceHandler/PhotoIngestor wired into DefaultPipeline; media _staging sweep job registered; _WikiRunnerAdapter.run promotes staged media into &lt;wiki&gt;/raw/media after a successful run. aisw-dsg: _RouterAdapter — ensure_inbox_wiki materialises Inbox-WIKI, _render_raw_sidecar writes raw/&lt;ts&gt;_&lt;source&gt;.md (plain body for text; YAML front-matter + staged_path for media), run_wiki_session invoked with wiki_id=f"{tid}/Inbox-WIKI" and overlay=prompts/inbox.md, reply parsed via parse_router_reply, WikiRunnerError→RouterError, inbox.router.* markers; _render_raw_sidecar text/voice/document shapes. Manual smoke: `python -m ai_steward_wiki` starts, logs runtime.media_pipeline.wired + polling.start, Ctrl-C → shutdown.done, exit 0.</evidence>
+      <evidence>Unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. aisw-hcl: VoiceHandler/PhotoIngestor wired into DefaultPipeline; media _staging sweep job registered; _WikiRunnerAdapter.run promotes staged media into &lt;wiki&gt;/raw/media after a successful run. aisw-dsg: _RouterAdapter — ensure_inbox_wiki, _render_raw_sidecar, run_wiki_session in Inbox-WIKI/ with prompts/inbox.md, parse_router_reply, WikiRunnerError→RouterError, inbox.router.* markers. aisw-zd9: _LibrarianAdapter — resolve_target_wiki (create new dir; ROUTE-missing → create + warning; cap → rejected; bad name → rejected), stage_raw_into_wiki (raw/&lt;ts&gt;_text.md + promote media), run_wiki_session with wiki_id=f"{tid}/&lt;Name&gt;" + overlay=domain-default.md + timeout_s=None, IngestOutcome(ok|run_failed|rejected), WikiRunnerError→run_failed keeps the raw, inbox.route.* markers via capsys. Manual smoke: `python -m ai_steward_wiki` starts, logs runtime.media_pipeline.wired + polling.start, Ctrl-C → shutdown.done, exit 0.</evidence>
     </V-M-RUNTIME-WIRING>
 
     <V-M-TG-HANDLERS-WIRING MODULE="M-TG-HANDLERS-WIRING">
@@ -157,11 +166,12 @@
       <tests>
         <test path="tests/unit/tg/test_pipeline_classifier_wiring.py"/>
         <test path="tests/unit/tg/test_pipeline_router.py"/>
+        <test path="tests/unit/tg/test_pipeline_route_ingest.py"/>
         <test path="tests/unit/wiki/test_runner_aggregate.py"/>
         <test path="tests/integration/test_pipeline_classifier_e2e.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/tg/test_pipeline_classifier_wiring.py tests/unit/tg/test_pipeline_router.py tests/unit/wiki/test_runner_aggregate.py -q</cmd>
+        <cmd>uv run pytest tests/unit/tg/test_pipeline_classifier_wiring.py tests/unit/tg/test_pipeline_router.py tests/unit/tg/test_pipeline_route_ingest.py tests/unit/wiki/test_runner_aggregate.py -q</cmd>
         <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/test_pipeline_classifier_e2e.py -q</cmd>
       </commands>
       <log-markers>
@@ -172,12 +182,14 @@
         <marker>tg.pipeline.router.dispatched</marker>
         <marker>tg.pipeline.router.decided</marker>
         <marker>tg.pipeline.router.error</marker>
+        <marker>tg.pipeline.route.ingest_dispatched</marker>
+        <marker>tg.pipeline.route.delivered</marker>
         <marker>tg.pipeline.runner.dispatched</marker>
         <marker>tg.pipeline.runner.completed</marker>
         <marker>tg.pipeline.runner.error</marker>
         <marker>tg.pipeline.deliver.sent</marker>
       </log-markers>
-      <evidence>Unit tests cover text happy path, L1 dup short-circuit, L2 dedup hit (records auto_skip + ACK_DEDUP_RU), classifier error → ACK_CLASSIFY_ERR_RU, runner error → ACK_RUNNER_ERR_RU, empty runner output → ACK_TEXT_RU via deliver, back-compat None injection, voice happy path with transcript, voice empty transcript fallback, voice back-compat legacy ack, structlog markers via capsys; aggregate_text across stream-json payload shapes. aisw-dsg: routable intents (WIKI_INGEST/WIKI_QUERY/UNKNOWN) with a wired Router go through router.route() → reply with RouterDecision.notes (legacy runner NOT called); non-routable intents use the legacy path; router=None falls through to legacy; RouterError → ACK_RUNNER_ERR_RU; tg.pipeline.router.* markers via capsys.</evidence>
+      <evidence>Unit tests cover text happy path, L1 dup short-circuit, L2 dedup hit, classifier error → ACK_CLASSIFY_ERR_RU, runner error → ACK_RUNNER_ERR_RU, empty runner output → ACK_TEXT_RU via deliver, back-compat None injection, voice happy/empty/back-compat, structlog markers via capsys; aggregate_text across stream-json payload shapes. aisw-dsg: routable intents with a wired Router go through router.route(); router=None / non-routable use the legacy path; RouterError → ACK_RUNNER_ERR_RU; tg.pipeline.router.* markers. aisw-zd9: a ROUTE/CREATE_WIKI RouterDecision (with a wired librarian + output) → librarian.ingest() → status="ok" → output.deliver(reply); status="rejected"|"run_failed" → send_message(reply); CLARIFY/REJECT and librarian=None → send_message(decision.notes), legacy runner NOT called; tg.pipeline.route.* markers via capsys.</evidence>
     </V-M-TG-PIPELINE-CLASSIFIER>
 
     <V-M-TG-PIPELINE-STREAMING MODULE="M-TG-PIPELINE-STREAMING">
@@ -351,6 +363,20 @@
       <log-markers/>
       <evidence>parse_router_reply: happy path for each RouterIntent (route/create_wiki/clarify/reject), multi-line notes, target_wiki null/empty → None, preamble + quoted example → last ```router block wins, missing block → RouterDecision(intent=CLARIFY, parsed_ok=False, notes=trimmed-original-or-generic), unknown intent value → fallback, ROUTE/CREATE_WIKI without target → demoted to CLARIFY, RouterDecision frozen + extra=forbid, RouterError is an Exception (aisw-dsg; prompts/inbox.md ≥1.1.0).</evidence>
     </V-M-INBOX-ROUTER>
+
+    <V-M-INBOX-ROUTE MODULE="M-INBOX-ROUTE">
+      <tests>
+        <test path="tests/unit/inbox/test_route.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/inbox/test_route.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>inbox.route.raw_moved</marker>
+        <marker>inbox.route.media_missing</marker>
+      </log-markers>
+      <evidence>resolve_target_wiki: CREATE_WIKI → new dir, created=True; idempotent second call → created=False; ROUTE existing → created=False; ROUTE missing → create + on_route_missing callback; AntiSpamCapError → RouteRejection("cap"); WikiNameError → RouteRejection("bad_name"). stage_raw_into_wiki: text → raw/&lt;ts&gt;_text.md body verbatim, media_rel=[]; voice/photo → .md sidecar with YAML front-matter + promote_path_to_raw into raw/media/ (StagedRaw.media_abs absolute & exists, source moved); already-gone media → skipped. pick_domain_overlay: domain-&lt;slug&gt;.md if present else domain-default.md. build_ingest_prompt references the raw path(s) + the user text (aisw-zd9; D-004).</evidence>
+    </V-M-INBOX-ROUTE>
 
     <V-M-INGEST-IDEM MODULE="M-INGEST-IDEM">
       <tests>
