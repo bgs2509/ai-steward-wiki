@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/settings.py
-# VERSION: 0.0.10
+# VERSION: 0.0.11
 # START_MODULE_CONTRACT
 #   PURPOSE: Runtime configuration loaded from environment via pydantic-settings.
 #   SCOPE: Settings BaseSettings (frozen). Initial fields cover Chunk 1 only;
@@ -20,7 +20,9 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.10 - aisw-kcz: default_user_tz (fallback IANA TZ for NL time parsing).
+#   LAST_CHANGE: v0.0.11 - aisw-12t (Phase-E.a): - media_staging_root (media staging is
+#                now per-user Inbox-WIKI; see inbox.materialize.inbox_wiki_path).
+#   PREVIOUS:    v0.0.10 - aisw-kcz: default_user_tz (fallback IANA TZ for NL time parsing).
 #   PREVIOUS:    v0.0.9 - aisw-zny (media chunk 1): media_staging_root,
 #                voice_enabled, voice_whisper_model_size, voice_stt_timeout_s,
 #                photo_enabled, photo_vision_timeout_s (D-022 wiring).
@@ -116,9 +118,8 @@ class Settings(BaseSettings):
     snapshot_retention_days: int = 7
 
     # Media handling (D-022). Voice → faster-whisper STT; photo → staged for vision.
-    # media_staging_root is a single pre-routing staging area for MVP; per-WIKI
-    # promotion (raw/media/) happens after Stage-1a resolution (later chunk).
-    media_staging_root: Path = Path("/var/lib/ai-steward-wiki/workspace/media-staging")
+    # Staging is per-sender under <wiki_root>/<telegram_id>/Inbox-WIKI/raw/media/_staging
+    # (see inbox.materialize.inbox_wiki_path; aisw-12t / Phase-E.a) — no global root.
     voice_enabled: bool = True
     voice_whisper_model_size: Literal["small", "medium"] = "small"
     voice_stt_timeout_s: float = 60.0

@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.5.2
+# VERSION: 0.5.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -30,7 +30,13 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.2 - aisw-269 (Inbox-WIKI Phase-D.b.2b): _DigestRunnerAdapter
+#   LAST_CHANGE: v0.5.3 - aisw-12t (Inbox-WIKI Phase-E.a): per-user media staging —
+#                VoiceHandler/PhotoIngestor built without a fixed inbox_root;
+#                DefaultPipeline(wiki_root=settings.wiki_root) so on_voice/on_photo
+#                stage under <wiki_root>/<telegram_id>/Inbox-WIKI/raw/media/_staging;
+#                register_all_retention_jobs(wiki_root_for_media_sweep=settings.wiki_root)
+#                — the daily media sweep now iterates every per-user Inbox-WIKI.
+#   PREVIOUS:    v0.5.2 - aisw-269 (Inbox-WIKI Phase-D.b.2b): _DigestRunnerAdapter
 #                gains digest_expand_prompt_path + a section: str|None=None arg —
 #                section None ⇒ prompts/digest.md (byte-identical), a section key ⇒
 #                prompts/digest_expand.md with the section name in user_input (for
@@ -507,8 +513,8 @@ def _render_raw_sidecar(
     text → a plain .md with the message body; media → a .md sidecar with a YAML
     front-matter (source, received_utc, staged_path[s]) plus the carried text
     (voice transcript / synthetic photo prompt / extracted document text). The
-    binary itself stays in media_staging_root — its move into the target WIKI
-    is Phase-B/Phase-E (aisw-zd9 / aisw-12t).
+    binary itself stays in the sender's Inbox-WIKI/raw/media/_staging until
+    promotion into the target WIKI on a successful run (aisw-8r9 / aisw-12t).
     """
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     filename = f"{ts}_{source}.md"
@@ -916,12 +922,12 @@ async def _amain() -> None:
             "sessions": settings.sessions_db_url,
         },
         snapshot_retention_days=settings.snapshot_retention_days,
-        media_staging_root=settings.media_staging_root,
+        wiki_root_for_media_sweep=settings.wiki_root,
     )
     logger.info(
         "runtime.scheduler.started",
         jobs_url=settings.jobs_db_url,
-        media_staging_root=str(settings.media_staging_root),
+        wiki_root=str(settings.wiki_root),
         retention_job_ids=[getattr(j, "id", None) for j in retention_jobs],
     )
 
@@ -1049,15 +1055,15 @@ async def _amain() -> None:
     # END_BLOCK_TEXT_PIPELINE_WIRING
 
     # START_BLOCK_MEDIA_PIPELINE_WIRING (aisw-zny, media chunk 1, D-022)
+    # aisw-12t (Phase-E.a): the staging root is per-sender and resolved by the
+    # pipeline at message time (DefaultPipeline(wiki_root=…) → inbox_wiki_path);
+    # the handlers are built without a fixed inbox_root.
     voice_handler: VoiceHandler | None = None
     if settings.voice_enabled:
         voice_handler = VoiceHandler(
             FasterWhisperTranscriber(model_size=settings.voice_whisper_model_size),
-            inbox_root=settings.media_staging_root,
         )
-    photo_ingestor: PhotoIngestor | None = (
-        PhotoIngestor(inbox_root=settings.media_staging_root) if settings.photo_enabled else None
-    )
+    photo_ingestor: PhotoIngestor | None = PhotoIngestor() if settings.photo_enabled else None
     logger.info(
         "runtime.media_pipeline.wired",
         voice=voice_handler is not None,
@@ -1088,6 +1094,7 @@ async def _amain() -> None:
         scheduler=scheduler,
         user_tz_lookup=_user_tz_lookup,
         default_user_tz=settings.default_user_tz,
+        wiki_root=settings.wiki_root,
     )
     dp = build_dispatcher(allowlist, pipeline=pipeline)
     logger.info("runtime.handlers.registered")

@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.9.0
+# VERSION: 0.10.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -21,6 +21,7 @@
 #   DEPENDS: ai_steward_wiki.classifier.schema (ClassifierResult, Intent,
 #            ClassifierError),
 #            ai_steward_wiki.inbox.idempotency.IdempotencyService,
+#            ai_steward_wiki.inbox.materialize.inbox_wiki_path,
 #            ai_steward_wiki.inbox.router (RouterDecision, RouterError, RouterIntent),
 #            ai_steward_wiki.inbox.route (route_action_to_payload, route_action_from_payload),
 #            ai_steward_wiki.inbox.staging.MediaRef,
@@ -100,7 +101,13 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.9.0 - aisw-269 (Inbox-WIKI Phase-D.b.2b): named-subset WIKI in the
+#   LAST_CHANGE: v0.10.0 - aisw-12t (Inbox-WIKI Phase-E.a): media staging root is now
+#                per-sender — DefaultPipeline gains an optional wiki_root; on_voice /
+#                on_photo / the image-document branch resolve inbox_wiki_path(telegram_id)
+#                and pass it to VoiceHandler/PhotoIngestor.handle(inbox_root=…) so bytes
+#                land in <wiki_root>/<telegram_id>/Inbox-WIKI/raw/media/_staging (D-022).
+#                wiki_root=None ⇒ the handler falls back to its constructor inbox_root.
+#   PREVIOUS:    v0.9.0 - aisw-269 (Inbox-WIKI Phase-D.b.2b): named-subset WIKI in the
 #                digest fast-path — new optional owner_wikis_resolver dep; _handle_digest_intent
 #                calls extract_wiki_names(text, owner-stems) → on a «по <Name>» token that
 #                matches no WIKI a ru clarification (tg.pipeline.digest.wiki_unknown), else the
@@ -201,6 +208,7 @@ from ai_steward_wiki.classifier.schema import (
     Intent,
 )
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
+from ai_steward_wiki.inbox.materialize import inbox_wiki_path
 from ai_steward_wiki.inbox.route import route_action_from_payload, route_action_to_payload
 from ai_steward_wiki.inbox.router import RouterDecision, RouterError, RouterIntent
 from ai_steward_wiki.ops.pii import PIIRedactor
@@ -689,6 +697,7 @@ class DefaultPipeline:
         user_tz_lookup: Callable[[int], str | None] | None = None,
         default_user_tz: str = "Europe/Moscow",
         clock: Callable[[], datetime] | None = None,
+        wiki_root: Path | None = None,
     ) -> None:
         self._sender = sender
         self._idem = idempotency
@@ -725,6 +734,15 @@ class DefaultPipeline:
         self._user_tz_lookup = user_tz_lookup
         self._default_user_tz = default_user_tz
         self._clock: Callable[[], datetime] = clock or (lambda: datetime.now(UTC))
+        # aisw-12t (Phase-E.a): per-sender media staging root. None ⇒ VoiceHandler /
+        # PhotoIngestor fall back to the inbox_root they were constructed with.
+        self._wiki_root = wiki_root
+
+    def _inbox_root_for(self, telegram_id: int) -> Path | None:
+        """Per-sender Inbox-WIKI dir (media-staging root, D-022), or None if no wiki_root."""
+        if self._wiki_root is None:
+            return None
+        return inbox_wiki_path(telegram_id, wiki_root=self._wiki_root)
 
     def _resolve_user_tz(self, telegram_id: int) -> ZoneInfo:
         """User IANA TZ from the lookup, else the default; never raises."""
@@ -1233,7 +1251,11 @@ class DefaultPipeline:
         run_id = f"voice-{uuid4().hex[:12]}"
         try:
             ref, transcript = await self._voice.handle(
-                audio_bytes, run_id=run_id, ext=ext, mime=mime
+                audio_bytes,
+                run_id=run_id,
+                ext=ext,
+                mime=mime,
+                inbox_root=self._inbox_root_for(telegram_id),
             )
         except VoiceUnavailableError:
             _log.warning("tg.pipeline.voice.stt_unavailable", telegram_id=telegram_id)
@@ -1284,7 +1306,9 @@ class DefaultPipeline:
             await self._sender.send_message(chat_id, ACK_PHOTO_RU)
             return
         run_id = f"photo-{uuid4().hex[:12]}"
-        ref = self._photo.handle(photo_bytes, run_id=run_id, mime=mime)
+        ref = self._photo.handle(
+            photo_bytes, run_id=run_id, mime=mime, inbox_root=self._inbox_root_for(telegram_id)
+        )
         _log.info(
             "tg.pipeline.photo",
             telegram_id=telegram_id,
@@ -1562,7 +1586,9 @@ class DefaultPipeline:
             await self._sender.send_message(chat_id, ACK_PHOTO_RU)
             return
         run_id = f"doc-img-{uuid4().hex[:12]}"
-        ref = self._photo.handle(doc_bytes, run_id=run_id, mime=mime)
+        ref = self._photo.handle(
+            doc_bytes, run_id=run_id, mime=mime, inbox_root=self._inbox_root_for(telegram_id)
+        )
         _log.info(
             "tg.pipeline.document.routed_image",
             telegram_id=telegram_id,

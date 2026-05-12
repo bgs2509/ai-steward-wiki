@@ -100,6 +100,39 @@ async def test_on_text_sends_ack_when_new() -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_voice_passes_per_user_inbox_root_when_wiki_root_set() -> None:
+    from ai_steward_wiki.inbox.materialize import INBOX_WIKI_DIRNAME
+
+    sender = FakeSender()
+    voice = MagicMock()
+    voice.handle = AsyncMock(return_value=(_FakeRef(), _FakeTranscript(text="hi")))
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=_make_confirm(),
+        voice=voice,
+        wiki_root=Path("/wr"),
+    )
+    await pipe.on_voice(telegram_id=77, chat_id=10, update_id=100, audio_bytes=b"\x00")
+    assert voice.handle.await_args.kwargs["inbox_root"] == Path("/wr/77") / INBOX_WIKI_DIRNAME
+
+
+@pytest.mark.asyncio
+async def test_on_voice_inbox_root_none_when_no_wiki_root() -> None:
+    sender = FakeSender()
+    voice = MagicMock()
+    voice.handle = AsyncMock(return_value=(_FakeRef(), _FakeTranscript(text="hi")))
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=_make_confirm(),
+        voice=voice,
+    )
+    await pipe.on_voice(telegram_id=77, chat_id=10, update_id=100, audio_bytes=b"\x00")
+    assert voice.handle.await_args.kwargs["inbox_root"] is None
+
+
+@pytest.mark.asyncio
 async def test_on_text_skips_on_l1_duplicate() -> None:
     sender = FakeSender()
     pipe = DefaultPipeline(

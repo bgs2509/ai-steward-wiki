@@ -1,12 +1,12 @@
 # FILE: src/ai_steward_wiki/scheduler/maintenance.py
-# VERSION: 0.0.3
+# VERSION: 0.0.4
 # START_MODULE_CONTRACT
 #   PURPOSE: Register periodic maintenance jobs on the APScheduler bootstrap.
 #   SCOPE: register_purge_expired_pending_job, register_media_staging_sweep_job,
 #          register_all_retention_jobs (aggregator).
 #   DEPENDS: asyncio, apscheduler.triggers.cron, structlog,
 #            ai_steward_wiki.auth.onboarding.purge_expired_pending,
-#            ai_steward_wiki.inbox.staging.sweep_staging
+#            ai_steward_wiki.inbox.staging.sweep_all_user_staging
 #   LINKS: M-ONBOARD-ADMIN, M-SCHEDULER, M-INBOX, D-022, D-030
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
@@ -16,12 +16,17 @@
 #   PURGE_PENDING_JOB_ID - stable id for the daily purge job
 #   MEDIA_STAGING_SWEEP_JOB_ID - stable id for the daily media _staging sweep
 #   register_purge_expired_pending_job - add daily cron job at 05:00 UTC
-#   register_media_staging_sweep_job - add daily cron job sweeping stale staged media (D-022)
+#   register_media_staging_sweep_job - daily cron sweeping stale staged media across
+#                                      every per-user Inbox-WIKI under wiki_root (D-022)
 #   register_all_retention_jobs - chunks 12-14 + media sweep wiring
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - aisw-8r9 (media chunk 4): register_media_staging_sweep_job —
+#   LAST_CHANGE: v0.0.4 - aisw-12t (Phase-E.a): media sweep iterates per-user
+#                Inbox-WIKI/raw/media/_staging (was a single shared dir);
+#                register_media_staging_sweep_job(staging_root→wiki_root),
+#                register_all_retention_jobs(media_staging_root→wiki_root_for_media_sweep).
+#   PREVIOUS:    v0.0.3 - aisw-8r9 (media chunk 4): register_media_staging_sweep_job —
 #                daily cron sweeping <staging_root> entries older than 24h (D-022);
 #                also included in register_all_retention_jobs.
 #   PREVIOUS:    v0.0.2 - chunk 14: also register db_snapshot job
@@ -39,7 +44,7 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_steward_wiki.auth.onboarding import PENDING_USER_TTL_DAYS, purge_expired_pending
-from ai_steward_wiki.inbox.staging import DEFAULT_STAGING_TTL_S, sweep_staging
+from ai_steward_wiki.inbox.staging import DEFAULT_STAGING_TTL_S, sweep_all_user_staging
 
 __all__ = [
     "MEDIA_STAGING_SWEEP_JOB_ID",
@@ -59,10 +64,13 @@ async def _run_purge(session_maker: async_sessionmaker[AsyncSession], ttl_days: 
     return await purge_expired_pending(session_maker, ttl_days=ttl_days)
 
 
-async def _run_media_sweep(staging_root: Path, ttl_s: int) -> int:
-    """Sweep stale staged media; sync file IO runs in a worker thread (D-022)."""
-    removed = await asyncio.to_thread(sweep_staging, staging_root, ttl_s=ttl_s)
-    _log.info("maintenance.media_sweep.done", staging_root=str(staging_root), removed=removed)
+async def _run_all_user_media_sweep(wiki_root: Path, ttl_s: int) -> int:
+    """Sweep stale staged media across every per-user Inbox-WIKI under wiki_root (D-022).
+
+    Sync file IO runs in a worker thread.
+    """
+    removed = await asyncio.to_thread(sweep_all_user_staging, wiki_root, ttl_s=ttl_s)
+    _log.info("maintenance.media_sweep.done", wiki_root=str(wiki_root), removed=removed)
     return removed
 
 
@@ -76,15 +84,16 @@ def register_all_retention_jobs(
     snapshot_root: Path | None = None,
     db_urls_for_snapshot: dict[str, str] | None = None,
     snapshot_retention_days: int | None = None,
-    media_staging_root: Path | None = None,
+    wiki_root_for_media_sweep: Path | None = None,
 ) -> list[Any]:
     """Register chunks 12-14 maintenance jobs + the media _staging sweep.
 
     Idempotent: APScheduler `replace_existing=True` lets this run on every boot.
     ``snapshot_root`` + ``db_urls_for_snapshot`` are required to enable the
     chunk 14 db_snapshot job; when omitted the snapshot cron is not registered.
-    ``media_staging_root`` enables the D-022 staging sweep; when omitted it is
-    not registered.
+    ``wiki_root_for_media_sweep`` enables the D-022 per-user staging sweep
+    (it iterates ``<wiki_root>/<user>/Inbox-WIKI/raw/media/_staging``); when
+    omitted the sweep cron is not registered.
     """
     # Local imports to avoid a scheduler↔ops cycle at module load.
     from ai_steward_wiki.ops.retention import (
@@ -116,8 +125,10 @@ def register_all_retention_jobs(
                 retention_days=snapshot_retention_days or SNAPSHOT_RETENTION_DAYS,
             )
         )
-    if media_staging_root is not None:
-        jobs.append(register_media_staging_sweep_job(scheduler, staging_root=media_staging_root))
+    if wiki_root_for_media_sweep is not None:
+        jobs.append(
+            register_media_staging_sweep_job(scheduler, wiki_root=wiki_root_for_media_sweep)
+        )
     return jobs
 
 
@@ -142,20 +153,21 @@ def register_purge_expired_pending_job(
 def register_media_staging_sweep_job(
     scheduler: AsyncIOScheduler,
     *,
-    staging_root: Path,
+    wiki_root: Path,
     ttl_s: int = DEFAULT_STAGING_TTL_S,
     hour: int = 4,
     minute: int = 30,
 ) -> Any:
-    """Idempotently schedule the daily media _staging sweep at hour:minute UTC (D-022).
+    """Idempotently schedule the daily per-user media _staging sweep at hour:minute UTC (D-022).
 
     Removes staged media files older than ``ttl_s`` (default 24h) — leftovers from
-    no-WIKI intents, rejected confirms, or failed Stage-1 runs.
+    no-WIKI intents, rejected confirms, or failed Stage-1 runs — across every
+    ``<wiki_root>/<user>/Inbox-WIKI/raw/media/_staging`` directory.
     """
     return scheduler.add_job(
-        _run_media_sweep,
+        _run_all_user_media_sweep,
         trigger=CronTrigger(hour=hour, minute=minute, timezone="UTC"),
         id=MEDIA_STAGING_SWEEP_JOB_ID,
         replace_existing=True,
-        args=[staging_root, ttl_s],
+        args=[wiki_root, ttl_s],
     )
