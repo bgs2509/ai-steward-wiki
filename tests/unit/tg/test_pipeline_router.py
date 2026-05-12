@@ -158,7 +158,7 @@ async def test_router_branch_emits_log_markers(capsys: pytest.CaptureFixture[str
     await pipe.on_text(telegram_id=7, chat_id=10, update_id=2, text="hi")
 
     out = capsys.readouterr().out
-    for marker in ("tg.pipeline.router.dispatched", "tg.pipeline.router.delivered"):
+    for marker in ("tg.pipeline.router.dispatched", "tg.pipeline.router.decided"):
         assert marker in out, f"missing {marker} in:\n{out}"
     assert "tg.pipeline.runner.dispatched" not in out
 

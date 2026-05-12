@@ -170,7 +170,7 @@
         <marker>tg.pipeline.classify.error</marker>
         <marker>tg.pipeline.inbox.l2_dedup_hit</marker>
         <marker>tg.pipeline.router.dispatched</marker>
-        <marker>tg.pipeline.router.delivered</marker>
+        <marker>tg.pipeline.router.decided</marker>
         <marker>tg.pipeline.router.error</marker>
         <marker>tg.pipeline.runner.dispatched</marker>
         <marker>tg.pipeline.runner.completed</marker>

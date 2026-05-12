@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.4.0
+# VERSION: 0.5.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -21,7 +21,7 @@
 #   DEPENDS: ai_steward_wiki.classifier.schema (ClassifierResult, Intent,
 #            ClassifierError),
 #            ai_steward_wiki.inbox.idempotency.IdempotencyService,
-#            ai_steward_wiki.inbox.router (RouterDecision, RouterError),
+#            ai_steward_wiki.inbox.router (RouterDecision, RouterError, RouterIntent),
 #            ai_steward_wiki.inbox.staging.MediaRef,
 #            ai_steward_wiki.ops.pii.PIIRedactor,
 #            ai_steward_wiki.tg.voice.VoiceHandler (optional),
@@ -55,6 +55,8 @@
 #   ConfirmKeyboardAction - Literal[confirm|correct|cancel]
 #   Classifier - Protocol (Stage-0 wrapper, narrow API)
 #   Router - Protocol (Inbox-WIKI Stage-1a router wrapper; aisw-dsg)
+#   IngestOutcome - frozen dataclass returned by Librarian.ingest (aisw-zd9)
+#   Librarian - Protocol (Inbox-WIKI Stage-1b librarian wrapper; aisw-zd9)
 #   WikiRunOutcome - frozen dataclass returned by WikiRunner.run
 #   WikiRunner - Protocol (Stage-1a/1b wrapper, narrow API)
 #   OutputDelivery - Protocol (deliver_output wrapper)
@@ -65,13 +67,24 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.4.0 - aisw-dsg (Inbox-WIKI Phase-A): _ROUTABLE_INTENTS +
+#   LAST_CHANGE: v0.5.0 - aisw-zd9 (Inbox-WIKI Phase-B): Librarian Protocol +
+#                IngestOutcome; DefaultPipeline gains an optional `librarian`;
+#                in the routable branch a ROUTE/CREATE_WIKI decision (with a
+#                wired librarian + output) is executed via librarian.ingest()
+#                — resolve/create the target <Domain>-WIKI, move raw, Stage-1b
+#                ingest — and the reply (notes + summary, or notes + hint) is
+#                delivered via OutputDelivery (ok) or send_message (rejected /
+#                run_failed); CLARIFY/REJECT and the no-librarian case keep the
+#                Phase-A notes-echo. Phase-A's tg.pipeline.router.delivered log
+#                renamed → tg.pipeline.router.decided; new anchors
+#                tg.pipeline.route.ingest_dispatched|delivered.
+#   PREVIOUS:    v0.4.0 - aisw-dsg (Inbox-WIKI Phase-A): _ROUTABLE_INTENTS +
 #                Router Protocol; DefaultPipeline gains an optional `router`;
 #                _run_text_pipeline routes WIKI_INGEST/WIKI_QUERY/UNKNOWN through
 #                router.route() (Stage-1a in Inbox-WIKI/) and replies with the
 #                parsed RouterDecision.notes — legacy flat run kept for the
 #                other intents and when no router is wired. New log anchors
-#                tg.pipeline.router.dispatched|delivered|error.
+#                tg.pipeline.router.dispatched|decided|error.
 #   PREVIOUS:    v0.3.7 - aisw-3dr: on_voice accepts ext/mime (default ogg) and
 #                forwards them to VoiceHandler.handle so video notes (mp4) and
 #                audio files are staged with the right extension, not .ogg.
@@ -119,7 +132,7 @@ from ai_steward_wiki.classifier.schema import (
     Intent,
 )
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
-from ai_steward_wiki.inbox.router import RouterDecision, RouterError
+from ai_steward_wiki.inbox.router import RouterDecision, RouterError, RouterIntent
 from ai_steward_wiki.ops.pii import PIIRedactor
 from ai_steward_wiki.tg.bot import TgSender
 from ai_steward_wiki.tg.confirm import ConfirmationService
@@ -148,6 +161,8 @@ __all__ = [
     "ConfirmKeyboardAction",
     "DefaultPipeline",
     "DefaultStreamingDelivery",
+    "IngestOutcome",
+    "Librarian",
     "MessagePipeline",
     "OutputDelivery",
     "Router",
@@ -230,6 +245,34 @@ class Router(Protocol):
         media_paths: list[Path] | None = None,
         timeout_s: float | None = None,
     ) -> RouterDecision: ...
+
+
+@dataclass(frozen=True, slots=True)
+class IngestOutcome:
+    """Result of a Stage-1b librarian ingest into a target WIKI (aisw-zd9)."""
+
+    status: Literal["ok", "rejected", "run_failed"]
+    reply: str  # already composed: notes + summary | notes + hint
+    run_id: str | None  # set when a Stage-1b run happened (ok | run_failed)
+    target_wiki: str | None  # primary name when resolved
+    created: bool  # True iff the target WIKI was newly created this turn
+
+
+class Librarian(Protocol):
+    """Inbox-WIKI Stage-1b librarian wrapper (aisw-zd9). Resolves/creates the
+    target <Domain>-WIKI from a RouterDecision, moves the raw payload into it,
+    and runs Claude there (prompts/wiki.md + a domain overlay) to ingest."""
+
+    async def ingest(
+        self,
+        decision: RouterDecision,
+        *,
+        telegram_id: int,
+        user_text: str,
+        source: Literal["text", "voice", "document", "photo"],
+        media_paths: list[Path] | None = None,
+        correlation_id: str,
+    ) -> IngestOutcome: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,6 +438,7 @@ class DefaultPipeline:
         output: OutputDelivery | None = None,
         streaming: StreamingDelivery | None = None,
         router: Router | None = None,
+        librarian: Librarian | None = None,
         pii: PIIRedactor | None = None,
         photo_vision_timeout_s: float | None = None,
     ) -> None:
@@ -410,6 +454,10 @@ class DefaultPipeline:
         # Inbox-WIKI Stage-1a router (aisw-dsg). When wired, it intercepts
         # routable intents; when None, those fall through to the legacy run.
         self._router = router
+        # Inbox-WIKI Stage-1b librarian (aisw-zd9). When wired (with output),
+        # ROUTE/CREATE_WIKI decisions are executed (resolve target + move raw +
+        # ingest); when None, those fall through to the Phase-A notes-echo.
+        self._librarian = librarian
         self._pii = pii or PIIRedactor()
         # D-022: shorter cap for photo→vision runs (vs the default text-turn cap).
         self._photo_vision_timeout_s = photo_vision_timeout_s
@@ -530,13 +578,55 @@ class DefaultPipeline:
                 await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
                 return
             _log.info(
-                "tg.pipeline.router.delivered",
+                "tg.pipeline.router.decided",
                 correlation_id=correlation_id,
                 telegram_id=telegram_id,
                 intent=decision.intent.value,
                 target_wiki=decision.target_wiki,
                 parsed_ok=decision.parsed_ok,
             )
+            # Phase-B (aisw-zd9): ROUTE/CREATE_WIKI → resolve target WIKI + move
+            # raw + Stage-1b ingest via the Librarian; CLARIFY/REJECT (and the
+            # no-librarian case) keep Phase-A's notes-echo behaviour.
+            if (
+                decision.intent in (RouterIntent.ROUTE, RouterIntent.CREATE_WIKI)
+                and self._librarian is not None
+                and self._output is not None
+            ):
+                _log.info(
+                    "tg.pipeline.route.ingest_dispatched",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    intent=decision.intent.value,
+                    source=source,
+                )
+                ingest_outcome = await self._librarian.ingest(
+                    decision,
+                    telegram_id=telegram_id,
+                    user_text=text,
+                    source=source,
+                    media_paths=media_paths,
+                    correlation_id=correlation_id,
+                )
+                _log.info(
+                    "tg.pipeline.route.delivered",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    status=ingest_outcome.status,
+                    target_wiki=ingest_outcome.target_wiki,
+                    created=ingest_outcome.created,
+                    run_id=ingest_outcome.run_id,
+                )
+                if ingest_outcome.status == "ok":
+                    await self._output.deliver(
+                        chat_id=chat_id,
+                        telegram_id=telegram_id,
+                        run_id=ingest_outcome.run_id or "",
+                        text=ingest_outcome.reply,
+                    )
+                else:
+                    await self._sender.send_message(chat_id, ingest_outcome.reply)
+                return
             await self._sender.send_message(chat_id, decision.notes)
             return
         # END_BLOCK_ROUTABLE_BRANCH
