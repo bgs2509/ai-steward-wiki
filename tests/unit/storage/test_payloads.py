@@ -39,6 +39,26 @@ def test_digest_payload_roundtrip():
     assert parsed.recurrence == _rec()
 
 
+def test_digest_wiki_scope_named_subset():
+    # aisw-269 — wiki_scope widened to 'all' | list[str] (non-empty).
+    p = DigestPayload(recurrence=_rec(), wiki_scope=["Health", "Money"])
+    assert p.wiki_scope == ["Health", "Money"]
+    again = parse_job_payload(p.model_dump(mode="json"))
+    assert isinstance(again, DigestPayload)
+    assert again.wiki_scope == ["Health", "Money"]
+    # 'all' still valid (no jobs.db migration; existing rows keep validating).
+    assert DigestPayload(recurrence=_rec(), wiki_scope="all").wiki_scope == "all"
+    assert (
+        parse_job_payload(
+            {"kind": "digest", "wiki_scope": "all", "recurrence": _rec().model_dump(mode="json")}
+        ).wiki_scope
+        == "all"
+    )
+    # empty list rejected.
+    with pytest.raises(ValidationError):
+        DigestPayload(recurrence=_rec(), wiki_scope=[])
+
+
 def test_digest_window_bounds():
     DigestPayload(recurrence=_rec(), window_hours=168)
     with pytest.raises(ValidationError):

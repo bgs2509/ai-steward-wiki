@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/storage/jobs/payloads.py
-# VERSION: 0.0.4
+# VERSION: 0.0.5
 # START_MODULE_CONTRACT
 #   PURPOSE: Pydantic v2 discriminated union for jobs.payload (D-002).
 #   SCOPE: Closed list of job kinds known at MVP. New kinds added in subsequent chunks.
@@ -11,7 +11,7 @@
 #
 # START_MODULE_MAP
 #   WikiRunPayload - one-shot Stage-1a/1b run against a Domain-WIKI
-#   DigestPayload - recurring digest job: wiki_scope, recurrence, window_hours, prompt_hint (aisw-oqq)
+#   DigestPayload - recurring digest job: wiki_scope ('all'|list[str]), recurrence, window_hours, prompt_hint (aisw-oqq; list shape aisw-269)
 #   CronUserPayload - user-defined cron (NL-scheduled)
 #   PurgePayload - retention purge job (D-034 / §10.4)
 #   ReminderPayload - one-shot reminder job: message + optional lead_time_min (aisw-kcz)
@@ -20,7 +20,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.4 - aisw-oqq: widen DigestPayload (wiki_scope/recurrence/window_hours/prompt_hint)
+#   LAST_CHANGE: v0.0.5 - aisw-269: widen DigestPayload.wiki_scope to 'all'|list[str] (named-subset digest; no jobs.db migration)
+#   PREVIOUS:    v0.0.4 - aisw-oqq: widen DigestPayload (wiki_scope/recurrence/window_hours/prompt_hint)
 #   PREVIOUS:    v0.0.3 - aisw-kcz: add ReminderPayload (kind='reminder_job') to the union
 #   PREVIOUS:    v0.0.2 - initial discriminated union for job payloads (D-002)
 # END_CHANGE_SUMMARY
@@ -57,7 +58,9 @@ class WikiRunPayload(_PayloadBase):
 
 class DigestPayload(_PayloadBase):
     kind: Literal["digest"] = "digest"
-    wiki_scope: Literal["all"] = "all"
+    # 'all' (every owner WIKI minus Inbox) or an explicit non-empty list of
+    # WIKI dir-stems (aisw-269; no jobs.db migration — 'all' stays valid).
+    wiki_scope: Literal["all"] | Annotated[list[str], Field(min_length=1)] = "all"
     recurrence: Recurrence
     window_hours: int = Field(default=24, ge=1, le=24 * 7)
     prompt_hint: str | None = None
