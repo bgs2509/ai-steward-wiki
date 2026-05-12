@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.10.0
+# VERSION: 0.11.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -20,6 +20,7 @@
 #          document mime router with size cap, L2 dedup and PII-safe logs.
 #   DEPENDS: ai_steward_wiki.classifier.schema (ClassifierResult, Intent,
 #            ClassifierError),
+#            ai_steward_wiki.inbox.hint_match (score_catalog, is_confident),
 #            ai_steward_wiki.inbox.idempotency.IdempotencyService,
 #            ai_steward_wiki.inbox.materialize.inbox_wiki_path,
 #            ai_steward_wiki.inbox.router (RouterDecision, RouterError, RouterIntent),
@@ -38,7 +39,7 @@
 #          (chunk 21), M-TG-DOCUMENT-FULL (chunk 22), M-TG-HANDLERS-WIRING
 #          (chunk 19), M-INBOX-ROUTE, M-SCHEDULER-FIRING, M-TG-TEXT (D-023 confirm
 #          loop), D-010, D-016, D-017, D-018, D-022, D-023, D-034, DEC-L3,
-#          DEC-TPC-1..6, aisw-zd9, aisw-e45, aisw-kcz
+#          DEC-TPC-1..6, aisw-zd9, aisw-e45, aisw-kcz, aisw-5sd
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -101,7 +102,16 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.10.0 - aisw-12t (Inbox-WIKI Phase-E.a): media staging root is now
+#   LAST_CHANGE: v0.11.0 - aisw-5sd (Inbox-WIKI Phase-E.b): '## Inbox hint' pre-router
+#                fast-path — DefaultPipeline gains an optional hint_catalog_resolver;
+#                a new HINT-FASTPATH block (between the reminder fast-path and the
+#                routable branch) scores the content against the sender's cached hint
+#                catalog and, on a confident single match (inbox.hint_match.is_confident),
+#                synthesises RouterDecision(ROUTE, target_wiki=<stem>) → the existing
+#                Phase-C confirm loop, skipping the heavy Sonnet Router run; miss /
+#                ambiguous / empty / disabled ⇒ falls through unchanged. Never routes
+#                silently — the user still confirms via the route-confirm keyboard.
+#   PREVIOUS:    v0.10.0 - aisw-12t (Inbox-WIKI Phase-E.a): media staging root is now
 #                per-sender — DefaultPipeline gains an optional wiki_root; on_voice /
 #                on_photo / the image-document branch resolve inbox_wiki_path(telegram_id)
 #                and pass it to VoiceHandler/PhotoIngestor.handle(inbox_root=…) so bytes
@@ -191,7 +201,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -207,6 +217,8 @@ from ai_steward_wiki.classifier.schema import (
     ClassifierResult,
     Intent,
 )
+from ai_steward_wiki.inbox.hint_match import MIN_SCORE as HINT_MIN_SCORE
+from ai_steward_wiki.inbox.hint_match import is_confident, score_catalog
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
 from ai_steward_wiki.inbox.materialize import inbox_wiki_path
 from ai_steward_wiki.inbox.route import route_action_from_payload, route_action_to_payload
@@ -692,6 +704,7 @@ class DefaultPipeline:
         time_parser: TimeParser | None = None,
         recurrence_parser: RecurrenceParser | None = None,
         owner_wikis_resolver: Callable[[int], Awaitable[Sequence[tuple[str, Path]]]] | None = None,
+        hint_catalog_resolver: Callable[[int], Awaitable[Mapping[str, str]]] | None = None,
         jobs_session_maker: async_sessionmaker[AsyncSession] | None = None,
         scheduler: AsyncIOScheduler | None = None,
         user_tz_lookup: Callable[[int], str | None] | None = None,
@@ -729,6 +742,10 @@ class DefaultPipeline:
         # aisw-269: owner→[(wiki_stem, path)] resolver (same shape firing uses);
         # None ⇒ named-subset WIKI selection degrades to wiki_scope='all'.
         self._owner_wikis_resolver = owner_wikis_resolver
+        # aisw-5sd (Phase-E.b): telegram_id → {wiki_stem: '## Inbox hint' text}.
+        # None ⇒ the pre-router hint fast-path is disabled (all routable intents
+        # go straight to the heavy Sonnet Router).
+        self._hint_catalog_resolver = hint_catalog_resolver
         self._jobs_session_maker = jobs_session_maker
         self._scheduler = scheduler
         self._user_tz_lookup = user_tz_lookup
@@ -861,6 +878,105 @@ class DefaultPipeline:
             )
             return
         # END_BLOCK_REMINDER_FASTPATH
+
+        # START_BLOCK_HINT_FASTPATH (aisw-5sd, Inbox-WIKI Phase-E.b)
+        # Before the ~10-30s Sonnet Router-Claude run: if the sender's cached
+        # '## Inbox hint' catalog points unambiguously at ONE domain WIKI for
+        # this content, synthesise a ROUTE decision and feed the existing
+        # Phase-C confirm loop (tech-spec §8.3.3 fast/heavy two-tier). Strictly
+        # conservative — precision over recall (NFR-2): anything that is not a
+        # single confident match falls through to the heavy router unchanged.
+        # Never routes silently — the user still confirms via the route-confirm
+        # keyboard, exactly as on the heavy-router path.
+        if (
+            result.intent in _ROUTABLE_INTENTS
+            and self._router is not None
+            and self._hint_catalog_resolver is not None
+            and self._librarian is not None
+            and self._output is not None
+        ):
+            catalog = await self._hint_catalog_resolver(telegram_id)
+            if not catalog:
+                _log.info(
+                    "tg.pipeline.hint_fastpath.miss",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    reason="empty_catalog",
+                    top_stem=None,
+                    top_score=0.0,
+                    margin=0.0,
+                )
+                _log.info(
+                    "tg.pipeline.hint_fastpath.fallthrough",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    reason="empty_catalog",
+                )
+            else:
+                # Match against the raw message text — distilled_payload is a
+                # structured dict (Stage-0 slots), not free text, so it is not a
+                # useful overlap signal here.
+                hint_match = score_catalog(text, catalog)
+                _log.info(
+                    "tg.pipeline.hint_fastpath.catalog",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    n_domains=len(catalog),
+                )
+                if is_confident(hint_match):
+                    decision = RouterDecision(
+                        intent=RouterIntent.ROUTE,
+                        target_wiki=hint_match.top_stem,
+                        notes="Похоже по ключевым словам из подсказки этой вики.",
+                        raw="",
+                        parsed_ok=True,
+                    )
+                    payload = route_action_to_payload(
+                        decision,
+                        user_text=text,
+                        source=source,
+                        media_paths=media_paths,
+                        correlation_id=correlation_id,
+                    )
+                    confirm_draft = PendingConfirmDraft(
+                        telegram_id=telegram_id,
+                        chat_id=chat_id,
+                        category="route_ingest",
+                        draft=payload,
+                        recap_text=build_route_recap(decision),
+                    )
+                    rec = await self._confirm.request_explicit(
+                        confirm_draft, keyboard_factory=build_route_confirm_keyboard
+                    )
+                    _log.info(
+                        "tg.pipeline.hint_fastpath.hit",
+                        correlation_id=correlation_id,
+                        telegram_id=telegram_id,
+                        target_wiki=hint_match.top_stem,
+                        score=hint_match.top_score,
+                        margin=hint_match.margin,
+                        pending_id=rec.pending_id,
+                        source=source,
+                    )
+                    return
+                _log.info(
+                    "tg.pipeline.hint_fastpath.miss",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    # >=MIN_SCORE but margin too small ⇒ ambiguous; otherwise the
+                    # top domain is simply too weak ⇒ no_match.
+                    reason="ambiguous" if hint_match.top_score >= HINT_MIN_SCORE else "no_match",
+                    top_stem=hint_match.top_stem,
+                    top_score=hint_match.top_score,
+                    margin=hint_match.margin,
+                )
+                _log.info(
+                    "tg.pipeline.hint_fastpath.fallthrough",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    reason="not_confident",
+                )
+        # END_BLOCK_HINT_FASTPATH
 
         # START_BLOCK_ROUTABLE_BRANCH (aisw-dsg, Inbox-WIKI Phase-A)
         if result.intent in _ROUTABLE_INTENTS and self._router is not None:

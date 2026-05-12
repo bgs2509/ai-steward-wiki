@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.5.3
+# VERSION: 0.5.4
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -12,15 +12,17 @@
 #          _install_signal_handlers, _build_classifier_backend,
 #          _ClassifierAdapter, _TimeParserAdapter, _RecurrenceParserAdapter,
 #          _on_job_missed, _WikiRunnerAdapter, _DigestRunnerAdapter,
-#          _resolve_owner_wikis_factory, _OutputDeliveryAdapter,
-#          _RouterAdapter, _render_raw_sidecar, _LibrarianAdapter.
+#          _resolve_owner_wikis_factory, make_hint_catalog_resolver,
+#          _OutputDeliveryAdapter, _RouterAdapter, _render_raw_sidecar,
+#          _LibrarianAdapter.
 #   DEPENDS: aiogram, apscheduler, alembic, structlog, sqlalchemy.async,
 #            ai_steward_wiki.{settings, logging_setup, tg.bot, tg.pipeline,
 #            tg.output, tg.voice, tg.photo, scheduler.core, scheduler.locks,
 #            scheduler.maintenance, scheduler.firing, inbox.materialize, inbox.router,
-#            inbox.route, inbox.staging, classifier.{backend,schema,stage0,time_parse,recurrence},
+#            inbox.route, inbox.staging, inbox.hint_cache,
+#            classifier.{backend,schema,stage0,time_parse,recurrence},
 #            wiki.{runner,acquire,lifecycle},
-#            storage.{jobs,audit,sessions}.engine, auth.{allowlist,users_toml}}
+#            storage.{jobs,audit,sessions}.engine, storage.sessions.users, auth.{allowlist,users_toml}}
 #   LINKS: M-FOUNDATION, M-STORAGE, M-AUTH-USERS, M-SCHEDULER, M-SCHEDULER-FIRING,
 #          M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-WIKI-LIFECYCLE,
 #          M-TG-OUTPUT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX,
@@ -30,7 +32,12 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.3 - aisw-12t (Inbox-WIKI Phase-E.a): per-user media staging —
+#   LAST_CHANGE: v0.5.4 - aisw-5sd (Inbox-WIKI Phase-E.b): wire the '## Inbox hint'
+#                fast-path — make_hint_catalog_resolver (telegram_id → {stem: hint_text}
+#                via InboxHintCacheRepo + get_or_refresh_hint per domain WIKI; surrogate
+#                user_id via storage.sessions.users.resolve_user_id) → DefaultPipeline
+#                hint_catalog_resolver=.
+#   PREVIOUS:    v0.5.3 - aisw-12t (Inbox-WIKI Phase-E.a): per-user media staging —
 #                VoiceHandler/PhotoIngestor built without a fixed inbox_root;
 #                DefaultPipeline(wiki_root=settings.wiki_root) so on_voice/on_photo
 #                stage under <wiki_root>/<telegram_id>/Inbox-WIKI/raw/media/_staging;
@@ -99,7 +106,7 @@ import asyncio
 import contextlib
 import os
 import signal
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -127,6 +134,7 @@ from ai_steward_wiki.classifier.recurrence import RecurrenceParseResult, parse_r
 from ai_steward_wiki.classifier.schema import ClassifierResult, Intent, TimeParseResult
 from ai_steward_wiki.classifier.stage0 import PromptCache, classify
 from ai_steward_wiki.classifier.time_parse import parse_time as _parse_time_fn
+from ai_steward_wiki.inbox.hint_cache import InboxHintCacheRepo, get_or_refresh_hint
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
 from ai_steward_wiki.inbox.materialize import ensure_inbox_wiki
 from ai_steward_wiki.inbox.route import (
@@ -146,6 +154,7 @@ from ai_steward_wiki.scheduler.locks import WikiLockManager
 from ai_steward_wiki.scheduler.maintenance import register_all_retention_jobs
 from ai_steward_wiki.settings import Settings, get_settings
 from ai_steward_wiki.storage.audit.engine import build_engine, build_sessionmaker
+from ai_steward_wiki.storage.sessions.users import resolve_user_id
 from ai_steward_wiki.tg.bot import AiogramSender, TgSender, build_bot, build_dispatcher
 from ai_steward_wiki.tg.confirm import ConfirmationService
 from ai_steward_wiki.tg.output import deliver_output
@@ -461,6 +470,33 @@ def _resolve_owner_wikis_factory(
                 continue
             out.append((entry.name, entry))
         return out
+
+    return _resolve
+
+
+def make_hint_catalog_resolver(
+    *,
+    hint_repo: InboxHintCacheRepo,
+    owner_wikis_resolver: Callable[[int], Awaitable[Sequence[tuple[str, Path]]]],
+    surrogate_id_of: Callable[[int], Awaitable[int | None]],
+) -> Callable[[int], Awaitable[dict[str, str]]]:
+    """telegram_id → {wiki_stem: hint_text} from each domain WIKI's cached '## Inbox hint' (aisw-5sd).
+
+    Reuses inbox.hint_cache.get_or_refresh_hint per domain (stat→cache-hit, so a hot
+    message does zero filesystem reads). Empty dict if the sender has no users row yet
+    or no domain WIKIs — the fast-path then just falls through to the heavy router.
+    """
+
+    async def _resolve(telegram_id: int) -> dict[str, str]:
+        uid = await surrogate_id_of(telegram_id)
+        if uid is None:
+            return {}
+        catalog: dict[str, str] = {}
+        for stem, dir_path in await owner_wikis_resolver(telegram_id):
+            hint = await get_or_refresh_hint(hint_repo, uid, dir_path / "CLAUDE.md")
+            if hint:
+                catalog[stem] = hint
+        return catalog
 
     return _resolve
 
@@ -1073,6 +1109,11 @@ async def _amain() -> None:
     # END_BLOCK_MEDIA_PIPELINE_WIRING
 
     streaming_delivery = DefaultStreamingDelivery(sender=sender)
+    hint_catalog_resolver = make_hint_catalog_resolver(
+        hint_repo=InboxHintCacheRepo(sessions_maker),
+        owner_wikis_resolver=owner_wikis_resolver,
+        surrogate_id_of=lambda tid: resolve_user_id(sessions_maker, tid),
+    )
     pipeline = DefaultPipeline(
         sender=sender,
         idempotency=IdempotencyService(audit_maker),
@@ -1090,6 +1131,7 @@ async def _amain() -> None:
         time_parser=time_parser_adapter,
         recurrence_parser=recurrence_parser_adapter,
         owner_wikis_resolver=owner_wikis_resolver,
+        hint_catalog_resolver=hint_catalog_resolver,
         jobs_session_maker=jobs_maker,
         scheduler=scheduler,
         user_tz_lookup=_user_tz_lookup,

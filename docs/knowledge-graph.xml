@@ -115,6 +115,7 @@
         <type-FsmState PURPOSE="aiogram FSM persistence"/>
         <fn-build_engine PURPOSE="Create AsyncEngine with PRAGMAs applied"/>
         <fn-build_sessionmaker PURPOSE="async_sessionmaker bound to engine"/>
+        <fn-resolve_user_id PURPOSE="telegram_id → users.user_id surrogate, or None (D-042)"/>
       </annotations>
     </M-STORAGE-SESSIONS>
 
@@ -290,8 +291,8 @@
     </M-WIKI-LIFECYCLE>
 
     <M-INBOX NAME="Inbox-WIKI materialise + hint cache" TYPE="RUNTIME" STATUS="done">
-      <purpose>Per-user Inbox-WIKI/ first-contact materialise, "## Inbox hint" Markdown parser + sessions.inbox_hint_cache repo (stat→cache-hit hot path), media staging+promotion for voice/photo ingest (D-004, D-016, D-022).</purpose>
-      <path>src/ai_steward_wiki/inbox/__init__.py, src/ai_steward_wiki/inbox/materialize.py, src/ai_steward_wiki/inbox/parser.py, src/ai_steward_wiki/inbox/hint_cache.py, src/ai_steward_wiki/inbox/staging.py</path>
+      <purpose>Per-user Inbox-WIKI/ first-contact materialise, "## Inbox hint" Markdown parser + sessions.inbox_hint_cache repo (stat→cache-hit hot path), deterministic hint-catalog token-overlap scorer for the pre-router fast-path, media staging+promotion for voice/photo ingest (D-004, D-016, D-022).</purpose>
+      <path>src/ai_steward_wiki/inbox/__init__.py, src/ai_steward_wiki/inbox/materialize.py, src/ai_steward_wiki/inbox/parser.py, src/ai_steward_wiki/inbox/hint_cache.py, src/ai_steward_wiki/inbox/hint_match.py, src/ai_steward_wiki/inbox/staging.py</path>
       <depends>M-STORAGE-SESSIONS</depends>
       <verification-ref>V-M-INBOX</verification-ref>
       <annotations>
@@ -299,6 +300,9 @@
         <fn-ensure_inbox_wiki PURPOSE="idempotent first-contact materialise; returns Path to Inbox-WIKI dir"/>
         <fn-extract_inbox_hint PURPOSE="parse CLAUDE.md text, return trimmed '## Inbox hint' body or None"/>
         <fn-get_or_refresh_hint PURPOSE="hot-path helper: stat→cache-hit on (size,mtime) else read+sha256"/>
+        <fn-score_catalog PURPOSE="token-overlap count of message vs each domain's hint (+stem name); ranked HintMatch (aisw-5sd)"/>
+        <fn-is_confident PURPOSE="True iff one domain ≥MIN_SCORE matched keywords AND ≥MIN_MARGIN lead over #2 — fires the router-bypass (aisw-5sd)"/>
+        <type-HintMatch PURPOSE="frozen scorer result: ranked ((stem,score),…), top_stem, top_score, margin"/>
         <fn-stage_media PURPOSE="atomically write bytes to _staging/&lt;run_id&gt;_&lt;sha8&gt;.&lt;ext&gt;"/>
         <fn-promote_path_to_raw PURPOSE="atomic move staging→raw/media/&lt;ISO8601&gt;_&lt;sha8&gt;.&lt;ext&gt; (re-hashes)"/>
         <fn-sweep_staging PURPOSE="delete staging files older than ttl_s in one inbox_root; returns count (D-022)"/>
@@ -430,7 +434,7 @@
     </M-TG-PHOTO>
 
     <M-TG-PIPELINE-CLASSIFIER NAME="Ingest pipeline / classify→run→deliver" TYPE="RUNTIME" STATUS="done">
-      <purpose>DefaultPipeline coordinator over already-built ingest blocks — L1/L2 dedup, Stage-0 classify → Stage-1 run → deliver_output; voice transcript path; photo→vision via media_paths; document mime router (PDF text extract, size cap); Inbox-WIKI routing: a ROUTE/CREATE_WIKI RouterDecision is proposed via an inline-button route confirm (persisted as a route_ingest pending row) and the Stage-1b move+ingest runs in on_confirm_callback on "confirmed" (Phase-C, aisw-e45); a Stage-0 intent=reminder fast-path (BEFORE the Stage-1a router) parses NL time (prefer_future), proposes a one-shot reminder via the same inline-button confirm and on "confirmed" calls scheduler.firing.create_reminder_job — recurring-digest phrasing answered with a ru "not yet" line (Phase-D.a, aisw-kcz); Russian safe-fallback acks (chunk 20, D-022, D-023).</purpose>
+      <purpose>DefaultPipeline coordinator over already-built ingest blocks — L1/L2 dedup, Stage-0 classify → Stage-1 run → deliver_output; voice transcript path; photo→vision via media_paths; document mime router (PDF text extract, size cap); Inbox-WIKI routing: a ROUTE/CREATE_WIKI RouterDecision is proposed via an inline-button route confirm (persisted as a route_ingest pending row) and the Stage-1b move+ingest runs in on_confirm_callback on "confirmed" (Phase-C, aisw-e45); a Stage-0 intent=reminder fast-path (BEFORE the Stage-1a router) parses NL time (prefer_future), proposes a one-shot reminder via the same inline-button confirm and on "confirmed" calls scheduler.firing.create_reminder_job — recurring-digest phrasing answered with a ru "not yet" line (Phase-D.a, aisw-kcz); a '## Inbox hint' fast-path (also BEFORE the Stage-1a router, when a hint_catalog_resolver is wired) scores the message against the sender's cached hint catalog and on a confident single match (inbox.hint_match.is_confident) synthesises a RouterDecision(ROUTE) → the same route_ingest confirm loop, skipping the heavy Sonnet Router; miss/ambiguous/empty/disabled ⇒ falls through unchanged (Phase-E.b, aisw-5sd); Russian safe-fallback acks (chunk 20, D-022, D-023).</purpose>
       <path>src/ai_steward_wiki/tg/pipeline.py</path>
       <depends>M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-TG-TEXT, M-INGEST-IDEM, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-SCHEDULER-FIRING</depends>
       <verification-ref>V-M-TG-PIPELINE-CLASSIFIER</verification-ref>

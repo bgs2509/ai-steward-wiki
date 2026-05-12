@@ -169,3 +169,12 @@ async def test_repo_upsert_overwrites(session_maker, tmp_path) -> None:
     assert row is not None
     assert row.hint_text == "v2"
     assert row.size_bytes == 20
+
+
+async def test_resolve_user_id_known_and_unknown(session_maker) -> None:
+    # The fixture seeds exactly one user with telegram_id=1001.
+    from ai_steward_wiki.storage.sessions.users import resolve_user_id
+
+    expected = await _user_id(session_maker)
+    assert await resolve_user_id(session_maker, 1001) == expected
+    assert await resolve_user_id(session_maker, 999_999) is None
