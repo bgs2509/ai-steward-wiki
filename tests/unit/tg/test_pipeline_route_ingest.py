@@ -1,4 +1,11 @@
-"""Unit tests for the Stage-1b librarian dispatch in DefaultPipeline (aisw-zd9)."""
+"""Unit tests for the routable branch in DefaultPipeline — non-confirm cases (aisw-zd9).
+
+Phase-C (aisw-e45) moved the actual Stage-1b ingest behind a user confirm: the
+confirm-request behaviour is covered by ``test_pipeline_route_confirm.py`` and the
+confirm-callback → ingest behaviour by ``test_pipeline_confirm_callback.py``. What
+remains here: the routable branches that still reply inline (CLARIFY/REJECT) or fall
+through to the Phase-A notes-echo (no librarian wired), plus the router-dispatch logs.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +15,7 @@ import pytest
 
 from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
 from ai_steward_wiki.inbox.router import RouterDecision, RouterIntent
-from ai_steward_wiki.tg.pipeline import DefaultPipeline, IngestOutcome
+from ai_steward_wiki.tg.pipeline import DefaultPipeline
 from tests.unit.tg.conftest import FakeSender
 
 
@@ -53,18 +60,9 @@ def _router(
     return rt
 
 
-def _librarian(outcome: IngestOutcome | None = None) -> MagicMock:
+def _librarian() -> MagicMock:
     lib = MagicMock()
-    lib.ingest = AsyncMock(
-        return_value=outcome
-        or IngestOutcome(
-            status="ok",
-            reply="Положу в Travel-WIKI.\n\nЗаписал.",
-            run_id="ing-1",
-            target_wiki="Travel-WIKI",
-            created=False,
-        )
-    )
+    lib.ingest = AsyncMock(return_value=None)
     return lib
 
 
@@ -107,70 +105,6 @@ def _pipe(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("intent", [RouterIntent.ROUTE, RouterIntent.CREATE_WIKI])
-async def test_routable_decision_invokes_librarian_and_delivers_on_ok(intent: RouterIntent) -> None:
-    sender = FakeSender()
-    router = _router(intent)
-    lib = _librarian()
-    pipe, output, runner = _pipe(sender=sender, router=router, librarian=lib)
-
-    await pipe.on_text(telegram_id=42, chat_id=10, update_id=5, text="вот авиабилет")
-
-    lib.ingest.assert_awaited_once()
-    kw = lib.ingest.await_args.kwargs
-    assert kw["telegram_id"] == 42
-    assert kw["user_text"] == "вот авиабилет"
-    assert kw["source"] == "text"
-    assert kw["correlation_id"] == "tg-5-42"
-    assert lib.ingest.await_args.args[0].intent is intent
-    output.deliver.assert_awaited_once()
-    assert output.deliver.await_args.kwargs["text"] == "Положу в Travel-WIKI.\n\nЗаписал."
-    assert output.deliver.await_args.kwargs["run_id"] == "ing-1"
-    runner.run.assert_not_awaited()
-    assert sender.sends == []  # delivery via output adapter
-
-
-@pytest.mark.asyncio
-async def test_rejected_outcome_sends_message_not_deliver() -> None:
-    sender = FakeSender()
-    lib = _librarian(
-        IngestOutcome(
-            status="rejected",
-            reply="Положу в Travel-WIKI.\n\nЛимит.",
-            run_id=None,
-            target_wiki=None,
-            created=False,
-        )
-    )
-    pipe, output, _ = _pipe(sender=sender, router=_router(), librarian=lib)
-
-    await pipe.on_text(telegram_id=1, chat_id=10, update_id=2, text="x")
-
-    output.deliver.assert_not_awaited()
-    assert sender.sends[0]["text"] == "Положу в Travel-WIKI.\n\nЛимит."
-
-
-@pytest.mark.asyncio
-async def test_run_failed_outcome_sends_message() -> None:
-    sender = FakeSender()
-    lib = _librarian(
-        IngestOutcome(
-            status="run_failed",
-            reply="Положу в Travel-WIKI.\n\nПозже.",
-            run_id="ing-2",
-            target_wiki="Travel-WIKI",
-            created=True,
-        )
-    )
-    pipe, output, _ = _pipe(sender=sender, router=_router(), librarian=lib)
-
-    await pipe.on_text(telegram_id=1, chat_id=10, update_id=2, text="x")
-
-    output.deliver.assert_not_awaited()
-    assert sender.sends[0]["text"] == "Положу в Travel-WIKI.\n\nПозже."
-
-
-@pytest.mark.asyncio
 async def test_clarify_decision_does_not_invoke_librarian() -> None:
     sender = FakeSender()
     router = _router(RouterIntent.CLARIFY, None)
@@ -205,17 +139,13 @@ async def test_no_librarian_falls_through_to_notes_echo() -> None:
 
 
 @pytest.mark.asyncio
-async def test_route_ingest_log_markers(capsys: pytest.CaptureFixture[str]) -> None:
+async def test_router_dispatch_log_markers(capsys: pytest.CaptureFixture[str]) -> None:
     sender = FakeSender()
-    pipe, _, _ = _pipe(sender=sender, router=_router(RouterIntent.ROUTE), librarian=_librarian())
+    # No librarian → notes-echo path, but the router-dispatch logs still fire.
+    pipe, _, _ = _pipe(sender=sender, router=_router(RouterIntent.ROUTE), librarian=None)
 
     await pipe.on_text(telegram_id=7, chat_id=10, update_id=2, text="hi")
 
     out = capsys.readouterr().out
-    for marker in (
-        "tg.pipeline.router.dispatched",
-        "tg.pipeline.router.decided",
-        "tg.pipeline.route.ingest_dispatched",
-        "tg.pipeline.route.delivered",
-    ):
+    for marker in ("tg.pipeline.router.dispatched", "tg.pipeline.router.decided"):
         assert marker in out, f"missing {marker} in:\n{out}"

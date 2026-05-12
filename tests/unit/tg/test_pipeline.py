@@ -79,6 +79,9 @@ def _make_output() -> MagicMock:
 def _make_confirm(status: str | None = "confirmed") -> MagicMock:
     svc = MagicMock()
     svc.resolve = AsyncMock(return_value=status)
+    # Phase-C (aisw-e45): on_confirm_callback reads the pending row first to
+    # decide route_ingest vs legacy dispatch; default → legacy (None row).
+    svc.get_pending = AsyncMock(return_value=None)
     return svc
 
 

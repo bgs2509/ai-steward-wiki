@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.5.0
+# VERSION: 0.6.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -22,15 +22,18 @@
 #            ClassifierError),
 #            ai_steward_wiki.inbox.idempotency.IdempotencyService,
 #            ai_steward_wiki.inbox.router (RouterDecision, RouterError, RouterIntent),
+#            ai_steward_wiki.inbox.route (route_action_to_payload, route_action_from_payload),
 #            ai_steward_wiki.inbox.staging.MediaRef,
 #            ai_steward_wiki.ops.pii.PIIRedactor,
 #            ai_steward_wiki.tg.voice.VoiceHandler (optional),
 #            ai_steward_wiki.tg.photo.PhotoIngestor (optional),
-#            ai_steward_wiki.tg.confirm.ConfirmationService,
+#            ai_steward_wiki.tg.confirm (ConfirmationService, PendingConfirmDraft,
+#            build_route_confirm_keyboard),
 #            ai_steward_wiki.tg.bot.TgSender, structlog, pypdf
 #   LINKS: M-TG-PIPELINE-CLASSIFIER (chunk 20), M-TG-PIPELINE-STREAMING
 #          (chunk 21), M-TG-DOCUMENT-FULL (chunk 22), M-TG-HANDLERS-WIRING
-#          (chunk 19), D-016, D-017, D-018, D-022, D-034, DEC-L3, DEC-TPC-1..6
+#          (chunk 19), M-INBOX-ROUTE, M-TG-TEXT (D-023 confirm loop), D-016, D-017,
+#          D-018, D-022, D-023, D-034, DEC-L3, DEC-TPC-1..6, aisw-zd9, aisw-e45
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -51,6 +54,12 @@
 #   PDF_MAX_EXTRACT_CHARS - truncate point for pypdf-extracted text
 #   PHOTO_PROMPT_RU - synthetic Stage-1 prompt for a caption-less image (D-022)
 #   PHOTO_CAPTION_PROMPT_RU - Stage-1 prompt template for an image WITH caption
+#   ROUTE_CONFIRM_RECAP_ROUTE_RU - recap template for a ROUTE confirm (Phase-C)
+#   ROUTE_CONFIRM_RECAP_CREATE_RU - recap template for a CREATE_WIKI confirm (Phase-C)
+#   ROUTE_CONFIRM_ACK_RU - short ack sent on confirm before the Stage-1b ingest
+#   ROUTE_CONFIRM_CANCELLED_RU - reply on cancel/correct of a route confirm
+#   ROUTE_CONFIRM_STALE_RU - reply when a route confirm was already resolved/expired
+#   build_route_recap - build the ru recap text for a RouterDecision route confirm
 #   SUPPORTED_IMAGE_MIMES - frozenset of mimes routed to PhotoIngestor
 #   ConfirmKeyboardAction - Literal[confirm|correct|cancel]
 #   Classifier - Protocol (Stage-0 wrapper, narrow API)
@@ -67,7 +76,20 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.0 - aisw-zd9 (Inbox-WIKI Phase-B): Librarian Protocol +
+#   LAST_CHANGE: v0.6.0 - aisw-e45 (Inbox-WIKI Phase-C): a routable ROUTE/CREATE_WIKI
+#                decision no longer ingests immediately — _run_text_pipeline builds a
+#                route_ingest confirm draft (RouterDecision + user_text + source +
+#                media_paths + correlation_id, via inbox.route.route_action_to_payload)
+#                and proposes it through ConfirmationService.request_explicit with a
+#                2-button keyboard (tg.confirm.build_route_confirm_keyboard);
+#                on_confirm_callback dispatches route_ingest rows to _handle_route_confirm
+#                which resolves the row and, on 'confirmed', replays the decision through
+#                Librarian.ingest (the Phase-B path) + delivers the reply, else sends a ru
+#                cancelled/stale notice (the staged raw stays in Inbox per D-022). New
+#                anchors tg.pipeline.route.confirm_requested|confirm_executed|
+#                confirm_cancelled|confirm_stale and tg.pipeline.confirm.route_dispatched;
+#                Phase-B's tg.pipeline.route.ingest_dispatched|delivered are removed.
+#   PREVIOUS:    v0.5.0 - aisw-zd9 (Inbox-WIKI Phase-B): Librarian Protocol +
 #                IngestOutcome; DefaultPipeline gains an optional `librarian`;
 #                in the routable branch a ROUTE/CREATE_WIKI decision (with a
 #                wired librarian + output) is executed via librarian.ingest()
@@ -118,6 +140,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -132,10 +155,15 @@ from ai_steward_wiki.classifier.schema import (
     Intent,
 )
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
+from ai_steward_wiki.inbox.route import route_action_from_payload, route_action_to_payload
 from ai_steward_wiki.inbox.router import RouterDecision, RouterError, RouterIntent
 from ai_steward_wiki.ops.pii import PIIRedactor
 from ai_steward_wiki.tg.bot import TgSender
-from ai_steward_wiki.tg.confirm import ConfirmationService
+from ai_steward_wiki.tg.confirm import (
+    ConfirmationService,
+    PendingConfirmDraft,
+    build_route_confirm_keyboard,
+)
 from ai_steward_wiki.tg.photo import PhotoIngestor
 from ai_steward_wiki.tg.voice import VoiceHandler, VoiceUnavailableError
 from ai_steward_wiki.wiki.runner import WikiRunnerError
@@ -156,6 +184,11 @@ __all__ = [
     "PDF_MAX_EXTRACT_CHARS",
     "PHOTO_CAPTION_PROMPT_RU",
     "PHOTO_PROMPT_RU",
+    "ROUTE_CONFIRM_ACK_RU",
+    "ROUTE_CONFIRM_CANCELLED_RU",
+    "ROUTE_CONFIRM_RECAP_CREATE_RU",
+    "ROUTE_CONFIRM_RECAP_ROUTE_RU",
+    "ROUTE_CONFIRM_STALE_RU",
     "SUPPORTED_IMAGE_MIMES",
     "Classifier",
     "ConfirmKeyboardAction",
@@ -169,6 +202,7 @@ __all__ = [
     "StreamingDelivery",
     "WikiRunOutcome",
     "WikiRunner",
+    "build_route_recap",
 ]
 
 STREAMING_PLACEHOLDER_RU = "\u23f3 Думаю\u2026"
@@ -211,12 +245,33 @@ PHOTO_CAPTION_PROMPT_RU = (
 
 ConfirmKeyboardAction = Literal["confirm", "correct", "cancel"]
 
+# Inbox-WIKI route confirm loop (aisw-e45, Phase-C). A ROUTE/CREATE_WIKI decision
+# is proposed via inline buttons; the move+ingest runs in on_confirm_callback.
+ROUTE_CONFIRM_RECAP_ROUTE_RU = "Положу это в вики «{target}».\n\n{notes}\n\nПодтверждаешь?"  # noqa: RUF001
+ROUTE_CONFIRM_RECAP_CREATE_RU = (
+    "Заведу новую вики «{target}» и положу это туда.\n\n{notes}\n\nПодтверждаешь?"  # noqa: RUF001
+)
+ROUTE_CONFIRM_ACK_RU = "\U0001f4dd Записываю в вики…"
+ROUTE_CONFIRM_CANCELLED_RU = "Отменено. Файл остался в Inbox — пришли заново с уточнением."  # noqa: RUF001
+ROUTE_CONFIRM_STALE_RU = "Время на подтверждение истекло — пришли заново."
+
 
 def _with_caption(text: str, caption: str | None) -> str:
     """Prepend a user caption (if any) as context for the Stage-1 prompt."""
     if not caption:
         return text
     return f"Подпись пользователя: {caption}\n\n{text}".strip()
+
+
+def build_route_recap(decision: RouterDecision) -> str:
+    """Russian recap text for an Inbox-WIKI route confirm (Phase-C, aisw-e45)."""
+    target = decision.target_wiki or "?"
+    tmpl = (
+        ROUTE_CONFIRM_RECAP_CREATE_RU
+        if decision.intent is RouterIntent.CREATE_WIKI
+        else ROUTE_CONFIRM_RECAP_ROUTE_RU
+    )
+    return tmpl.format(target=target, notes=decision.notes)
 
 
 # Stage-0 intents that mean "route this somewhere" → handled by the Inbox-WIKI
@@ -585,47 +640,42 @@ class DefaultPipeline:
                 target_wiki=decision.target_wiki,
                 parsed_ok=decision.parsed_ok,
             )
-            # Phase-B (aisw-zd9): ROUTE/CREATE_WIKI → resolve target WIKI + move
-            # raw + Stage-1b ingest via the Librarian; CLARIFY/REJECT (and the
-            # no-librarian case) keep Phase-A's notes-echo behaviour.
+            # Phase-C (aisw-e45): ROUTE/CREATE_WIKI → propose the move+ingest via
+            # an explicit inline-button confirm (persisted as a route_ingest
+            # pending row); the actual Stage-1b ingest runs in on_confirm_callback.
+            # CLARIFY/REJECT (and the no-librarian / no-output case) keep Phase-A's
+            # notes-echo behaviour.
             if (
                 decision.intent in (RouterIntent.ROUTE, RouterIntent.CREATE_WIKI)
                 and self._librarian is not None
                 and self._output is not None
             ):
-                _log.info(
-                    "tg.pipeline.route.ingest_dispatched",
-                    correlation_id=correlation_id,
-                    telegram_id=telegram_id,
-                    intent=decision.intent.value,
-                    source=source,
-                )
-                ingest_outcome = await self._librarian.ingest(
+                payload = route_action_to_payload(
                     decision,
-                    telegram_id=telegram_id,
                     user_text=text,
                     source=source,
                     media_paths=media_paths,
                     correlation_id=correlation_id,
                 )
+                confirm_draft = PendingConfirmDraft(
+                    telegram_id=telegram_id,
+                    chat_id=chat_id,
+                    category="route_ingest",
+                    draft=payload,
+                    recap_text=build_route_recap(decision),
+                )
+                rec = await self._confirm.request_explicit(
+                    confirm_draft, keyboard_factory=build_route_confirm_keyboard
+                )
                 _log.info(
-                    "tg.pipeline.route.delivered",
+                    "tg.pipeline.route.confirm_requested",
                     correlation_id=correlation_id,
                     telegram_id=telegram_id,
-                    status=ingest_outcome.status,
-                    target_wiki=ingest_outcome.target_wiki,
-                    created=ingest_outcome.created,
-                    run_id=ingest_outcome.run_id,
+                    pending_id=rec.pending_id,
+                    intent=decision.intent.value,
+                    target_wiki=decision.target_wiki,
+                    source=source,
                 )
-                if ingest_outcome.status == "ok":
-                    await self._output.deliver(
-                        chat_id=chat_id,
-                        telegram_id=telegram_id,
-                        run_id=ingest_outcome.run_id or "",
-                        text=ingest_outcome.reply,
-                    )
-                else:
-                    await self._sender.send_message(chat_id, ingest_outcome.reply)
                 return
             await self._sender.send_message(chat_id, decision.notes)
             return
@@ -1130,15 +1180,107 @@ class DefaultPipeline:
         pending_id: int,
         action: ConfirmKeyboardAction,
     ) -> None:
+        pending = await self._confirm.get_pending(pending_id)
+        if pending is None or getattr(pending, "category", None) != "route_ingest":
+            status = await self._confirm.resolve(telegram_id, pending_id, action)
+            _log.info(
+                "tg.pipeline.confirm",
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                pending_id=pending_id,
+                action=action,
+                status=status,
+            )
+            return
+        await self._handle_route_confirm(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            pending_id=pending_id,
+            action=action,
+            draft_json=pending.draft_json,
+        )
+
+    # START_BLOCK_ROUTE_CONFIRM (aisw-e45, Inbox-WIKI Phase-C)
+    async def _handle_route_confirm(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        pending_id: int,
+        action: ConfirmKeyboardAction,
+        draft_json: str | None,
+    ) -> None:
+        """Resolve a route_ingest pending row and execute / cancel / report-stale.
+
+        On 'confirmed' the staged RouterDecision is replayed through
+        Librarian.ingest (the same path Phase-B ran inline) and the reply is
+        delivered like Phase-B; on 'cancelled'/'corrected' the staged raw is left
+        in Inbox (D-022) and a ru notice is sent; on a race-lost resolve (None) a
+        ru 'stale' notice is sent. No ingest happens unless status == 'confirmed'.
+        """
         status = await self._confirm.resolve(telegram_id, pending_id, action)
         _log.info(
-            "tg.pipeline.confirm",
+            "tg.pipeline.confirm.route_dispatched",
             telegram_id=telegram_id,
             chat_id=chat_id,
             pending_id=pending_id,
             action=action,
             status=status,
         )
+        if status is None:
+            await self._sender.send_message(chat_id, ROUTE_CONFIRM_STALE_RU)
+            _log.info(
+                "tg.pipeline.route.confirm_stale",
+                telegram_id=telegram_id,
+                pending_id=pending_id,
+            )
+            return
+        if status != "confirmed":  # cancelled / corrected
+            await self._sender.send_message(chat_id, ROUTE_CONFIRM_CANCELLED_RU)
+            _log.info(
+                "tg.pipeline.route.confirm_cancelled",
+                telegram_id=telegram_id,
+                pending_id=pending_id,
+                status=status,
+            )
+            return
+
+        action_obj = route_action_from_payload(json.loads(draft_json or "{}"))
+        correlation_id = action_obj.correlation_id or f"confirm-{pending_id}-{telegram_id}"
+        await self._sender.send_message(chat_id, ROUTE_CONFIRM_ACK_RU)
+        # route_ingest rows are only created when a librarian + output are wired.
+        assert self._librarian is not None
+        assert self._output is not None
+        media = [Path(p) for p in action_obj.media_paths]
+        outcome = await self._librarian.ingest(
+            action_obj.decision,
+            telegram_id=telegram_id,
+            user_text=action_obj.user_text,
+            source=action_obj.source,
+            media_paths=media or None,
+            correlation_id=correlation_id,
+        )
+        _log.info(
+            "tg.pipeline.route.confirm_executed",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=pending_id,
+            status=outcome.status,
+            target_wiki=outcome.target_wiki,
+            created=outcome.created,
+            run_id=outcome.run_id,
+        )
+        if outcome.status == "ok":
+            await self._output.deliver(
+                chat_id=chat_id,
+                telegram_id=telegram_id,
+                run_id=outcome.run_id or "",
+                text=outcome.reply,
+            )
+        else:
+            await self._sender.send_message(chat_id, outcome.reply)
+
+    # END_BLOCK_ROUTE_CONFIRM
 
 
 class DefaultStreamingDelivery:
