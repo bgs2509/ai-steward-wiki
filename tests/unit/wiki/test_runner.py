@@ -345,3 +345,36 @@ def test_assemble_prompt_without_per_wiki_file(prompts_dir: Path, tmp_path: Path
     )
     text = target.read_text(encoding="utf-8")
     assert "Per-WIKI" not in text
+
+
+async def test_run_wiki_session_extra_add_dirs_after_primary(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    """aisw-oqq: extra_add_dirs appear after the primary --add-dir, before media dirs."""
+    spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
+    wiki = tmp_path / "Health-WIKI"
+    finance = tmp_path / "Finance-WIKI"
+    home = tmp_path / "Home-WIKI"
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+    await run_wiki_session(
+        wiki_id="Health-WIKI",
+        wiki_path=wiki,
+        base_prompt_path=prompts_dir / "wiki.md",
+        overlay_prompt_path=prompts_dir / "domain-default.md",
+        run_id="run-extra",
+        correlation_id="corr-extra",
+        runtime_dir=tmp_path / "runtime",
+        acquirer=fake_acquirer,
+        spawner=spawner,
+        config=_cfg(cfg_dir),
+        extra_add_dirs=[finance, home],
+    )
+    argv = spawner.calls[0]["argv"]
+    add_idx = argv.index("--add-dir")
+    assert argv[add_idx + 1] == str(wiki)
+    assert str(finance) in argv
+    assert str(home) in argv
+    assert argv.index(str(finance)) > add_idx + 1

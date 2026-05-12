@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.8
+# VERSION: 0.0.9
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -24,12 +24,15 @@
 #   AsyncioSpawner - default Spawner using asyncio.create_subprocess_exec
 #   assemble_prompt - concat base+overlay (+ per-WIKI CLAUDE.md if present) → atomic write
 #   WikiRunResult - dataclass result of one run (run_id, exit_code, events, …)
-#   run_wiki_session - public entrypoint orchestrating one Stage-1a/1b run
+#   run_wiki_session - public entrypoint orchestrating one Stage-1a/1b run; extra_add_dirs adds read-only --add-dir targets (digest multi-WIKI, aisw-oqq)
 #   aggregate_text - extract assistant text from WikiRunResult.events
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.8 - aisw-t0n: run_wiki_session accepts an optional
+#   LAST_CHANGE: v0.0.9 - aisw-oqq: run_wiki_session/_build_argv accept extra_add_dirs
+#                — additional read-only --add-dir targets, placed before media_dirs
+#                (digest job reads several Domain-WIKIs in one run).
+#   PREVIOUS:    v0.0.8 - aisw-t0n: run_wiki_session accepts an optional
 #                timeout_s overriding config.timeout_s for this call (D-022:
 #                ~30s photo vision vs ~300s text turn).
 #   PREVIOUS:    v0.0.7 - aisw-m2m (media chunk 2): run_wiki_session accepts
@@ -273,10 +276,12 @@ def _build_argv(
     allowed_tools: list[str] | None,
     disallowed_tools: list[str] | None,
     media_dirs: list[Path] | None = None,
+    extra_add_dirs: list[Path] | None = None,
 ) -> list[str]:
     # claude CLI 2.1.139 has no --image flag; local media is exposed to the
     # Read tool by granting --add-dir on the staged file's directory (D-022).
-    extra_dirs = [str(d) for d in (media_dirs or [])]
+    # extra_add_dirs: additional read-only --add-dir targets (digest multi-WIKI, aisw-oqq).
+    extra_dirs = [str(d) for d in (extra_add_dirs or [])] + [str(d) for d in (media_dirs or [])]
     argv: list[str] = [
         binary,
         "-p",
@@ -344,6 +349,7 @@ async def run_wiki_session(
     on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
     user_input: str = "",
     media_paths: list[Path] | None = None,
+    extra_add_dirs: list[Path] | None = None,
     timeout_s: float | None = None,
 ) -> WikiRunResult:
     """Run one Stage-1a/1b Sonnet session against `wiki_path`.
@@ -391,6 +397,7 @@ async def run_wiki_session(
         allowed_tools=cfg.allowed_tools,
         disallowed_tools=cfg.disallowed_tools,
         media_dirs=media_dirs,
+        extra_add_dirs=extra_add_dirs,
     )
 
     _log.info(
