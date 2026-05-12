@@ -1,5 +1,5 @@
 # FILE: tests/integration/conftest.py
-# VERSION: 0.1.0
+# VERSION: 0.2.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Shared fixtures for tests/integration/* — spin DefaultPipeline
 #            against real Claude CLI classifier with fake runner/output/voice/
@@ -22,7 +22,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - chunk 23 M-INTEGRATION-E2E: initial conftest with
+#   LAST_CHANGE: v0.2.0 - aisw-dsg (Inbox-WIKI Phase-A): add wiki_root_e2e,
+#                real_router_adapter (real _RouterAdapter over the Claude CLI),
+#                pipeline_with_router fixtures for the Inbox-WIKI router scenario.
+#   PREVIOUS:    v0.1.0 - chunk 23 M-INTEGRATION-E2E: initial conftest with
 #                FakeAiogramBot, tmp Alembic-backed audit/sessions makers, real
 #                Claude CLI classifier adapter, composed DefaultPipeline fixture.
 # END_CHANGE_SUMMARY
@@ -242,6 +245,60 @@ def pipeline(
         classifier=real_classifier,
         runner=fake_runner,
         output=fake_output,
+    )
+
+
+@pytest.fixture
+def wiki_root_e2e(tmp_path: Path) -> Path:
+    root = tmp_path / "wikis"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+@pytest.fixture
+def real_router_adapter(wiki_root_e2e: Path, tmp_path: Path):
+    """Real _RouterAdapter (aisw-dsg): runs the Stage-1a router via the actual
+    Claude CLI inside <wiki_root>/<tid>/Inbox-WIKI/."""
+    from ai_steward_wiki.__main__ import _RouterAdapter
+    from ai_steward_wiki.scheduler.locks import WikiLockManager
+    from ai_steward_wiki.wiki.acquire import WikiLockAdapter
+    from ai_steward_wiki.wiki.runner import AsyncioSpawner, _RunConfig
+
+    cfg_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
+    return _RouterAdapter(
+        wiki_root=wiki_root_e2e,
+        inbox_template_path=REPO_ROOT / "templates" / "inbox-wiki" / "CLAUDE.md",
+        base_prompt_path=REPO_ROOT / "prompts" / "wiki.md",
+        inbox_overlay_path=REPO_ROOT / "prompts" / "inbox.md",
+        runtime_dir=tmp_path / "runtime",
+        acquirer=WikiLockAdapter(WikiLockManager()),
+        spawner=AsyncioSpawner(),
+        run_config=_RunConfig(timeout_s=120.0, claude_config_dir=cfg_dir),
+    )
+
+
+@pytest.fixture
+def pipeline_with_router(
+    fake_bot: FakeAiogramBot,
+    idempotency: IdempotencyService,
+    confirmation: ConfirmationService,
+    fake_voice: VoiceHandler,
+    fake_photo: PhotoIngestor,
+    real_classifier: _RealClassifierAdapter,
+    fake_runner,
+    fake_output,
+    real_router_adapter,
+) -> DefaultPipeline:
+    return DefaultPipeline(
+        sender=fake_bot,
+        idempotency=idempotency,
+        confirmation=confirmation,
+        voice=fake_voice,
+        photo=fake_photo,
+        classifier=real_classifier,
+        runner=fake_runner,
+        output=fake_output,
+        router=real_router_adapter,
     )
 
 

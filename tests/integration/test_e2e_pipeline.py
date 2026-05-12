@@ -1,16 +1,17 @@
 # FILE: tests/integration/test_e2e_pipeline.py
-# VERSION: 0.1.1
+# VERSION: 0.2.0
 # START_MODULE_CONTRACT
 #   PURPOSE: M-INTEGRATION-E2E — exercise DefaultPipeline against the real
-#            Claude CLI classifier across representative user paths (text, voice,
-#            photo→vision, photo+caption, photo+confirm, document PDF). Last
-#            safety net before production cutover.
-#   SCOPE: 6 scenarios gated by RUN_INTEGRATION=1 + claude-binary presence (see
+#            Claude CLI across representative user paths (text, voice,
+#            photo→vision, photo+caption, photo+confirm, document PDF, and the
+#            Inbox-WIKI Stage-1a router). Last safety net before production cutover.
+#   SCOPE: 7 scenarios gated by RUN_INTEGRATION=1 + claude-binary presence (see
 #          tests/integration/conftest.py pytest_collection_modifyitems).
-#   DEPENDS: conftest fixtures (pipeline, fake_runner, fake_output, fake_bot,
-#            confirmation, sessions_sm), ai_steward_wiki.tg.pipeline,
-#            ai_steward_wiki.tg.confirm, pypdf
-#   LINKS: chunk-23, aisw-vb9, breakdown.xml chunk-23, DEC-E2E-1..3
+#   DEPENDS: conftest fixtures (pipeline, pipeline_with_router, real_router_adapter,
+#            wiki_root_e2e, fake_runner, fake_output, fake_bot, confirmation,
+#            sessions_sm), ai_steward_wiki.tg.pipeline, ai_steward_wiki.tg.confirm,
+#            ai_steward_wiki.__main__._RouterAdapter, pypdf
+#   LINKS: chunk-23, aisw-vb9, aisw-dsg, breakdown.xml chunk-23, DEC-E2E-1..3
 #   ROLE: TEST
 #   MAP_MODE: SUMMARY
 # END_MODULE_CONTRACT
@@ -22,13 +23,18 @@
 #   test_photo_with_caption_carries_caption - caption appears in the runner prompt
 #   test_photo_then_confirm_callback - photo routed + explicit confirm resolve
 #   test_pdf_document_end_to_end - PDF → pypdf extract → classifier → runner
+#   test_routable_text_runs_router_in_inbox_wiki - routable text → Stage-1a router in Inbox-WIKI/
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.1 - aisw-nzl (media chunk 5): add photo→vision scenarios
+#   LAST_CHANGE: v0.2.0 - aisw-dsg (Inbox-WIKI Phase-A): add scenario 5 —
+#                routable text goes through the Inbox-WIKI Stage-1a router
+#                (_RouterAdapter), Claude runs inside <wiki>/<tid>/Inbox-WIKI/,
+#                bot replies with RouterDecision.notes, legacy runner untouched.
+#   PREVIOUS:    v0.1.1 - aisw-nzl (media chunk 5): add photo→vision scenarios
 #                (media_paths forwarded to runner; caption carried in prompt);
 #                test_photo_then_confirm_callback updated for the new photo path.
-#   PREVIOUS:    v0.1.0 - chunk 23 M-INTEGRATION-E2E: initial 4-scenario suite
+#                v0.1.0 - chunk 23 M-INTEGRATION-E2E: initial 4-scenario suite
 #                gated by RUN_INTEGRATION=1 + claude binary on PATH.
 # END_CHANGE_SUMMARY
 
@@ -232,3 +238,32 @@ async def test_pdf_document_end_to_end(pipeline, fake_runner, fake_output) -> No
     else:
         # No extractable text branch: an ack should have been sent.
         assert fake_runner.run.await_count == 0
+
+
+# ---------- Scenario 5: routable text → Stage-1a Router runs in Inbox-WIKI/ ----------
+
+
+async def test_routable_text_runs_router_in_inbox_wiki(
+    pipeline_with_router, fake_bot, fake_runner, wiki_root_e2e
+) -> None:
+    """A routable user message goes through the Inbox-WIKI Router (Stage-1a):
+    Claude runs with cwd inside <wiki_root>/<tid>/Inbox-WIKI/ and the bot
+    replies with the parsed RouterDecision.notes — the legacy flat runner is
+    NOT invoked for this intent (aisw-dsg)."""
+    await pipeline_with_router.on_text(
+        telegram_id=42,
+        chat_id=10,
+        update_id=1005,
+        text="вот мой авиабилет SVO→IST на 15 июня, напомни за сутки",
+    )
+
+    # Legacy flat run must not be used for a routable intent when a router is wired.
+    fake_runner.run.assert_not_awaited()
+    # Bot replied something (the RouterDecision.notes).
+    assert fake_bot.sends, "expected a reply with the router notes"
+    # The router run materialised the per-user Inbox-WIKI and ran there.
+    inbox_dir = wiki_root_e2e / "42" / "Inbox-WIKI"
+    assert (inbox_dir / "CLAUDE.md").exists()
+    assert list((inbox_dir / "raw").glob("*_text.md")), "raw payload sidecar missing"
+    # A transcript landed under Inbox-WIKI/runs/<run_id>/ — proves wiki_path/cwd.
+    assert list((inbox_dir / "runs").glob("*/transcript.jsonl")), "router transcript missing"
