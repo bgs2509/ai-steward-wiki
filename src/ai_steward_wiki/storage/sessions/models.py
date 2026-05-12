@@ -1,10 +1,10 @@
 # FILE: src/ai_steward_wiki/storage/sessions/models.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: ORM models for sessions.db — runtime TG state and hot-path caches.
-#   SCOPE: users, pending_users, pending_confirms, inbox_hint_cache, fsm.
+#   SCOPE: users, pending_users, pending_confirms, inbox_hint_cache, fsm, user_digest_prefs.
 #   DEPENDS: SQLAlchemy.orm, ai_steward_wiki.storage.sessions.engine.Base
-#   LINKS: M-STORAGE-SESSIONS, D-031, D-042, D-030, D-023
+#   LINKS: M-STORAGE-SESSIONS, D-031, D-042, D-030, D-023, ADR-026, aisw-pv8
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -15,10 +15,11 @@
 #   PendingConfirm - explicit-confirm 10min TTL (D-023)
 #   InboxHintCache - per-user runtime catalog of "## Inbox hint" (D-006 §"Структура")
 #   FsmState - aiogram FSM persistence
+#   UserDigestPrefs - per-owner digest section toggles (trackers/wiki on-off, ADR-026)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - chunk 10: extend PendingConfirm per D-023 (status/category/chat_id/recap_message_id/draft_json)
+#   LAST_CHANGE: v0.0.3 - aisw-pv8: UserDigestPrefs (per-user digest section toggles)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,6 +47,7 @@ __all__ = [
     "PendingConfirm",
     "PendingUser",
     "User",
+    "UserDigestPrefs",
 ]
 
 
@@ -105,6 +108,25 @@ class InboxHintCache(Base):
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     hint_text: Mapped[str] = mapped_column(Text, nullable=False)
     refreshed_at_utc: Mapped[datetime] = mapped_column(nullable=False)
+
+
+class UserDigestPrefs(Base):
+    """Per-owner on/off for the optional digest sections (ADR-025/ADR-026).
+
+    Absent row ⇒ everything enabled (opt-out feature). Only `trackers` and
+    `wiki` are toggleable; TL;DR and `today` are always shown.
+    """
+
+    __tablename__ = "user_digest_prefs"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    trackers_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("1")
+    )
+    wiki_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("1"))
+    updated_at_utc: Mapped[datetime] = mapped_column(nullable=False)
 
 
 class FsmState(Base):
