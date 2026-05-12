@@ -1,10 +1,10 @@
 # FILE: src/ai_steward_wiki/inbox/staging.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Media staging+promotion for voice/photo ingest (D-022, §9 tech-spec).
-#   SCOPE: stage_media (bytes → _staging/<run_id>_<sha8>.<ext>), promote_to_raw
-#          (atomic move to <wiki>/raw/media/<ISO8601>_<sha8>.<ext>), sweep_staging
-#          (24h TTL retention sweep).
+#   SCOPE: stage_media (bytes → _staging/<run_id>_<sha8>.<ext>), promote_to_raw /
+#          promote_path_to_raw (atomic move to <wiki>/raw/media/<ISO8601>_<sha8>.<ext>),
+#          sweep_staging (24h TTL retention sweep).
 #   DEPENDS: hashlib, os, datetime (stdlib), ai_steward_wiki.logging_setup
 #   LINKS: D-022, §9 tech-spec, INV-4, M-TG-MEDIA
 #   ROLE: RUNTIME
@@ -17,12 +17,16 @@
 #   DEFAULT_STAGING_TTL_S - 24h retention (D-022)
 #   MediaRef - dataclass (staging_path, sha256, mime, ext, size, run_id)
 #   stage_media - atomically write bytes to _staging/<run_id>_<sha8>.<ext>
-#   promote_to_raw - atomic move staging→raw/media/<ISO8601>_<sha8>.<ext>
+#   promote_to_raw - atomic move staging→raw/media/<ISO8601>_<sha8>.<ext> (from MediaRef)
+#   promote_path_to_raw - same, by staging path (re-hashes); used by the runner adapter
 #   sweep_staging - delete staging files older than ttl_s; returns removed count
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 11: initial staging+promote+sweep (D-022)
+#   LAST_CHANGE: v0.0.2 - aisw-8r9 (media chunk 4): add promote_path_to_raw —
+#                promote a staged file into <wiki>/raw/media/ from its path
+#                (re-hashed), for use after a successful Stage-1 run (D-022).
+#   PREVIOUS:    v0.0.1 - chunk 11: initial staging+promote+sweep (D-022)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ __all__ = [
     "RAW_MEDIA_SUBPATH",
     "STAGING_DIRNAME",
     "MediaRef",
+    "promote_path_to_raw",
     "promote_to_raw",
     "stage_media",
     "sweep_staging",
@@ -165,6 +170,36 @@ def promote_to_raw(
         path=str(final),
     )
     return final
+
+
+# START_CONTRACT: promote_path_to_raw
+#   PURPOSE: Promote a staged file (by path) into <wiki_root>/raw/media/ — used by
+#            the runner adapter after a successful Stage-1 run, when only the
+#            staging path is at hand (not the original MediaRef). Re-hashes the
+#            bytes so the target name matches stage_media's content addressing.
+#   INPUTS: { staging_path: Path, wiki_root: Path, now: datetime | None }
+#   OUTPUTS: { Path - final raw/media path (idempotent) }
+#   SIDE_EFFECTS: reads the file, then delegates to promote_to_raw (atomic move).
+#   LINKS: D-022 §"after resolution", aisw-8r9
+# END_CONTRACT: promote_path_to_raw
+def promote_path_to_raw(
+    staging_path: Path,
+    *,
+    wiki_root: Path,
+    now: datetime | None = None,
+) -> Path:
+    if not staging_path.exists():
+        raise FileNotFoundError(f"staging file missing: {staging_path}")
+    data = staging_path.read_bytes()
+    ref = MediaRef(
+        staging_path=staging_path,
+        sha256=_sha256_hex(data),
+        mime="",
+        ext=_sanitize_ext(staging_path.suffix),
+        size=len(data),
+        run_id="",
+    )
+    return promote_to_raw(ref, wiki_root=wiki_root, now=now)
 
 
 # START_CONTRACT: sweep_staging

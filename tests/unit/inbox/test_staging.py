@@ -12,6 +12,7 @@ import pytest
 from ai_steward_wiki.inbox.staging import (
     DEFAULT_STAGING_TTL_S,
     MediaRef,
+    promote_path_to_raw,
     promote_to_raw,
     stage_media,
     sweep_staging,
@@ -98,6 +99,26 @@ def test_promote_raises_when_staging_missing(tmp_path: Path) -> None:
     )
     with pytest.raises(FileNotFoundError):
         promote_to_raw(ref, wiki_root=tmp_path / "wiki")
+
+
+def test_promote_path_to_raw_moves_to_raw_media(tmp_path: Path) -> None:
+    data = b"photo payload"
+    inbox = tmp_path / "Inbox-WIKI"
+    ref = stage_media(data, ext="jpg", run_id="r", inbox_root=inbox, mime="image/jpeg")
+    wiki = tmp_path / "12345"
+    moment = datetime(2026, 5, 12, 8, 0, 0, tzinfo=UTC)
+    final = promote_path_to_raw(ref.staging_path, wiki_root=wiki, now=moment)
+
+    assert final.exists()
+    assert not ref.staging_path.exists()
+    assert final.parent == wiki / "raw" / "media"
+    assert final.name == f"20260512T080000Z_{_sha(data)[:8]}.jpg"
+    assert final.read_bytes() == data
+
+
+def test_promote_path_to_raw_missing_file_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        promote_path_to_raw(tmp_path / "_staging" / "gone.jpg", wiki_root=tmp_path / "wiki")
 
 
 def test_sweep_staging_removes_only_old_files(tmp_path: Path) -> None:

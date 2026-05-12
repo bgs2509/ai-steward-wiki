@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.1.2
+# VERSION: 0.1.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -14,19 +14,24 @@
 #   DEPENDS: aiogram, apscheduler, alembic, structlog, sqlalchemy.async,
 #            ai_steward_wiki.{settings, logging_setup, tg.bot, tg.pipeline,
 #            tg.output, tg.voice, tg.photo, scheduler.core, scheduler.locks,
+#            scheduler.maintenance, inbox.staging,
 #            classifier.{backend,schema,stage0}, wiki.{runner,acquire},
 #            storage.{jobs,audit,sessions}.engine, auth.{allowlist,users_toml}}
 #   LINKS: M-FOUNDATION, M-STORAGE, M-AUTH-USERS, M-SCHEDULER,
 #          M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-OUTPUT,
-#          M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-DEPLOY
+#          M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-DEPLOY
 #   ROLE: RUNTIME
 #   MAP_MODE: NONE
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.2 - aisw-m2m (media chunk 2): _WikiRunnerAdapter.run
+#   LAST_CHANGE: v0.1.3 - aisw-8r9 (media chunk 4): register the daily media
+#                _staging sweep job on the scheduler; _WikiRunnerAdapter.run
+#                promotes staged media into <wiki>/raw/media/ after a successful
+#                run (D-022 two-phase storage).
+#   PREVIOUS:    v0.1.2 - aisw-m2m (media chunk 2): _WikiRunnerAdapter.run
 #                forwards media_paths to run_wiki_session (photo vision, D-022).
-#   PREVIOUS:    v0.1.1 - aisw-zny (media chunk 1): wire VoiceHandler +
+#                v0.1.1 - aisw-zny (media chunk 1): wire VoiceHandler +
 #                PhotoIngestor into DefaultPipeline (D-022); runtime.media_pipeline.wired log.
 #                v0.1.0 - chunk 20: wire classifier+runner+deliver_output adapters.
 # END_CHANGE_SUMMARY
@@ -59,10 +64,12 @@ from ai_steward_wiki.classifier.backend import (
 from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
 from ai_steward_wiki.classifier.stage0 import PromptCache, classify
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
+from ai_steward_wiki.inbox.staging import promote_path_to_raw
 from ai_steward_wiki.logging_setup import configure_logging
 from ai_steward_wiki.ops.pii import PIIRedactor
 from ai_steward_wiki.scheduler.core import build_scheduler
 from ai_steward_wiki.scheduler.locks import WikiLockManager
+from ai_steward_wiki.scheduler.maintenance import register_media_staging_sweep_job
 from ai_steward_wiki.settings import Settings, get_settings
 from ai_steward_wiki.storage.audit.engine import build_engine, build_sessionmaker
 from ai_steward_wiki.tg.bot import AiogramSender, TgSender, build_bot, build_dispatcher
@@ -226,6 +233,19 @@ class _WikiRunnerAdapter:
             )
         except WikiRunnerError:
             raise
+        # D-022: on a successful run the target WIKI is known — promote staged
+        # media into <wiki>/raw/media/ (immutable). Failed runs leave the file
+        # in _staging for the 24h sweep job.
+        for media_path in media_paths or []:
+            try:
+                final = promote_path_to_raw(media_path, wiki_root=wiki_path)
+                logger.info(
+                    "runtime.media.promoted", run_id=run_id, src=str(media_path), dest=str(final)
+                )
+            except FileNotFoundError:
+                logger.warning("runtime.media.promote_missing", run_id=run_id, src=str(media_path))
+            except OSError:
+                logger.warning("runtime.media.promote_failed", run_id=run_id, src=str(media_path))
         return WikiRunOutcome(
             run_id=run_id,
             text=aggregate_text(result.events),
@@ -361,7 +381,12 @@ async def _amain() -> None:
 
     scheduler = build_scheduler(_sync_url_for_jobstore(settings.jobs_db_url))
     scheduler.start()
-    logger.info("runtime.scheduler.started", jobs_url=settings.jobs_db_url)
+    register_media_staging_sweep_job(scheduler, staging_root=settings.media_staging_root)
+    logger.info(
+        "runtime.scheduler.started",
+        jobs_url=settings.jobs_db_url,
+        media_staging_root=str(settings.media_staging_root),
+    )
 
     bot = build_bot(settings.tg_bot_token.get_secret_value())
     sender = AiogramSender(bot)
