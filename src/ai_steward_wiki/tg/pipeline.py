@@ -74,6 +74,14 @@
 #   REMINDER_CONFIRM_STALE_RU - reply when a reminder confirm was already resolved/expired (aisw-kcz)
 #   TimeParser - Protocol for the NL-time parser used by the reminder fast-path (aisw-kcz)
 #   build_reminder_recap - build the ru recap text for a reminder confirm (aisw-kcz)
+#   DIGEST_RECAP_RU - recap template for a digest confirm (aisw-oqq)
+#   DIGEST_ACK_RU - ack sent after a digest job is scheduled (aisw-oqq)
+#   DIGEST_UNPARSEABLE_RU - reply when the recurrence phrasing is ambiguous/unparseable (aisw-oqq)
+#   DIGEST_CONFIRM_CANCELLED_RU - reply on cancel of a digest confirm (aisw-oqq)
+#   DIGEST_CONFIRM_STALE_RU - reply when a digest confirm was already resolved/expired (aisw-oqq)
+#   RecurrenceParser - Protocol for the NL-recurrence parser used by the digest fast-path (aisw-oqq)
+#   humanize_recurrence - short ru rendering of a Recurrence for the digest recap/ack (aisw-oqq)
+#   build_digest_recap - build the ru recap text for a digest confirm (aisw-oqq)
 #   SUPPORTED_IMAGE_MIMES - frozenset of mimes routed to PhotoIngestor
 #   ConfirmKeyboardAction - Literal[confirm|correct|cancel]
 #   Classifier - Protocol (Stage-0 wrapper, narrow API)
