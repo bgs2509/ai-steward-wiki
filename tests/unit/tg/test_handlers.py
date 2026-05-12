@@ -194,7 +194,7 @@ async def test_router_voice_handler_downloads_and_dispatches() -> None:
     pipeline.on_voice = AsyncMock()
     router = build_router(pipeline)
 
-    voice_handler = router.message.handlers[1].callback
+    voice_handler = _handler_by_name(router, "_on_voice")
 
     async def _get_file(file_id: str) -> object:
         return object()
