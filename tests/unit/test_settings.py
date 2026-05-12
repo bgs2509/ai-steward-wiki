@@ -33,6 +33,19 @@ def test_invalid_log_level_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         Settings()
 
 
+def test_default_user_tz(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AISW_DEFAULT_USER_TZ", raising=False)
+    s = Settings()
+    assert s.default_user_tz == "Europe/Moscow"
+    assert ZoneInfo(s.default_user_tz)
+
+    monkeypatch.setenv("AISW_DEFAULT_USER_TZ", "Asia/Yekaterinburg")
+    assert Settings().default_user_tz == "Asia/Yekaterinburg"
+
+
 def test_settings_frozen(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     s = Settings()

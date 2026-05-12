@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.3.0
+# VERSION: 0.4.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -10,16 +10,17 @@
 #          asyncio.run), private helpers _sync_url_for_jobstore,
 #          _ensure_data_dirs, _run_all_migrations, _load_users_config,
 #          _install_signal_handlers, _build_classifier_backend,
-#          _ClassifierAdapter, _WikiRunnerAdapter, _OutputDeliveryAdapter,
+#          _ClassifierAdapter, _TimeParserAdapter, _on_job_missed,
+#          _WikiRunnerAdapter, _OutputDeliveryAdapter,
 #          _RouterAdapter, _render_raw_sidecar, _LibrarianAdapter.
 #   DEPENDS: aiogram, apscheduler, alembic, structlog, sqlalchemy.async,
 #            ai_steward_wiki.{settings, logging_setup, tg.bot, tg.pipeline,
 #            tg.output, tg.voice, tg.photo, scheduler.core, scheduler.locks,
-#            scheduler.maintenance, inbox.materialize, inbox.router, inbox.route,
-#            inbox.staging, classifier.{backend,schema,stage0},
+#            scheduler.maintenance, scheduler.firing, inbox.materialize, inbox.router,
+#            inbox.route, inbox.staging, classifier.{backend,schema,stage0,time_parse},
 #            wiki.{runner,acquire,lifecycle},
 #            storage.{jobs,audit,sessions}.engine, auth.{allowlist,users_toml}}
-#   LINKS: M-FOUNDATION, M-STORAGE, M-AUTH-USERS, M-SCHEDULER,
+#   LINKS: M-FOUNDATION, M-STORAGE, M-AUTH-USERS, M-SCHEDULER, M-SCHEDULER-FIRING,
 #          M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-TG-OUTPUT,
 #          M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX,
 #          M-INBOX-ROUTER, M-INBOX-ROUTE, M-DEPLOY
@@ -28,7 +29,13 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.3.0 - aisw-zd9 (Inbox-WIKI Phase-B): add _LibrarianAdapter —
+#   LAST_CHANGE: v0.4.0 - aisw-kcz (Inbox-WIKI Phase-D.a): wire the reminder cron
+#                bridge — firing.set_firing_context(sender, jobs_maker) after the
+#                scheduler starts; scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED);
+#                _TimeParserAdapter (parse_time over prompts/time-parse.md) + a
+#                users.toml-backed _user_tz_lookup; pass time_parser/jobs_session_maker/
+#                scheduler/user_tz_lookup/default_user_tz into DefaultPipeline.
+#   PREVIOUS:    v0.3.0 - aisw-zd9 (Inbox-WIKI Phase-B): add _LibrarianAdapter —
 #                resolve_target_wiki (lookup-or-create the target <Domain>-WIKI;
 #                AntiSpamCapError/WikiNameError → rejected) → stage_raw_into_wiki
 #                (move raw + promote media into <Domain>-WIKI/raw/) →
@@ -70,10 +77,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import structlog
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
+from apscheduler.events import EVENT_JOB_MISSED
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_steward_wiki.auth.allowlist import replace_global, sync_to_sessions_db
@@ -87,8 +96,9 @@ from ai_steward_wiki.classifier.backend import (
     ClassifierBackend,
     ClaudeCliBackend,
 )
-from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
+from ai_steward_wiki.classifier.schema import ClassifierResult, Intent, TimeParseResult
 from ai_steward_wiki.classifier.stage0 import PromptCache, classify
+from ai_steward_wiki.classifier.time_parse import parse_time as _parse_time_fn
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
 from ai_steward_wiki.inbox.materialize import ensure_inbox_wiki
 from ai_steward_wiki.inbox.route import (
@@ -102,6 +112,7 @@ from ai_steward_wiki.inbox.router import RouterDecision, RouterError, parse_rout
 from ai_steward_wiki.inbox.staging import promote_path_to_raw
 from ai_steward_wiki.logging_setup import configure_logging
 from ai_steward_wiki.ops.pii import PIIRedactor
+from ai_steward_wiki.scheduler import firing
 from ai_steward_wiki.scheduler.core import build_scheduler
 from ai_steward_wiki.scheduler.locks import WikiLockManager
 from ai_steward_wiki.scheduler.maintenance import register_all_retention_jobs
@@ -207,6 +218,38 @@ class _ClassifierAdapter:
                 audit_session=session,
                 cache=self._cache,
             )
+
+
+class _TimeParserAdapter:
+    """Bind classifier.time_parse.parse_time into the narrow TimeParser Protocol (aisw-kcz)."""
+
+    def __init__(self, *, backend: ClassifierBackend, prompt_path: Path | None) -> None:
+        self._backend = backend
+        self._prompt_path = prompt_path
+
+    async def parse_time(
+        self,
+        text: str,
+        *,
+        user_tz: ZoneInfo,
+        now_utc: datetime,
+        prefer_future: bool = False,
+        correlation_id: str = "",
+    ) -> TimeParseResult:
+        return await _parse_time_fn(
+            text,
+            user_tz=user_tz,
+            now_utc=now_utc,
+            prefer_future=prefer_future,
+            haiku_backend=self._backend,
+            haiku_prompt_path=self._prompt_path,
+            correlation_id=correlation_id,
+        )
+
+
+def _on_job_missed(event: object) -> None:
+    """APScheduler EVENT_JOB_MISSED listener — log a missed reminder fire (aisw-kcz)."""
+    logger.warning("scheduler.reminder.misfired", job_id=getattr(event, "job_id", None))
 
 
 class _WikiRunnerAdapter:
@@ -735,6 +778,7 @@ async def _amain() -> None:
 
     scheduler = build_scheduler(_sync_url_for_jobstore(settings.jobs_db_url))
     scheduler.start()
+    scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
     retention_jobs = register_all_retention_jobs(
         scheduler,
         audit_maker=audit_maker,
@@ -759,6 +803,9 @@ async def _amain() -> None:
 
     bot = build_bot(settings.tg_bot_token.get_secret_value())
     sender = AiogramSender(bot)
+    # aisw-kcz: install the reminder-firing context (picklable int-arg fire_job
+    # reads the bot-sender + jobs sessionmaker from here at fire time).
+    firing.set_firing_context(sender=sender, jobs_session_maker=jobs_maker)
 
     # START_BLOCK_TEXT_PIPELINE_WIRING (chunk 20 M-TG-PIPELINE-CLASSIFIER)
     classifier_backend = _build_classifier_backend(settings)
@@ -768,6 +815,20 @@ async def _amain() -> None:
         audit_session_maker=audit_maker,
         cache=PromptCache(),
     )
+    # aisw-kcz: NL-time parser for the reminder fast-path. Uses prompts/time-parse.md
+    # as the Haiku-fallback prompt when dateparser misses; if absent the parser just
+    # escalates (the file is shipped in prompts/, so this path is normally taken).
+    time_parse_prompt = settings.prompts_dir / "time-parse.md"
+    time_parser_adapter = _TimeParserAdapter(
+        backend=classifier_backend,
+        prompt_path=time_parse_prompt if time_parse_prompt.exists() else None,
+    )
+    _users_by_id = {u.telegram_id: u for u in users_cfg.users}
+
+    def _user_tz_lookup(telegram_id: int) -> str | None:
+        u = _users_by_id.get(telegram_id)
+        return u.tz if u is not None else None
+
     runtime_dir = settings.workspace_root / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     lock_manager = WikiLockManager()
@@ -871,6 +932,11 @@ async def _amain() -> None:
         librarian=librarian_adapter,
         pii=PIIRedactor(hash_secret=settings.pii_hash_secret.get_secret_value().encode("utf-8")),
         photo_vision_timeout_s=settings.photo_vision_timeout_s,
+        time_parser=time_parser_adapter,
+        jobs_session_maker=jobs_maker,
+        scheduler=scheduler,
+        user_tz_lookup=_user_tz_lookup,
+        default_user_tz=settings.default_user_tz,
     )
     dp = build_dispatcher(allowlist, pipeline=pipeline)
     logger.info("runtime.handlers.registered")

@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.6.0
+# VERSION: 0.7.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -29,11 +29,15 @@
 #            ai_steward_wiki.tg.photo.PhotoIngestor (optional),
 #            ai_steward_wiki.tg.confirm (ConfirmationService, PendingConfirmDraft,
 #            build_route_confirm_keyboard),
-#            ai_steward_wiki.tg.bot.TgSender, structlog, pypdf
+#            ai_steward_wiki.tg.bot.TgSender, ai_steward_wiki.classifier.schema.TimeParseResult,
+#            ai_steward_wiki.scheduler.firing.create_reminder_job (lazy import in the
+#            reminder confirm callback), apscheduler (AsyncIOScheduler, typing only),
+#            sqlalchemy.ext.asyncio (async_sessionmaker, typing only), structlog, pypdf
 #   LINKS: M-TG-PIPELINE-CLASSIFIER (chunk 20), M-TG-PIPELINE-STREAMING
 #          (chunk 21), M-TG-DOCUMENT-FULL (chunk 22), M-TG-HANDLERS-WIRING
-#          (chunk 19), M-INBOX-ROUTE, M-TG-TEXT (D-023 confirm loop), D-016, D-017,
-#          D-018, D-022, D-023, D-034, DEC-L3, DEC-TPC-1..6, aisw-zd9, aisw-e45
+#          (chunk 19), M-INBOX-ROUTE, M-SCHEDULER-FIRING, M-TG-TEXT (D-023 confirm
+#          loop), D-010, D-016, D-017, D-018, D-022, D-023, D-034, DEC-L3,
+#          DEC-TPC-1..6, aisw-zd9, aisw-e45, aisw-kcz
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -60,6 +64,16 @@
 #   ROUTE_CONFIRM_CANCELLED_RU - reply on cancel/correct of a route confirm
 #   ROUTE_CONFIRM_STALE_RU - reply when a route confirm was already resolved/expired
 #   build_route_recap - build the ru recap text for a RouterDecision route confirm
+#   REMINDER_CONFIDENCE_THRESHOLD - Stage-0 confidence floor for the reminder fast-path (aisw-kcz)
+#   REMINDER_RECAP_RU - recap template for a reminder confirm (aisw-kcz)
+#   REMINDER_ACK_RU - ack sent after a reminder is scheduled (aisw-kcz)
+#   REMINDER_UNPARSEABLE_RU - reply when the reminder time is ambiguous/unparseable (aisw-kcz)
+#   REMINDER_PAST_RU - reply when the reminder names an explicitly-past absolute date (aisw-kcz)
+#   REMINDER_RECURRING_RU - reply when recurring-digest phrasing is detected (aisw-kcz)
+#   REMINDER_CONFIRM_CANCELLED_RU - reply on cancel of a reminder confirm (aisw-kcz)
+#   REMINDER_CONFIRM_STALE_RU - reply when a reminder confirm was already resolved/expired (aisw-kcz)
+#   TimeParser - Protocol for the NL-time parser used by the reminder fast-path (aisw-kcz)
+#   build_reminder_recap - build the ru recap text for a reminder confirm (aisw-kcz)
 #   SUPPORTED_IMAGE_MIMES - frozenset of mimes routed to PhotoIngestor
 #   ConfirmKeyboardAction - Literal[confirm|correct|cancel]
 #   Classifier - Protocol (Stage-0 wrapper, narrow API)
@@ -76,7 +90,18 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.6.0 - aisw-e45 (Inbox-WIKI Phase-C): a routable ROUTE/CREATE_WIKI
+#   LAST_CHANGE: v0.7.0 - aisw-kcz (Inbox-WIKI Phase-D.a): a Stage-0 intent=reminder
+#                fast-path runs BEFORE the routable branch — recurring-digest phrasing
+#                gets a ru "not yet" line; otherwise parse_time(prefer_future=True) →
+#                escalate→ru clarification / explicitly-past absolute date→ru rejection /
+#                else a category='reminder' confirm draft (when_utc, message, lead_time_min,
+#                user_tz, correlation_id) + recap via ConfirmationService.request_explicit
+#                with the 2-button keyboard; on_confirm_callback dispatches category=='reminder'
+#                rows to _handle_reminder_confirm → on 'confirmed' scheduler.firing.create_reminder_job
+#                + ack, else ru cancelled/stale notice. DefaultPipeline gains optional
+#                time_parser/jobs_session_maker/scheduler/user_tz_lookup/default_user_tz/clock.
+#                New anchors tg.pipeline.reminder.* + tg.pipeline.confirm.reminder_dispatched.
+#   PREVIOUS:    v0.6.0 - aisw-e45 (Inbox-WIKI Phase-C): a routable ROUTE/CREATE_WIKI
 #                decision no longer ingests immediately — _run_text_pipeline builds a
 #                route_ingest confirm draft (RouterDecision + user_text + source +
 #                media_paths + correlation_id, via inbox.route.route_action_to_payload)
@@ -143,9 +168,11 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -168,6 +195,12 @@ from ai_steward_wiki.tg.photo import PhotoIngestor
 from ai_steward_wiki.tg.voice import VoiceHandler, VoiceUnavailableError
 from ai_steward_wiki.wiki.runner import WikiRunnerError
 
+if TYPE_CHECKING:
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from ai_steward_wiki.classifier.schema import TimeParseResult
+
 __all__ = [
     "ACK_CLASSIFY_ERR_RU",
     "ACK_DEDUP_RU",
@@ -184,6 +217,14 @@ __all__ = [
     "PDF_MAX_EXTRACT_CHARS",
     "PHOTO_CAPTION_PROMPT_RU",
     "PHOTO_PROMPT_RU",
+    "REMINDER_ACK_RU",
+    "REMINDER_CONFIDENCE_THRESHOLD",
+    "REMINDER_CONFIRM_CANCELLED_RU",
+    "REMINDER_CONFIRM_STALE_RU",
+    "REMINDER_PAST_RU",
+    "REMINDER_RECAP_RU",
+    "REMINDER_RECURRING_RU",
+    "REMINDER_UNPARSEABLE_RU",
     "ROUTE_CONFIRM_ACK_RU",
     "ROUTE_CONFIRM_CANCELLED_RU",
     "ROUTE_CONFIRM_RECAP_CREATE_RU",
@@ -200,8 +241,10 @@ __all__ = [
     "OutputDelivery",
     "Router",
     "StreamingDelivery",
+    "TimeParser",
     "WikiRunOutcome",
     "WikiRunner",
+    "build_reminder_recap",
     "build_route_recap",
 ]
 
@@ -255,6 +298,20 @@ ROUTE_CONFIRM_ACK_RU = "\U0001f4dd Записываю в вики…"
 ROUTE_CONFIRM_CANCELLED_RU = "Отменено. Файл остался в Inbox — пришли заново с уточнением."  # noqa: RUF001
 ROUTE_CONFIRM_STALE_RU = "Время на подтверждение истекло — пришли заново."
 
+# Reminder fast-path (aisw-kcz, Inbox-WIKI Phase-D.a). A Stage-0 intent=reminder
+# above this confidence floor with a parseable future time → an explicit confirm.
+REMINDER_CONFIDENCE_THRESHOLD = 0.85
+# Heuristic ru keyword set for recurring digests — punt to the digest phase (aisw-19o).
+_RECURRING_KEYWORDS = frozenset({"кажд", "ежедневн", "еженедельн", "сводк", "дайджест"})
+
+REMINDER_RECAP_RU = "Поставлю напоминание на {when_local} ({tz}): «{message}». Подтверждаешь?"
+REMINDER_ACK_RU = "Готово — напомню {when_local}."
+REMINDER_UNPARSEABLE_RU = "Не понял, на когда поставить напоминание — уточни время."  # noqa: RUF001
+REMINDER_PAST_RU = "Эта дата уже прошла — назови будущую."
+REMINDER_RECURRING_RU = "Регулярные сводки — скоро будет, пока могу только разовые напоминания."
+REMINDER_CONFIRM_CANCELLED_RU = "Отменено — напоминание не поставил."
+REMINDER_CONFIRM_STALE_RU = "Время на подтверждение истекло — пришли заново."
+
 
 def _with_caption(text: str, caption: str | None) -> str:
     """Prepend a user caption (if any) as context for the Stage-1 prompt."""
@@ -274,6 +331,12 @@ def build_route_recap(decision: RouterDecision) -> str:
     return tmpl.format(target=target, notes=decision.notes)
 
 
+def build_reminder_recap(*, when_utc: datetime, user_tz: ZoneInfo, message: str) -> str:
+    """Russian recap text for a reminder confirm (aisw-kcz). Time shown in user TZ."""
+    when_local = when_utc.astimezone(user_tz).strftime("%d.%m %H:%M")
+    return REMINDER_RECAP_RU.format(when_local=when_local, tz=str(user_tz), message=message)
+
+
 # Stage-0 intents that mean "route this somewhere" → handled by the Inbox-WIKI
 # Router (Stage-1a) when one is wired (aisw-dsg, Inbox-WIKI Phase-A). The other
 # intents (REMINDER, DIGEST, WIKI_LINT, ADMIN) keep their legacy handling.
@@ -284,6 +347,20 @@ class Classifier(Protocol):
     """Stage-0 Haiku classifier wrapper (D-016 + DEC-TPC-1)."""
 
     async def classify(self, text: str, *, correlation_id: str) -> ClassifierResult: ...
+
+
+class TimeParser(Protocol):
+    """NL-time parser wrapper used by the reminder fast-path (aisw-kcz, D-010)."""
+
+    async def parse_time(
+        self,
+        text: str,
+        *,
+        user_tz: ZoneInfo,
+        now_utc: datetime,
+        prefer_future: bool = False,
+        correlation_id: str = "",
+    ) -> TimeParseResult: ...
 
 
 class Router(Protocol):
@@ -496,6 +573,12 @@ class DefaultPipeline:
         librarian: Librarian | None = None,
         pii: PIIRedactor | None = None,
         photo_vision_timeout_s: float | None = None,
+        time_parser: TimeParser | None = None,
+        jobs_session_maker: async_sessionmaker[AsyncSession] | None = None,
+        scheduler: AsyncIOScheduler | None = None,
+        user_tz_lookup: Callable[[int], str | None] | None = None,
+        default_user_tz: str = "Europe/Moscow",
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._sender = sender
         self._idem = idempotency
@@ -516,6 +599,25 @@ class DefaultPipeline:
         self._pii = pii or PIIRedactor()
         # D-022: shorter cap for photo→vision runs (vs the default text-turn cap).
         self._photo_vision_timeout_s = photo_vision_timeout_s
+        # Reminder fast-path (aisw-kcz). All optional: time_parser=None disables
+        # the fast-path (REMINDER falls through to the legacy runner); the job is
+        # only created on confirm when jobs_session_maker AND scheduler are wired.
+        self._time_parser = time_parser
+        self._jobs_session_maker = jobs_session_maker
+        self._scheduler = scheduler
+        self._user_tz_lookup = user_tz_lookup
+        self._default_user_tz = default_user_tz
+        self._clock: Callable[[], datetime] = clock or (lambda: datetime.now(UTC))
+
+    def _resolve_user_tz(self, telegram_id: int) -> ZoneInfo:
+        """User IANA TZ from the lookup, else the default; never raises."""
+        name = (self._user_tz_lookup(telegram_id) if self._user_tz_lookup else None) or (
+            self._default_user_tz
+        )
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            return ZoneInfo("Europe/Moscow")
 
     async def _l1_check(self, *, update_id: int, telegram_id: int, kind: str) -> bool:
         """Return True iff the update is new (proceed). Logs on duplicate."""
@@ -604,6 +706,26 @@ class DefaultPipeline:
             confidence=result.confidence,
             latency_ms=result.latency_ms,
         )
+
+        # START_BLOCK_REMINDER_FASTPATH (aisw-kcz, Inbox-WIKI Phase-D.a)
+        # A confident Stage-0 intent=reminder is handled BEFORE the Stage-1a
+        # router (tech-spec §6 fast-path). When time_parser is not wired, fall
+        # through — REMINDER is not a routable intent, so it reaches the legacy
+        # runner branch (acceptable degraded behaviour).
+        if (
+            result.intent is Intent.REMINDER
+            and result.confidence >= REMINDER_CONFIDENCE_THRESHOLD
+            and self._time_parser is not None
+        ):
+            await self._handle_reminder_intent(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                text=text,
+                distilled_payload=result.distilled_payload,
+                correlation_id=correlation_id,
+            )
+            return
+        # END_BLOCK_REMINDER_FASTPATH
 
         # START_BLOCK_ROUTABLE_BRANCH (aisw-dsg, Inbox-WIKI Phase-A)
         if result.intent in _ROUTABLE_INTENTS and self._router is not None:
@@ -760,6 +882,105 @@ class DefaultPipeline:
         )
 
     # END_BLOCK_TEXT_PIPELINE
+
+    # START_BLOCK_REMINDER_INTENT (aisw-kcz, Inbox-WIKI Phase-D.a)
+    async def _handle_reminder_intent(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        text: str,
+        distilled_payload: dict[str, object],
+        correlation_id: str,
+    ) -> None:
+        """Stage-0 intent=reminder fast-path: parse time → propose an explicit confirm.
+
+        Recurring-digest phrasing gets a ru "not yet" line (→ aisw-19o). Otherwise
+        parse_time(prefer_future=True): escalate → ru clarification; an
+        explicitly-past absolute date → ru rejection; else a category='reminder'
+        confirm draft + recap proposed via ConfirmationService.request_explicit
+        with the 2-button keyboard. The jobs.Job row is created only on confirm
+        (in _handle_reminder_confirm).
+        """
+        low = text.lower()
+        if any(kw in low for kw in _RECURRING_KEYWORDS):
+            await self._sender.send_message(chat_id, REMINDER_RECURRING_RU)
+            _log.info(
+                "tg.pipeline.reminder.recurring_not_yet",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+            )
+            return
+
+        assert self._time_parser is not None  # guarded by the caller
+        user_tz = self._resolve_user_tz(telegram_id)
+        now_utc = self._clock()
+        tp = await self._time_parser.parse_time(
+            text,
+            user_tz=user_tz,
+            now_utc=now_utc,
+            prefer_future=True,
+            correlation_id=correlation_id,
+        )
+        _log.info(
+            "tg.pipeline.reminder.detected",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            time_source=tp.source,
+            escalate=tp.escalate,
+        )
+        if tp.escalate or tp.when_utc is None:
+            await self._sender.send_message(chat_id, REMINDER_UNPARSEABLE_RU)
+            _log.info(
+                "tg.pipeline.reminder.unparseable",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+            )
+            return
+        if tp.when_utc <= now_utc:
+            # With prefer_future=True a bare past wall-clock time would have rolled
+            # forward; still being in the past means an explicit past absolute date.
+            await self._sender.send_message(chat_id, REMINDER_PAST_RU)
+            _log.info(
+                "tg.pipeline.reminder.rejected_past",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+            )
+            return
+
+        raw_reminder_text = distilled_payload.get("reminder_text")
+        message = (
+            raw_reminder_text
+            if isinstance(raw_reminder_text, str) and raw_reminder_text.strip()
+            else text
+        )
+        when_iso = tp.when_utc.astimezone(UTC).isoformat()
+        draft = {
+            "when_utc": when_iso,
+            "message": message,
+            "lead_time_min": 0,
+            "user_tz": str(user_tz),
+            "correlation_id": correlation_id,
+        }
+        confirm_draft = PendingConfirmDraft(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            category="reminder",
+            draft=draft,
+            recap_text=build_reminder_recap(when_utc=tp.when_utc, user_tz=user_tz, message=message),
+        )
+        rec = await self._confirm.request_explicit(
+            confirm_draft, keyboard_factory=build_route_confirm_keyboard
+        )
+        _log.info(
+            "tg.pipeline.reminder.confirm_requested",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=rec.pending_id,
+            when_utc=when_iso,
+        )
+
+    # END_BLOCK_REMINDER_INTENT
 
     async def on_text(
         self,
@@ -1181,23 +1402,32 @@ class DefaultPipeline:
         action: ConfirmKeyboardAction,
     ) -> None:
         pending = await self._confirm.get_pending(pending_id)
-        if pending is None or getattr(pending, "category", None) != "route_ingest":
-            status = await self._confirm.resolve(telegram_id, pending_id, action)
-            _log.info(
-                "tg.pipeline.confirm",
+        if pending is not None and getattr(pending, "category", None) == "route_ingest":
+            await self._handle_route_confirm(
                 telegram_id=telegram_id,
                 chat_id=chat_id,
                 pending_id=pending_id,
                 action=action,
-                status=status,
+                draft_json=pending.draft_json,
             )
             return
-        await self._handle_route_confirm(
+        if pending is not None and getattr(pending, "category", None) == "reminder":
+            await self._handle_reminder_confirm(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                pending_id=pending_id,
+                action=action,
+                draft_json=pending.draft_json,
+            )
+            return
+        status = await self._confirm.resolve(telegram_id, pending_id, action)
+        _log.info(
+            "tg.pipeline.confirm",
             telegram_id=telegram_id,
             chat_id=chat_id,
             pending_id=pending_id,
             action=action,
-            draft_json=pending.draft_json,
+            status=status,
         )
 
     # START_BLOCK_ROUTE_CONFIRM (aisw-e45, Inbox-WIKI Phase-C)
@@ -1281,6 +1511,97 @@ class DefaultPipeline:
             await self._sender.send_message(chat_id, outcome.reply)
 
     # END_BLOCK_ROUTE_CONFIRM
+
+    # START_BLOCK_REMINDER_CONFIRM (aisw-kcz, Inbox-WIKI Phase-D.a)
+    async def _handle_reminder_confirm(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        pending_id: int,
+        action: ConfirmKeyboardAction,
+        draft_json: str | None,
+    ) -> None:
+        """Resolve a reminder pending row; on 'confirmed' create the reminder job.
+
+        Mirrors _handle_route_confirm: race-safe resolve; on a lost race (None) a
+        ru 'stale' notice; on cancel a ru 'cancelled' notice; on 'confirmed'
+        scheduler.firing.create_reminder_job (jobs.Job row + DateTrigger) + a ru ack.
+        """
+        status = await self._confirm.resolve(telegram_id, pending_id, action)
+        _log.info(
+            "tg.pipeline.confirm.reminder_dispatched",
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            pending_id=pending_id,
+            action=action,
+            status=status,
+        )
+        if status is None:
+            await self._sender.send_message(chat_id, REMINDER_CONFIRM_STALE_RU)
+            _log.info(
+                "tg.pipeline.reminder.confirm_stale",
+                telegram_id=telegram_id,
+                pending_id=pending_id,
+            )
+            return
+        if status != "confirmed":  # cancelled / corrected
+            await self._sender.send_message(chat_id, REMINDER_CONFIRM_CANCELLED_RU)
+            _log.info(
+                "tg.pipeline.reminder.confirm_cancelled",
+                telegram_id=telegram_id,
+                pending_id=pending_id,
+                status=status,
+            )
+            return
+
+        draft = json.loads(draft_json or "{}")
+        when_utc = datetime.fromisoformat(str(draft["when_utc"]))
+        message = str(draft.get("message") or "")
+        lead = int(draft.get("lead_time_min") or 0)
+        try:
+            user_tz = ZoneInfo(str(draft.get("user_tz") or self._default_user_tz))
+        except Exception:
+            user_tz = ZoneInfo("Europe/Moscow")
+        correlation_id = str(
+            draft.get("correlation_id") or f"reminder-confirm-{pending_id}-{telegram_id}"
+        )
+        # reminder rows are only created when time_parser is wired; the scheduler +
+        # jobs sessionmaker are wired together in __main__ — guard defensively.
+        if self._jobs_session_maker is None or self._scheduler is None:
+            await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
+            _log.error(
+                "tg.pipeline.reminder.confirm_misconfigured",
+                telegram_id=telegram_id,
+                pending_id=pending_id,
+            )
+            return
+        # Local import: keep the scheduler/firing dependency lazy and test-friendly.
+        from ai_steward_wiki.scheduler.firing import create_reminder_job
+
+        async with self._jobs_session_maker() as session:
+            job_id = await create_reminder_job(
+                session,
+                self._scheduler,
+                owner_telegram_id=telegram_id,
+                chat_id=chat_id,
+                when_utc=when_utc,
+                message=message,
+                lead_time_min=lead,
+                correlation_id=correlation_id,
+            )
+        when_local = when_utc.astimezone(user_tz).strftime("%d.%m %H:%M")
+        await self._sender.send_message(chat_id, REMINDER_ACK_RU.format(when_local=when_local))
+        _log.info(
+            "tg.pipeline.reminder.confirm_created",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=pending_id,
+            job_id=job_id,
+            when_utc=str(draft["when_utc"]),
+        )
+
+    # END_BLOCK_REMINDER_CONFIRM
 
 
 class DefaultStreamingDelivery:

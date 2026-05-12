@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/settings.py
-# VERSION: 0.0.9
+# VERSION: 0.0.10
 # START_MODULE_CONTRACT
 #   PURPOSE: Runtime configuration loaded from environment via pydantic-settings.
 #   SCOPE: Settings BaseSettings (frozen). Initial fields cover Chunk 1 only;
@@ -20,7 +20,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.9 - aisw-zny (media chunk 1): media_staging_root,
+#   LAST_CHANGE: v0.0.10 - aisw-kcz: default_user_tz (fallback IANA TZ for NL time parsing).
+#   PREVIOUS:    v0.0.9 - aisw-zny (media chunk 1): media_staging_root,
 #                voice_enabled, voice_whisper_model_size, voice_stt_timeout_s,
 #                photo_enabled, photo_vision_timeout_s (D-022 wiring).
 #   PREVIOUS:    v0.0.8 - chunk 18: users_toml_path (optional) for M-RUNTIME-WIRING.
@@ -127,6 +128,11 @@ class Settings(BaseSettings):
     # Chunk 18: M-RUNTIME-WIRING. Path to users.toml for allowlist.
     # None or missing file → empty allowlist (frictionless local first-run).
     users_toml_path: Path | None = None
+
+    # aisw-kcz: fallback IANA timezone for NL time parsing when a user's
+    # users.toml entry has no `tz`. Reminders/digests parse wall-clock times
+    # against this zone (UTC invariant in storage; user TZ only at I/O).
+    default_user_tz: str = "Europe/Moscow"
 
     @property
     def tg_bot_token(self) -> SecretStr | None:

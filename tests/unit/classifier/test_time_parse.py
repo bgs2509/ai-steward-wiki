@@ -51,6 +51,22 @@ async def test_parse_haiku_fallback_resolves(tmp_path: Path) -> None:
     assert res.when_utc.tzinfo == UTC
 
 
+async def test_prefer_future_rolls_past_wall_clock_forward() -> None:
+    # NOW = 15:00 MSK; a bare "at 6am" is in the past today → prefer_future rolls it forward.
+    res = await parse_time("at 6am", user_tz=MSK, now_utc=NOW, prefer_future=True)
+    assert res.escalate is False
+    assert res.when_utc is not None
+    assert res.when_utc > NOW
+    assert res.when_utc.tzinfo == UTC
+
+
+async def test_prefer_future_keeps_explicit_future() -> None:
+    res = await parse_time("tomorrow at 9am", user_tz=MSK, now_utc=NOW, prefer_future=True)
+    assert res.escalate is False
+    assert res.when_utc is not None
+    assert res.when_utc > NOW
+
+
 async def test_parse_haiku_ambiguous_escalates(tmp_path: Path) -> None:
     runner = FakeClaudeRunner(responses=[{"ambiguous": True}])
     prompt = tmp_path / "time.md"

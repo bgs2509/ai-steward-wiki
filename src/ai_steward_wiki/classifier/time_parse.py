@@ -1,20 +1,21 @@
 # FILE: src/ai_steward_wiki/classifier/time_parse.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: NL time parser — dateparser → Haiku-fallback → escalate (D-010).
 #   SCOPE: parse_time() public API; UTC invariant; user-TZ from caller.
 #   DEPENDS: dateparser, structlog, ai_steward_wiki.classifier.{schema,backend}
-#   LINKS: M-CLASSIFIER-STAGE0, D-010
+#   LINKS: M-CLASSIFIER-STAGE0, D-010, aisw-kcz
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
-#   parse_time - async; tries dateparser, then Haiku-fallback, then escalates
+#   parse_time - async; tries dateparser, then Haiku-fallback, then escalates; prefer_future rolls bare past times forward
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - initial 3-step parser with UTC invariant
+#   LAST_CHANGE: v0.0.2 - aisw-kcz: add prefer_future kwarg (PREFER_DATES_FROM='future') for reminders
+#   PREVIOUS:    v0.0.1 - initial 3-step parser with UTC invariant
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -48,20 +49,29 @@ async def parse_time(
     *,
     user_tz: ZoneInfo,
     now_utc: datetime,
+    prefer_future: bool = False,
     haiku_backend: ClassifierBackend | None = None,
     haiku_prompt_path: Path | None = None,
     correlation_id: str = "",
 ) -> TimeParseResult:
-    """Parse NL time per D-010. Returns UTC-only when_utc, or escalate=True."""
+    """Parse NL time per D-010. Returns UTC-only when_utc, or escalate=True.
+
+    `prefer_future=True` makes a bare past wall-clock time («в 6» at 21:00) roll
+    forward to the next future occurrence (PREFER_DATES_FROM='future') — used by
+    the reminder fast-path (aisw-kcz).
+    """
     started_dp = time.monotonic()
     relative_base = now_utc.astimezone(user_tz)
+    settings: dict[str, object] = {
+        "TIMEZONE": str(user_tz),
+        "RELATIVE_BASE": relative_base.replace(tzinfo=None),
+        "RETURN_AS_TIMEZONE_AWARE": True,
+    }
+    if prefer_future:
+        settings["PREFER_DATES_FROM"] = "future"
     parsed = dateparser.parse(
         text,
-        settings={
-            "TIMEZONE": str(user_tz),
-            "RELATIVE_BASE": relative_base.replace(tzinfo=None),
-            "RETURN_AS_TIMEZONE_AWARE": True,
-        },
+        settings=settings,  # type: ignore[arg-type]
         languages=["ru", "en"],
     )
     dp_ms = int((time.monotonic() - started_dp) * 1000)
