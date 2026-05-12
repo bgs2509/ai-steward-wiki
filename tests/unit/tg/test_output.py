@@ -212,3 +212,57 @@ async def test_length_cap_summarizer_truncates_with_ellipsis() -> None:
     assert out.endswith("\u2026")
     short = "hello"
     assert await summ.summarize(short) == short
+
+
+@pytest.mark.asyncio
+async def test_deliver_digest_splits_at_b_headers(tmp_path, audit_session_maker) -> None:
+    sender = FakeSender()
+    pad = "строка наполнителя. " * 110
+    text = (
+        "<b>📌 TL;DR</b>\nкоротко.\n\n"
+        f"<b>📅 Сегодня</b>\n{pad}\n\n"
+        f"<b>💊 Лекарства</b>\n{pad}\n"
+    )
+    assert INLINE_THRESHOLD < len(text) <= CHAIN_THRESHOLD
+    receipt = await deliver_output(
+        sender=sender,
+        chat_id=10,
+        telegram_id=7,
+        wiki_id="health",
+        run_id="digest-test1",
+        text=text,
+        runs_dir=tmp_path / "runs",
+        audit_session_maker=audit_session_maker,
+        kind="digest",
+    )
+    assert 2 <= receipt.n_messages <= 3
+    assert receipt.document_sent is False
+    msgs = [m["text"] for m in sender.sends]
+    for i, m in enumerate(msgs, start=1):
+        assert m.rstrip().endswith(f"({i}/{len(msgs)})")
+    # The split landed on a <b>-prioritised boundary.
+    assert "<b>" in msgs[1]
+
+
+@pytest.mark.asyncio
+async def test_deliver_digest_large_to_document(tmp_path, audit_session_maker) -> None:
+    sender = FakeSender()
+    text = "<b>📌 TL;DR</b>\n" + ("очень длинная сводка. " * 700)
+    assert len(text) > CHAIN_THRESHOLD
+    receipt = await deliver_output(
+        sender=sender,
+        chat_id=10,
+        telegram_id=7,
+        wiki_id="health",
+        run_id="digest-test2",
+        text=text,
+        runs_dir=tmp_path / "runs",
+        audit_session_maker=audit_session_maker,
+        kind="digest",
+    )
+    assert receipt.document_sent is True
+    assert receipt.summary_chars is not None
+    assert len(sender.documents) == 1
+    async with audit_session_maker() as s:
+        row = (await s.execute(select(RunOutput))).scalars().one()
+        assert row.kind == "digest"
