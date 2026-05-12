@@ -72,7 +72,7 @@
         <type-JobDLQ PURPOSE="Dead-letter row for permanently-failed jobs (D-019)"/>
         <type-JobPayload PURPOSE="Annotated discriminated union over WikiRun/Digest/CronUser/Purge/Reminder"/>
         <type-ReminderPayload PURPOSE="kind='reminder_job' payload: message:str, lead_time_min:int=0 (aisw-kcz)"/>
-        <type-DigestPayload PURPOSE="kind='digest' payload: wiki_scope:Literal['all']='all', recurrence:Recurrence, window_hours:int=24 (1..168), prompt_hint:str|None (aisw-oqq)"/>
+        <type-DigestPayload PURPOSE="kind='digest' payload: wiki_scope:'all'|list[str] (non-empty; aisw-269 — no jobs.db migration), recurrence:Recurrence, window_hours:int=24 (1..168), prompt_hint:str|None (aisw-oqq)"/>
         <fn-build_engine PURPOSE="Create AsyncEngine with PRAGMAs applied"/>
         <fn-build_sessionmaker PURPOSE="async_sessionmaker bound to engine"/>
         <fn-parse_job_payload PURPOSE="Validate dict into JobPayload union"/>
@@ -141,15 +141,16 @@
     </M-RUNTIME-WIRING>
 
     <M-TG-HANDLERS-WIRING NAME="Telegram handlers wiring" TYPE="RUNTIME" STATUS="done">
-      <purpose>aiogram Router that adapts Telegram message/callback events (text/voice/photo/audio/video_note/document/callback) to a MessagePipeline, composed into the Dispatcher. audio and video_note route to on_voice (STT path); photo forwards message.caption; photos and image-documents are forwarded with media_paths.</purpose>
+      <purpose>aiogram Router that adapts Telegram message/callback events to a MessagePipeline (+ the bot's first slash commands, aisw-269): /digest_now and /expand &lt;section&gt; (Command-filter handlers reaching scheduler.firing accessors), then text/voice/photo/audio/video_note/document and the confirm callback, composed into the Dispatcher. The text handler already excludes "/"-prefixed messages, so command order is irrelevant. audio and video_note route to on_voice (STT path); photo forwards message.caption; photos and image-documents are forwarded with media_paths.</purpose>
       <path>src/ai_steward_wiki/tg/handlers.py</path>
-      <depends>M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO</depends>
+      <depends>M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-SCHEDULER-FIRING</depends>
       <verification-ref>V-M-TG-HANDLERS-WIRING</verification-ref>
       <annotations>
-        <fn-build_router PURPOSE="factory wiring 7 aiogram handlers (text, voice, photo, audio, video_note, document, callback) to a MessagePipeline"/>
+        <fn-build_router PURPOSE="factory wiring the slash commands (/digest_now, /expand) + the 7 message/callback handlers (text, voice, photo, audio, video_note, document, callback) to a MessagePipeline"/>
         <fn-parse_confirm_callback PURPOSE="parse confirm:&lt;pending_id&gt;:&lt;action&gt; payload (D-023)"/>
         <fn-_download_bytes PURPOSE="bot.get_file + bot.download into BytesIO"/>
         <type-CONFIRM_CALLBACK_PREFIX PURPOSE="'confirm:' callback_data prefix (D-023)"/>
+        <type-EXPAND_SECTION_KEYS PURPOSE="('today','meds','trackers','wiki') — the /expand &lt;section&gt; keys, mirroring the D-024 digest headers (aisw-269)"/>
       </annotations>
     </M-TG-HANDLERS-WIRING>
 
@@ -211,9 +212,12 @@
         <fn-create_reminder_job PURPOSE="INSERT+commit a jobs.Job(kind='reminder_job', status='pending', scheduled_at_utc, payload=ReminderPayload) then scheduler.add_job(fire_job, DateTrigger, args=[job_id], misfire_grace_time=None); returns job_id"/>
         <fn-fire_job PURPOSE="APScheduler callback (picklable int arg): load Job, guard status=='pending' else skip, mark in_progress → sender.send_message('🔔 Напоминание: …') → done (or failed+last_error); fail-fast if context not set"/>
         <fn-set_digest_context PURPOSE="install the module-level digest registry (runner adapter, Semaphore, WikiLockManager, owner-WIKI-set resolver, jobs sessionmaker, TgSender) for fire_digest_job once at startup"/>
-        <fn-create_digest_job PURPOSE="INSERT+commit a jobs.Job(kind='digest_job', status='scheduled', priority=Lane.DIGEST, payload=DigestPayload(recurrence, wiki_scope, window_hours)) then scheduler.add_job(fire_digest_job, CronTrigger(**recurrence.to_cron(), timezone=rec.tz), args=[job_id], id='digest:&lt;id&gt;', replace_existing=True); commit-before-add_job; returns job_id"/>
-        <fn-fire_digest_job PURPOSE="APScheduler callback (picklable int arg): load Job, guard status=='scheduled' else skip; resolve owner WIKI set (minus Inbox-WIKI) → primary + extra_add_dirs; assemble prompts/digest.md + jobs.db planner context; run_wiki_session under Semaphore + WikiLockManager(primary); deliver assistant text (or empty-digest line) via tg/output; success → status stays 'scheduled', retry_count=0; failure/timeout → retry_count++ and at 3 → status='disabled' + remove_job + move_to_dlq; bad payload → 'disabled' + DLQ"/>
-        <type-DigestNotInitialisedError PURPOSE="raised by fire_digest_job when set_digest_context was never called"/>
+        <fn-create_digest_job PURPOSE="INSERT+commit a jobs.Job(kind='digest_job', status='scheduled', priority=Lane.DIGEST, payload=DigestPayload(recurrence, wiki_scope:str|list[str], window_hours)) then scheduler.add_job(fire_digest_job, CronTrigger(**recurrence.to_cron(), timezone=rec.tz), args=[job_id], id='digest:&lt;id&gt;', replace_existing=True); commit-before-add_job; logs scheduler.digest.scheduled with wiki_scope; returns job_id (aisw-269: list scope)"/>
+        <fn-fire_digest_job PURPOSE="APScheduler callback (picklable int arg): load Job, guard status=='scheduled' else skip; resolve owner WIKI set (minus Inbox-WIKI); if payload.wiki_scope is a list intersect by dir-stem (scheduler.digest.scope_filter; empty kept → ru notice, scheduler.digest.delivered empty='scope_vanished', no strike); → primary + extra_add_dirs; assemble prompts/digest.md + jobs.db planner context; run_wiki_session under Semaphore + WikiLockManager(primary); deliver via tg/output; success → status stays 'scheduled', retry_count=0; failure/timeout → retry_count++ and at 3 → status='disabled' + remove_job + move_to_dlq; bad payload → 'disabled' + DLQ"/>
+        <fn-list_owner_digest_job_ids PURPOSE="read-only: the calling owner's enabled (status=='scheduled') digest_job ids — for the /digest_now slash command (aisw-269)"/>
+        <fn-run_section_expand PURPOSE="re-run Claude scoped to one digest section over the owner's WIKI set via DigestRunner(section=...) (returns text, or None if no WIKI) — for the /expand &lt;section&gt; slash command (aisw-269)"/>
+        <type-DigestRunner PURPOSE="Protocol — async digest runner; section:str|None=None (None ⇒ full prompts/digest.md, a key ⇒ prompts/digest_expand.md)"/>
+        <type-DigestNotInitialisedError PURPOSE="raised by fire_digest_job / list_owner_digest_job_ids / run_section_expand when set_digest_context was never called"/>
       </annotations>
     </M-SCHEDULER-FIRING>
 
@@ -439,9 +443,10 @@
         <type-OutputDelivery PURPOSE="narrow deliver_output wrapper Protocol"/>
         <fn-_handle_reminder_confirm PURPOSE="on_confirm_callback branch for category=='reminder' pending rows: resolve race-safely → on 'confirmed' rebuild the draft + scheduler.firing.create_reminder_job + ack; cancel/stale → ru notice (aisw-kcz)"/>
         <fn-build_reminder_recap PURPOSE="ru recap line 'Поставлю напоминание на DD.MM HH:MM (TZ): «message». Подтверждаешь?' for the reminder confirm draft (aisw-kcz)"/>
-        <fn-_handle_digest_intent PURPOSE="recurring-digest fast-path (replaces the reminder branch's recurring-keyword stub): parse_recurrence → on escalate ru clarification, else build a category='digest' confirm draft (recurrence, wiki_scope='all', window_hours=24) + recap and ConfirmationService.request_explicit (aisw-oqq)"/>
-        <fn-_handle_digest_confirm PURPOSE="on_confirm_callback branch for category=='digest': resolve race-safely → on 'confirmed' rebuild the draft + scheduler.firing.create_digest_job + ack; cancel/stale → ru notice (aisw-oqq)"/>
-        <fn-build_digest_recap PURPOSE="ru recap line 'Буду присылать сводку &lt;recurrence-human&gt; по WIKI: &lt;list&gt;. Подтверждаешь?' for the digest confirm draft (aisw-oqq)"/>
+        <fn-_handle_digest_intent PURPOSE="recurring-digest fast-path: parse_recurrence → on escalate ru clarification; aisw-269 — if owner_wikis_resolver wired, extract_wiki_names(text, owner-stems): a «по &lt;Name&gt;» token matching no WIKI → ru clarification (tg.pipeline.digest.wiki_unknown), no draft; else build a category='digest' confirm draft (recurrence, wiki_scope:'all'|list[str], window_hours=24) + recap and ConfirmationService.request_explicit"/>
+        <fn-_handle_digest_confirm PURPOSE="on_confirm_callback branch for category=='digest': resolve race-safely → on 'confirmed' rebuild the draft + scheduler.firing.create_digest_job (wiki_scope passed through as 'all'|list[str]) + ack (names the WIKIs when scoped); cancel/stale → ru notice (aisw-oqq; aisw-269 scope)"/>
+        <fn-build_digest_recap PURPOSE="ru recap line for the digest confirm draft; appends 'по WIKI: &lt;list&gt;' when wiki_scope is a list (aisw-oqq; +wiki_scope aisw-269)"/>
+        <fn-extract_wiki_names PURPOSE="heuristic WIKI-name extraction for the digest fast-path: whole-token case-insensitive ∩ with the owner's *-WIKI/ dir-stems → list[str]; none mentioned → 'all'; a capitalised token after «по …» matching no stem → None (caller clarifies) (aisw-269)"/>
       </annotations>
     </M-TG-PIPELINE-CLASSIFIER>
 
@@ -461,6 +466,7 @@
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-PIPELINE-CLASSIFIER" relation="thin handlers delegate to MessagePipeline (DefaultPipeline)"/>
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-VOICE" relation="VoiceHandler for STT staging — voice, audio and video_note all route to on_voice"/>
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-PHOTO" relation="PhotoIngestor; photos run Claude vision via the wiki pipeline (media_paths)"/>
+    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-SCHEDULER-FIRING" relation="/digest_now → firing.list_owner_digest_job_ids + firing.fire_digest_job per row; /expand → firing.run_section_expand (aisw-269)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-TG-HANDLERS-WIRING" relation="constructs DefaultPipeline + include_router via build_dispatcher(pipeline=...)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-FOUNDATION-SETTINGS" relation="reads Settings (tokens, db urls, users_toml_path, media_staging_root, voice_*, photo_*)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-AUTH-USERS" relation="loads users.toml then sync_to_sessions_db + replace_global"/>
