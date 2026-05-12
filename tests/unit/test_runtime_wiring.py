@@ -107,6 +107,9 @@ def test_amain_composes_and_shuts_down_cleanly(tmp_path: Path) -> None:
     settings.audit_db_url = f"sqlite+aiosqlite:///{tmp_path}/audit.db"
     settings.sessions_db_url = f"sqlite+aiosqlite:///{tmp_path}/sessions.db"
     settings.users_toml_path = None
+    # aisw-zd9: _LibrarianAdapter builds a WikiLifecycleManager from these.
+    settings.wiki_max_per_user = 20
+    settings.wiki_trash_retention_days = 30
 
     async def trigger_stop() -> None:
         await asyncio.sleep(0.05)

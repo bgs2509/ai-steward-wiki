@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.2.0
+# VERSION: 0.3.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -11,23 +11,31 @@
 #          _ensure_data_dirs, _run_all_migrations, _load_users_config,
 #          _install_signal_handlers, _build_classifier_backend,
 #          _ClassifierAdapter, _WikiRunnerAdapter, _OutputDeliveryAdapter,
-#          _RouterAdapter, _render_raw_sidecar.
+#          _RouterAdapter, _render_raw_sidecar, _LibrarianAdapter.
 #   DEPENDS: aiogram, apscheduler, alembic, structlog, sqlalchemy.async,
 #            ai_steward_wiki.{settings, logging_setup, tg.bot, tg.pipeline,
 #            tg.output, tg.voice, tg.photo, scheduler.core, scheduler.locks,
-#            scheduler.maintenance, inbox.materialize, inbox.router, inbox.staging,
-#            classifier.{backend,schema,stage0}, wiki.{runner,acquire},
+#            scheduler.maintenance, inbox.materialize, inbox.router, inbox.route,
+#            inbox.staging, classifier.{backend,schema,stage0},
+#            wiki.{runner,acquire,lifecycle},
 #            storage.{jobs,audit,sessions}.engine, auth.{allowlist,users_toml}}
 #   LINKS: M-FOUNDATION, M-STORAGE, M-AUTH-USERS, M-SCHEDULER,
-#          M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-OUTPUT,
+#          M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-TG-OUTPUT,
 #          M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX,
-#          M-INBOX-ROUTER, M-DEPLOY
+#          M-INBOX-ROUTER, M-INBOX-ROUTE, M-DEPLOY
 #   ROLE: RUNTIME
 #   MAP_MODE: NONE
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.2.0 - aisw-dsg (Inbox-WIKI Phase-A): add _RouterAdapter —
+#   LAST_CHANGE: v0.3.0 - aisw-zd9 (Inbox-WIKI Phase-B): add _LibrarianAdapter —
+#                resolve_target_wiki (lookup-or-create the target <Domain>-WIKI;
+#                AntiSpamCapError/WikiNameError → rejected) → stage_raw_into_wiki
+#                (move raw + promote media into <Domain>-WIKI/raw/) →
+#                run_wiki_session there (prompts/wiki.md + domain overlay) →
+#                IngestOutcome(notes + summary | notes + hint). Wired into
+#                DefaultPipeline as `librarian=`. New log anchors inbox.route.*.
+#   PREVIOUS:    v0.2.0 - aisw-dsg (Inbox-WIKI Phase-A): add _RouterAdapter —
 #                ensure_inbox_wiki → stage raw payload into Inbox-WIKI/raw/ →
 #                run_wiki_session in Inbox-WIKI/ with prompts/inbox.md →
 #                parse_router_reply; WikiRunnerError → RouterError. Wired into
@@ -83,6 +91,13 @@ from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
 from ai_steward_wiki.classifier.stage0 import PromptCache, classify
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
 from ai_steward_wiki.inbox.materialize import ensure_inbox_wiki
+from ai_steward_wiki.inbox.route import (
+    RouteRejection,
+    build_ingest_prompt,
+    pick_domain_overlay,
+    resolve_target_wiki,
+    stage_raw_into_wiki,
+)
 from ai_steward_wiki.inbox.router import RouterDecision, RouterError, parse_router_reply
 from ai_steward_wiki.inbox.staging import promote_path_to_raw
 from ai_steward_wiki.logging_setup import configure_logging
@@ -99,10 +114,12 @@ from ai_steward_wiki.tg.photo import PhotoIngestor
 from ai_steward_wiki.tg.pipeline import (
     DefaultPipeline,
     DefaultStreamingDelivery,
+    IngestOutcome,
     WikiRunOutcome,
 )
 from ai_steward_wiki.tg.voice import FasterWhisperTranscriber, VoiceHandler
 from ai_steward_wiki.wiki.acquire import WikiLockAdapter
+from ai_steward_wiki.wiki.lifecycle import WikiLifecycleManager
 from ai_steward_wiki.wiki.runner import (
     AsyncioSpawner,
     WikiRunnerError,
@@ -479,6 +496,152 @@ class _RouterAdapter:
 # END_BLOCK_INBOX_ROUTER_ADAPTER
 
 
+# START_BLOCK_INBOX_LIBRARIAN_ADAPTER (aisw-zd9, Inbox-WIKI Phase-B)
+class _LibrarianAdapter:
+    """Inbox-WIKI Stage-1b librarian: resolve/create the target <Domain>-WIKI from a
+    RouterDecision, move the raw payload into it, run Claude there (prompts/wiki.md +
+    a domain overlay) to ingest, and compose the user reply (M-INBOX-ROUTE)."""
+
+    def __init__(
+        self,
+        *,
+        wiki_root: Path,
+        prompts_dir: Path,
+        lifecycle: WikiLifecycleManager,
+        runtime_dir: Path,
+        acquirer: WikiLockAdapter,
+        spawner: AsyncioSpawner,
+        run_config: _RunConfig,
+    ) -> None:
+        self._wiki_root = wiki_root
+        self._prompts_dir = prompts_dir
+        self._lifecycle = lifecycle
+        self._runtime_dir = runtime_dir
+        self._acquirer = acquirer
+        self._spawner = spawner
+        self._run_config = run_config
+
+    async def ingest(
+        self,
+        decision: RouterDecision,
+        *,
+        telegram_id: int,
+        user_text: str,
+        source: Literal["text", "voice", "document", "photo"],
+        media_paths: list[Path] | None = None,
+        correlation_id: str,
+    ) -> IngestOutcome:
+        def _on_route_missing() -> None:
+            logger.warning(
+                "inbox.route.route_target_was_missing",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                target_wiki=decision.target_wiki,
+            )
+
+        target = resolve_target_wiki(
+            decision,
+            lifecycle=self._lifecycle,
+            owner=telegram_id,
+            wiki_root=self._wiki_root,
+            default_template_id="_default",
+            on_route_missing=_on_route_missing,
+        )
+        if isinstance(target, RouteRejection):
+            logger.info(
+                f"inbox.route.{'cap_reached' if target.reason == 'cap' else 'bad_name'}",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                target_wiki=decision.target_wiki,
+            )
+            return IngestOutcome(
+                status="rejected",
+                reply=f"{decision.notes}\n\n{target.hint}",
+                run_id=None,
+                target_wiki=None,
+                created=False,
+            )
+        logger.info(
+            "inbox.route.target_resolved",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            target_wiki=target.wiki_name.primary,
+            created=target.created,
+        )
+        staged = await asyncio.to_thread(
+            stage_raw_into_wiki,
+            target.wiki_dir,
+            source=source,
+            user_text=user_text,
+            media_paths=media_paths,
+        )
+        overlay = pick_domain_overlay(self._prompts_dir, target.wiki_name.slug)
+        prompt = build_ingest_prompt(user_text, staged)
+        run_id = f"ingest-{uuid4().hex[:12]}"
+        wiki_id = f"{telegram_id}/{target.wiki_name.primary}"
+        logger.info(
+            "inbox.route.ingest.begin",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            wiki_id=wiki_id,
+            run_id=run_id,
+            source=source,
+            media_count=len(staged.media_abs),
+        )
+        try:
+            result = await run_wiki_session(
+                wiki_id=wiki_id,
+                wiki_path=target.wiki_dir,
+                base_prompt_path=self._prompts_dir / "wiki.md",
+                overlay_prompt_path=overlay,
+                run_id=run_id,
+                correlation_id=correlation_id,
+                runtime_dir=self._runtime_dir,
+                acquirer=self._acquirer,
+                spawner=self._spawner,
+                config=self._run_config,
+                user_input=prompt,
+                media_paths=staged.media_abs or None,
+                timeout_s=None,
+            )
+        except WikiRunnerError:
+            logger.exception(
+                "inbox.route.ingest_failed",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                wiki_id=wiki_id,
+                run_id=run_id,
+                error_class="WikiRunnerError",
+            )
+            return IngestOutcome(
+                status="run_failed",
+                reply=f"{decision.notes}\n\nНе удалось разложить по полочкам — попробую позже.",  # noqa: RUF001
+                run_id=run_id,
+                target_wiki=target.wiki_name.primary,
+                created=target.created,
+            )
+        summary = aggregate_text(result.events)
+        logger.info(
+            "inbox.route.ingest.done",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            wiki_id=wiki_id,
+            run_id=run_id,
+            latency_ms=result.latency_ms,
+            chars=len(summary),
+        )
+        return IngestOutcome(
+            status="ok",
+            reply=f"{decision.notes}\n\n{summary or '(WIKI обновлена)'}",
+            run_id=run_id,
+            target_wiki=target.wiki_name.primary,
+            created=target.created,
+        )
+
+
+# END_BLOCK_INBOX_LIBRARIAN_ADAPTER
+
+
 def _build_classifier_backend(settings: Settings) -> ClassifierBackend:
     """Construct the configured Stage-0 backend; raise on misconfiguration."""
     if settings.stage0_backend == "anthropic_api":
@@ -642,6 +805,24 @@ async def _amain() -> None:
             claude_config_dir=settings.claude_config_dir,
         ),
     )
+    librarian_adapter = _LibrarianAdapter(
+        wiki_root=settings.wiki_root,
+        prompts_dir=settings.prompts_dir,
+        lifecycle=WikiLifecycleManager(
+            settings.wiki_root,
+            max_per_user=settings.wiki_max_per_user,
+            retention_days=settings.wiki_trash_retention_days,
+        ),
+        runtime_dir=runtime_dir,
+        acquirer=WikiLockAdapter(lock_manager),
+        spawner=AsyncioSpawner(),
+        run_config=_RunConfig(
+            model=settings.wiki_runner_model,
+            timeout_s=settings.wiki_runner_timeout_s,
+            term_grace_s=settings.wiki_runner_term_grace_s,
+            claude_config_dir=settings.claude_config_dir,
+        ),
+    )
     runs_dir = settings.workspace_root / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     output_adapter = _OutputDeliveryAdapter(
@@ -687,6 +868,7 @@ async def _amain() -> None:
         output=output_adapter,
         streaming=streaming_delivery,
         router=router_adapter,
+        librarian=librarian_adapter,
         pii=PIIRedactor(hash_secret=settings.pii_hash_secret.get_secret_value().encode("utf-8")),
         photo_vision_timeout_s=settings.photo_vision_timeout_s,
     )
