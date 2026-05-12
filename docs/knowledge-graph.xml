@@ -102,7 +102,7 @@
     </M-STORAGE-AUDIT>
 
     <M-STORAGE-SESSIONS NAME="Storage / sessions.db" TYPE="RUNTIME" STATUS="done">
-      <purpose>Runtime TG state and hot-path caches for sessions.db (D-006, D-031, D-042, D-030, D-023).</purpose>
+      <purpose>Runtime TG state and hot-path caches for sessions.db (D-006, D-031, D-042, D-030, D-023; user_digest_prefs per-user digest section toggles — ADR-025/ADR-026, aisw-pv8).</purpose>
       <path>src/ai_steward_wiki/storage/sessions/</path>
       <depends>M-STORAGE</depends>
       <verification-ref>V-M-STORAGE-SESSIONS</verification-ref>
@@ -113,9 +113,15 @@
         <type-PendingConfirm PURPOSE="Explicit-confirm 10min TTL (D-023)"/>
         <type-InboxHintCache PURPOSE="Per-user runtime catalog of '## Inbox hint'"/>
         <type-FsmState PURPOSE="aiogram FSM persistence"/>
+        <type-UserDigestPrefs PURPOSE="Per-owner digest section toggles (trackers/wiki on-off; FK users.user_id CASCADE; absent row ⇒ all on) — ADR-026, aisw-pv8"/>
+        <type-DigestPrefs PURPOSE="Frozen view of one owner's digest toggles (+ disabled_keys); both True when no row / no user"/>
+        <type-TOGGLEABLE_DIGEST_SECTIONS PURPOSE="('trackers','wiki') — the digest section keys an owner may toggle (subset of M-TG-HANDLERS-WIRING EXPAND_SECTION_KEYS)"/>
+        <type-SECTION_DISPLAY_NAME PURPOSE="toggleable section key → ru label with emoji (for /digest_sections buttons + the fire_digest_job directive)"/>
         <fn-build_engine PURPOSE="Create AsyncEngine with PRAGMAs applied"/>
         <fn-build_sessionmaker PURPOSE="async_sessionmaker bound to engine"/>
         <fn-resolve_user_id PURPOSE="telegram_id → users.user_id surrogate, or None (D-042)"/>
+        <fn-get_digest_prefs PURPOSE="telegram_id → DigestPrefs (both True if no users row / no prefs row); read-only"/>
+        <fn-set_digest_section PURPOSE="upsert one section's bool for telegram_id (creates the row with defaults if absent; bumps updated_at_utc); no-op + defaults if telegram_id has no users row; ValueError on unknown section"/>
       </annotations>
     </M-STORAGE-SESSIONS>
 
@@ -142,15 +148,17 @@
     </M-RUNTIME-WIRING>
 
     <M-TG-HANDLERS-WIRING NAME="Telegram handlers wiring" TYPE="RUNTIME" STATUS="done">
-      <purpose>aiogram Router that adapts Telegram message/callback events to a MessagePipeline (+ the bot's first slash commands, aisw-269): /digest_now and /expand &lt;section&gt; (Command-filter handlers reaching scheduler.firing accessors), then text/voice/photo/audio/video_note/document and the confirm callback, composed into the Dispatcher. The text handler already excludes "/"-prefixed messages, so command order is irrelevant. audio and video_note route to on_voice (STT path); photo forwards message.caption; photos and image-documents are forwarded with media_paths.</purpose>
+      <purpose>aiogram Router that adapts Telegram message/callback events to a MessagePipeline (+ the bot's slash commands): /digest_now, /expand &lt;section&gt; (aisw-269) and /digest_sections (aisw-pv8) — Command-filter handlers reaching scheduler.firing accessors; the digestsec: toggle callback; then text/voice/photo/audio/video_note/document and the confirm callback, composed into the Dispatcher. The text handler already excludes "/"-prefixed messages, so command order is irrelevant. audio and video_note route to on_voice (STT path); photo forwards message.caption; photos and image-documents are forwarded with media_paths.</purpose>
       <path>src/ai_steward_wiki/tg/handlers.py</path>
-      <depends>M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-SCHEDULER-FIRING</depends>
+      <depends>M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-SCHEDULER-FIRING, M-STORAGE-SESSIONS</depends>
       <verification-ref>V-M-TG-HANDLERS-WIRING</verification-ref>
       <annotations>
-        <fn-build_router PURPOSE="factory wiring the slash commands (/digest_now, /expand) + the 7 message/callback handlers (text, voice, photo, audio, video_note, document, callback) to a MessagePipeline"/>
+        <fn-build_router PURPOSE="factory wiring the slash commands (/digest_now, /expand, /digest_sections) + the digestsec: callback + the 7 message/callback handlers (text, voice, photo, audio, video_note, document, confirm-callback) to a MessagePipeline"/>
         <fn-parse_confirm_callback PURPOSE="parse confirm:&lt;pending_id&gt;:&lt;action&gt; payload (D-023)"/>
+        <fn-parse_digestsec_callback PURPOSE="parse digestsec:&lt;section&gt;:&lt;0|1&gt; → (section, target_enabled) or None (the flag is the TARGET state — idempotent on a stale message) — aisw-pv8"/>
         <fn-_download_bytes PURPOSE="bot.get_file + bot.download into BytesIO"/>
         <type-CONFIRM_CALLBACK_PREFIX PURPOSE="'confirm:' callback_data prefix (D-023)"/>
+        <type-DIGESTSEC_CALLBACK_PREFIX PURPOSE="'digestsec:' callback_data prefix for the /digest_sections toggle buttons (aisw-pv8)"/>
         <type-EXPAND_SECTION_KEYS PURPOSE="('today','meds','trackers','wiki') — the /expand &lt;section&gt; keys, mirroring the D-024 digest headers (aisw-269)"/>
       </annotations>
     </M-TG-HANDLERS-WIRING>
@@ -206,19 +214,21 @@
     <M-SCHEDULER-FIRING NAME="Scheduler / job firing" TYPE="RUNTIME" STATUS="done">
       <purpose>Cron/date job firing bridge: one-shot reminder (aisw-kcz, Phase-D.a) — create_reminder_job writes a jobs.Job row then registers an APScheduler DateTrigger, fire_job delivers it as a plain Telegram message (no Claude/WIKI); recurring digest (aisw-oqq, Phase-D.b.1) — create_digest_job writes a jobs.Job(kind='digest_job', status='scheduled') then scheduler.add_job(fire_digest_job, CronTrigger, replace_existing=True), fire_digest_job resolves the owner's WIKI set, runs run_wiki_session with extra_add_dirs under a Semaphore + per-WIKI lock, delivers the assistant text via tg/output, and on 3 consecutive failures auto-disables (status='disabled' + remove_job + move_to_dlq, D-019; 600s timeout = Transient strike); both firing callbacks take only a picklable int and read deps from module-level context registries set once at startup (D-002, D-010, D-019, D-022, D-024, D-025, tech-spec §3/§6, ADR-006, ADR-007).</purpose>
       <path>src/ai_steward_wiki/scheduler/firing.py</path>
-      <depends>M-STORAGE-JOBS, M-SCHEDULER, M-TG-TEXT, M-WIKI-RUNNER, M-WIKI-LIFECYCLE</depends>
+      <depends>M-STORAGE-JOBS, M-SCHEDULER, M-TG-TEXT, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-STORAGE-SESSIONS</depends>
       <verification-ref>V-M-SCHEDULER-FIRING</verification-ref>
       <annotations>
         <fn-set_firing_context PURPOSE="install the module-level (TgSender, jobs async_sessionmaker) registry for fire_job once at startup"/>
         <fn-create_reminder_job PURPOSE="INSERT+commit a jobs.Job(kind='reminder_job', status='pending', scheduled_at_utc, payload=ReminderPayload) then scheduler.add_job(fire_job, DateTrigger, args=[job_id], misfire_grace_time=None); returns job_id"/>
         <fn-fire_job PURPOSE="APScheduler callback (picklable int arg): load Job, guard status=='pending' else skip, mark in_progress → sender.send_message('🔔 Напоминание: …') → done (or failed+last_error); fail-fast if context not set"/>
-        <fn-set_digest_context PURPOSE="install the module-level digest registry (runner adapter, Semaphore, WikiLockManager, owner-WIKI-set resolver, jobs sessionmaker, TgSender) for fire_digest_job once at startup"/>
+        <fn-set_digest_context PURPOSE="install the module-level digest registry (runner adapter, Semaphore, WikiLockManager, owner-WIKI-set resolver, jobs sessionmaker, audit sessionmaker, TgSender, sessions sessionmaker — the last for user_digest_prefs, aisw-pv8) for fire_digest_job once at startup"/>
         <fn-create_digest_job PURPOSE="INSERT+commit a jobs.Job(kind='digest_job', status='scheduled', priority=Lane.DIGEST, payload=DigestPayload(recurrence, wiki_scope:str|list[str], window_hours)) then scheduler.add_job(fire_digest_job, CronTrigger(**recurrence.to_cron(), timezone=rec.tz), args=[job_id], id='digest:&lt;id&gt;', replace_existing=True); commit-before-add_job; logs scheduler.digest.scheduled with wiki_scope; returns job_id (aisw-269: list scope)"/>
-        <fn-fire_digest_job PURPOSE="APScheduler callback (picklable int arg): load Job, guard status=='scheduled' else skip; resolve owner WIKI set (minus Inbox-WIKI); if payload.wiki_scope is a list intersect by dir-stem (scheduler.digest.scope_filter; empty kept → ru notice, scheduler.digest.delivered empty='scope_vanished', no strike); → primary + extra_add_dirs; assemble prompts/digest.md + jobs.db planner context; run_wiki_session under Semaphore + WikiLockManager(primary); deliver via tg/output; success → status stays 'scheduled', retry_count=0; failure/timeout → retry_count++ and at 3 → status='disabled' + remove_job + move_to_dlq; bad payload → 'disabled' + DLQ"/>
+        <fn-fire_digest_job PURPOSE="APScheduler callback (picklable int arg): load Job, guard status=='scheduled' else skip; resolve owner WIKI set (minus Inbox-WIKI); if payload.wiki_scope is a list intersect by dir-stem (scheduler.digest.scope_filter; empty kept → ru notice, scheduler.digest.delivered empty='scope_vanished', no strike); → primary + extra_add_dirs; assemble prompts/digest.md + jobs.db planner context; read the owner's user_digest_prefs (degrade-to-all-on on any error → scheduler.digest.prefs_read_failed) and, when a section is off, append «Не включай разделы: …» to the planner context + log scheduler.digest.sections_filtered — byte-identical otherwise (aisw-pv8); run_wiki_session under Semaphore + WikiLockManager(primary); deliver via tg/output; success → status stays 'scheduled', retry_count=0; failure/timeout → retry_count++ and at 3 → status='disabled' + remove_job + move_to_dlq; bad payload → 'disabled' + DLQ"/>
         <fn-list_owner_digest_job_ids PURPOSE="read-only: the calling owner's enabled (status=='scheduled') digest_job ids — for the /digest_now slash command (aisw-269)"/>
-        <fn-run_section_expand PURPOSE="re-run Claude scoped to one digest section over the owner's WIKI set via DigestRunner(section=...) (returns text, or None if no WIKI) — for the /expand &lt;section&gt; slash command (aisw-269)"/>
+        <fn-run_section_expand PURPOSE="re-run Claude scoped to one digest section over the owner's WIKI set via DigestRunner(section=...) (returns text, or None if no WIKI) — for the /expand &lt;section&gt; slash command (aisw-269); ignores user_digest_prefs (an explicit /expand overrides the toggle)"/>
+        <fn-get_owner_digest_prefs PURPOSE="the owner's DigestPrefs (storage.sessions.digest_prefs.get_digest_prefs over the sessions sessionmaker in the digest context) — for /digest_sections; raises DigestNotInitialisedError if unwired (aisw-pv8)"/>
+        <fn-set_owner_digest_section PURPOSE="flip one digest section for the owner (storage.sessions.digest_prefs.set_digest_section), returns the new DigestPrefs — for the digestsec: callback; raises DigestNotInitialisedError if unwired (aisw-pv8)"/>
         <type-DigestRunner PURPOSE="Protocol — async digest runner; section:str|None=None (None ⇒ full prompts/digest.md, a key ⇒ prompts/digest_expand.md)"/>
-        <type-DigestNotInitialisedError PURPOSE="raised by fire_digest_job / list_owner_digest_job_ids / run_section_expand when set_digest_context was never called"/>
+        <type-DigestNotInitialisedError PURPOSE="raised by fire_digest_job / list_owner_digest_job_ids / run_section_expand / get_owner_digest_prefs / set_owner_digest_section when set_digest_context was never called"/>
       </annotations>
     </M-SCHEDULER-FIRING>
 
@@ -472,7 +482,9 @@
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-PIPELINE-CLASSIFIER" relation="thin handlers delegate to MessagePipeline (DefaultPipeline)"/>
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-VOICE" relation="VoiceHandler for STT staging — voice, audio and video_note all route to on_voice"/>
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-PHOTO" relation="PhotoIngestor; photos run Claude vision via the wiki pipeline (media_paths)"/>
-    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-SCHEDULER-FIRING" relation="/digest_now → firing.list_owner_digest_job_ids + firing.fire_digest_job per row; /expand → firing.run_section_expand (aisw-269)"/>
+    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-SCHEDULER-FIRING" relation="/digest_now → firing.list_owner_digest_job_ids + firing.fire_digest_job per row; /expand → firing.run_section_expand (aisw-269); /digest_sections + digestsec: callback → firing.get_owner_digest_prefs / firing.set_owner_digest_section (aisw-pv8)"/>
+    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-STORAGE-SESSIONS" relation="imports DigestPrefs / TOGGLEABLE_DIGEST_SECTIONS / SECTION_DISPLAY_NAME from storage.sessions.digest_prefs for the /digest_sections inline keyboard (aisw-pv8)"/>
+    <CrossLink from="M-SCHEDULER-FIRING" to="M-STORAGE-SESSIONS" relation="reads/writes user_digest_prefs via storage.sessions.digest_prefs (fire_digest_job honours the toggles; get/set_owner_digest_section accessors) — aisw-pv8"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-TG-HANDLERS-WIRING" relation="constructs DefaultPipeline + include_router via build_dispatcher(pipeline=...)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-FOUNDATION-SETTINGS" relation="reads Settings (tokens, db urls, users_toml_path, wiki_root, voice_*, photo_*)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-AUTH-USERS" relation="loads users.toml then sync_to_sessions_db + replace_global"/>
