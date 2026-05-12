@@ -1,27 +1,31 @@
 # FILE: src/ai_steward_wiki/tg/handlers.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: aiogram Router that adapts Telegram message/callback events to
 #            the MessagePipeline Protocol. Handlers stay thin: extract IDs,
 #            download bytes when needed, delegate; no business logic here.
-#   SCOPE: build_router(pipeline) -> Router. Five handlers: text, voice,
-#          photo, document, confirm callback. Private helpers
-#          _download_bytes for file-id payloads.
+#   SCOPE: build_router(pipeline) -> Router. Seven handlers: text, voice,
+#          photo, audio, video_note, document, confirm callback. Audio and
+#          video_note route to on_voice (STT path); photo forwards caption.
+#          Private helper _download_bytes for file-id payloads.
 #   DEPENDS: aiogram (Router, F, Bot, types), structlog,
 #            ai_steward_wiki.tg.pipeline.MessagePipeline
-#   LINKS: M-TG-HANDLERS-WIRING (chunk 19), D-023, D-031, D-042
+#   LINKS: M-TG-HANDLERS-WIRING (chunk 19), D-022, D-023, D-031, D-042
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
 #   CONFIRM_CALLBACK_PREFIX - "confirm:" callback_data prefix (D-023)
-#   build_router - factory wiring 5 handlers to a MessagePipeline
+#   build_router - factory wiring 7 handlers to a MessagePipeline
 #   parse_confirm_callback - parse `confirm:<pending_id>:<action>` payload
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 19: initial Router wiring delegating to pipeline
+#   LAST_CHANGE: v0.0.2 - aisw-ahv (media chunk 3): add F.audio + F.video_note
+#                handlers (route to on_voice STT path); photo handler forwards
+#                message.caption to on_photo (D-022).
+#   PREVIOUS:    v0.0.1 - chunk 19: initial Router wiring delegating to pipeline
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -138,8 +142,52 @@ def build_router(pipeline: MessagePipeline) -> Router:
             update_id=message.message_id,
             photo_bytes=data,
             mime="image/jpeg",  # TG re-encodes photos to JPEG (D-022)
+            caption=message.caption,
         )
         # END_BLOCK_HANDLER_PHOTO
+
+    @router.message(F.audio)
+    async def _on_audio(message: Message) -> None:
+        # START_BLOCK_HANDLER_AUDIO
+        # Audio files (mp3/ogg/m4a) take the same STT path as voice messages (D-022).
+        if (
+            message.from_user is None
+            or message.audio is None
+            or message.chat is None
+            or message.bot is None
+        ):
+            _log.debug("tg.handlers.audio.skip_missing_fields")
+            return
+        data = await _download_bytes(message.bot, message.audio.file_id)
+        await pipeline.on_voice(
+            telegram_id=message.from_user.id,
+            chat_id=message.chat.id,
+            update_id=message.message_id,
+            audio_bytes=data,
+        )
+        # END_BLOCK_HANDLER_AUDIO
+
+    @router.message(F.video_note)
+    async def _on_video_note(message: Message) -> None:
+        # START_BLOCK_HANDLER_VIDEO_NOTE
+        # Video notes (mp4) carry an audio track; faster-whisper/pyav demuxes it,
+        # so they route through the same STT path as voice (D-022).
+        if (
+            message.from_user is None
+            or message.video_note is None
+            or message.chat is None
+            or message.bot is None
+        ):
+            _log.debug("tg.handlers.video_note.skip_missing_fields")
+            return
+        data = await _download_bytes(message.bot, message.video_note.file_id)
+        await pipeline.on_voice(
+            telegram_id=message.from_user.id,
+            chat_id=message.chat.id,
+            update_id=message.message_id,
+            audio_bytes=data,
+        )
+        # END_BLOCK_HANDLER_VIDEO_NOTE
 
     @router.message(F.document)
     async def _on_document(message: Message) -> None:

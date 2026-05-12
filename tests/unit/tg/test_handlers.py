@@ -120,6 +120,18 @@ class FakeVoice:
 
 
 @dataclass
+class FakeAudio:
+    file_id: str
+    duration: int = 3
+
+
+@dataclass
+class FakeVideoNote:
+    file_id: str
+    duration: int = 5
+
+
+@dataclass
 class FakePhotoSize:
     file_id: str
     width: int = 100
@@ -141,8 +153,11 @@ class FakeMessage:
     from_user: FakeUser
     text: str | None = None
     voice: FakeVoice | None = None
+    audio: FakeAudio | None = None
+    video_note: FakeVideoNote | None = None
     photo: list[FakePhotoSize] | None = None
     document: FakeDocument | None = None
+    caption: str | None = None
     bot: Any = None
 
 
@@ -199,6 +214,89 @@ async def test_router_voice_handler_downloads_and_dispatches() -> None:
     await voice_handler(msg)
     pipeline.on_voice.assert_awaited_once_with(
         telegram_id=2, chat_id=10, update_id=556, audio_bytes=b"OGG"
+    )
+
+
+def _fake_bot_returning(payload: bytes) -> MagicMock:
+    async def _get_file(file_id: str) -> object:
+        return object()
+
+    async def _download(file: object, destination: io.BytesIO) -> None:
+        destination.write(payload)
+
+    bot = MagicMock()
+    bot.get_file = _get_file
+    bot.download = _download
+    return bot
+
+
+def _handler_by_name(router: Any, name: str) -> Any:
+    for h in router.message.handlers:
+        if getattr(h.callback, "__name__", "") == name:
+            return h.callback
+    raise AssertionError(f"no message handler named {name!r}")
+
+
+@pytest.mark.asyncio
+async def test_router_audio_handler_routes_to_on_voice() -> None:
+    pipeline = MagicMock()
+    pipeline.on_voice = AsyncMock()
+    router = build_router(pipeline)
+    handler = _handler_by_name(router, "_on_audio")
+    msg = FakeMessage(
+        message_id=600,
+        chat=FakeChat(id=10),
+        from_user=FakeUser(id=3),
+        audio=FakeAudio(file_id="AID"),
+        bot=_fake_bot_returning(b"MP3"),
+    )
+    await handler(msg)
+    pipeline.on_voice.assert_awaited_once_with(
+        telegram_id=3, chat_id=10, update_id=600, audio_bytes=b"MP3"
+    )
+
+
+@pytest.mark.asyncio
+async def test_router_video_note_handler_routes_to_on_voice() -> None:
+    pipeline = MagicMock()
+    pipeline.on_voice = AsyncMock()
+    router = build_router(pipeline)
+    handler = _handler_by_name(router, "_on_video_note")
+    msg = FakeMessage(
+        message_id=601,
+        chat=FakeChat(id=10),
+        from_user=FakeUser(id=4),
+        video_note=FakeVideoNote(file_id="VNID"),
+        bot=_fake_bot_returning(b"MP4"),
+    )
+    await handler(msg)
+    pipeline.on_voice.assert_awaited_once_with(
+        telegram_id=4, chat_id=10, update_id=601, audio_bytes=b"MP4"
+    )
+
+
+@pytest.mark.asyncio
+async def test_router_photo_handler_forwards_caption() -> None:
+    pipeline = MagicMock()
+    pipeline.on_photo = AsyncMock()
+    router = build_router(pipeline)
+    handler = _handler_by_name(router, "_on_photo")
+    msg = FakeMessage(
+        message_id=602,
+        chat=FakeChat(id=10),
+        from_user=FakeUser(id=5),
+        photo=[FakePhotoSize(file_id="PID")],
+        caption="занеси в health",
+        bot=_fake_bot_returning(b"JPG"),
+    )
+    await handler(msg)
+    pipeline.on_photo.assert_awaited_once_with(
+        telegram_id=5,
+        chat_id=10,
+        update_id=602,
+        photo_bytes=b"JPG",
+        mime="image/jpeg",
+        caption="занеси в health",
     )
 
 

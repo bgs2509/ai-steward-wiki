@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.3.3
+# VERSION: 0.3.4
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -49,6 +49,7 @@
 #   MAX_DOC_BYTES - hard cap on incoming document size (25 MB)
 #   PDF_MAX_EXTRACT_CHARS - truncate point for pypdf-extracted text
 #   PHOTO_PROMPT_RU - synthetic Stage-1 prompt for a caption-less image (D-022)
+#   PHOTO_CAPTION_PROMPT_RU - Stage-1 prompt template for an image WITH caption
 #   SUPPORTED_IMAGE_MIMES - frozenset of mimes routed to PhotoIngestor
 #   ConfirmKeyboardAction - Literal[confirm|correct|cancel]
 #   Classifier - Protocol (Stage-0 wrapper, narrow API)
@@ -62,7 +63,11 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.3.3 - aisw-m2m (media chunk 2): on_photo + image-document
+#   LAST_CHANGE: v0.3.4 - aisw-ahv (media chunk 3): on_photo accepts an optional
+#                caption — when present, PHOTO_CAPTION_PROMPT_RU carries the user
+#                request alongside the image (D-022). MessagePipeline.on_photo
+#                Protocol gains caption.
+#   PREVIOUS:    v0.3.3 - aisw-m2m (media chunk 2): on_photo + image-document
 #                branch run the wiki pipeline with media_paths (PHOTO_PROMPT_RU)
 #                so Claude vision processes the image instead of a bare ack;
 #                on_photo gains L2 dedup on image bytes; WikiRunner.run and
@@ -115,6 +120,7 @@ __all__ = [
     "ACK_VOICE_UNAVAILABLE_RU",
     "MAX_DOC_BYTES",
     "PDF_MAX_EXTRACT_CHARS",
+    "PHOTO_CAPTION_PROMPT_RU",
     "PHOTO_PROMPT_RU",
     "SUPPORTED_IMAGE_MIMES",
     "Classifier",
@@ -157,6 +163,13 @@ PHOTO_PROMPT_RU = (
     "Пользователь прислал изображение. Файл: {path}\n"
     "Открой его инструментом Read, опиши содержимое и, если уместно, занеси "  # noqa: RUF001
     "информацию в подходящую WIKI. Кратко ответь, что распознал и что записал."
+)
+# Same, but the message carried a user caption (D-022 — caption + image content).
+PHOTO_CAPTION_PROMPT_RU = (
+    "Пользователь прислал изображение. Файл: {path}\n"
+    "Подпись пользователя: {caption}\n"
+    "Открой изображение инструментом Read, выполни просьбу из подписи и, если "
+    "уместно, занеси информацию в подходящую WIKI. Кратко ответь, что сделал."
 )
 
 ConfirmKeyboardAction = Literal["confirm", "correct", "cancel"]
@@ -256,6 +269,7 @@ class MessagePipeline(Protocol):
         update_id: int,
         photo_bytes: bytes,
         mime: str,
+        caption: str | None = None,
     ) -> None: ...
 
     async def on_document(
@@ -583,6 +597,7 @@ class DefaultPipeline:
         update_id: int,
         photo_bytes: bytes,
         mime: str,
+        caption: str | None = None,
     ) -> None:
         if not await self._l1_check(update_id=update_id, telegram_id=telegram_id, kind="photo"):
             return
@@ -600,6 +615,7 @@ class DefaultPipeline:
             run_id=run_id,
             sha256=ref.sha256,
             ext=ref.ext,
+            has_caption=bool(caption),
         )
         # L2 dedup on raw image bytes (D-018) — second copy of the same photo
         # is a re-send, not new content.
@@ -618,11 +634,16 @@ class DefaultPipeline:
         if not self._full_pipeline_available():
             await self._sender.send_message(chat_id, ACK_PHOTO_RU)
             return
+        prompt = (
+            PHOTO_CAPTION_PROMPT_RU.format(path=ref.staging_path, caption=caption)
+            if caption
+            else PHOTO_PROMPT_RU.format(path=ref.staging_path)
+        )
         await self._run_text_pipeline(
             telegram_id=telegram_id,
             chat_id=chat_id,
             update_id=update_id,
-            text=PHOTO_PROMPT_RU.format(path=ref.staging_path),
+            text=prompt,
             source="photo",
             media_paths=[ref.staging_path],
             skip_l2_dedup=True,

@@ -3,7 +3,7 @@
   <Source>docs/superpowers/plans/20260512-media-handling-full-plan.md</Source>
   <Goal>Полное подключение обработки медиа (voice/photo/document/audio/video_note) end-to-end: от TG handler до Claude и обратно, со стейджингом/промоушеном, тестами и документацией.</Goal>
 
-  <RunState current_chunk="3" last_commit_sha="pending" total_test_status="pass-after-chunk-2" updated_utc="2026-05-12" note="chunks 1 (aisw-zny) + 2 (aisw-m2m) closed. Resume: /superautocoder --resume 20260512-media-handling-full -> starts chunk 3 (aisw-ahv)."/>
+  <RunState current_chunk="4" last_commit_sha="bedf711" total_test_status="pass-after-chunk-3" updated_utc="2026-05-12" note="chunks 1 (aisw-zny) + 2 (aisw-m2m) + 3 (aisw-ahv) closed. Resume: /superautocoder --resume 20260512-media-handling-full -> starts chunk 4 (aisw-8r9)."/>
 
   <Chunks>
     <Chunk n="1" bd_id="aisw-zny" module="M-RUNTIME-WIRING" est_window_pct="35" depends_on="">
@@ -51,6 +51,8 @@
     <Decision chunk="2" id="DEC-C2-2">on_photo gets its own L2 dedup on image bytes (kind='file'), then _run_text_pipeline(skip_l2_dedup=True) — the synthetic photo prompt is constant, text-level dedup would false-positive.</Decision>
     <Decision chunk="2" id="DEC-C2-3">_run_text_pipeline source literal extended to Literal['text','voice','document','photo'].</Decision>
     <Decision chunk="2" id="DEC-C2-4" deferred="true">Per-call vision timeout 30s (D-022) NOT implemented — adapter uses one _RunConfig.timeout_s (wiki_runner_timeout_s, 300s). Deferred; needs an optional timeout override in WikiRunner.run.</Decision>
+    <Decision chunk="3" id="DEC-C3-1">F.audio and F.video_note both route to on_voice (STT path) — faster-whisper/pyav demuxes mp3/ogg/m4a and the audio track of mp4 video notes; staged ext cosmetic. More useful than a reject; covers D-022 trigger list. No ffmpeg precondition (pyav bundles libav).</Decision>
+    <Decision chunk="3" id="DEC-C3-2" deferred-partial="true">message.caption forwarded only for photo in chunk 3 (D-022 caption requirement is photo-focused). Document captions + voice/audio captions deferred.</Decision>
   </Decisions>
   <ReassessLog>
     <Reassess after_chunk="1" ts_utc="2026-05-12">No structural drift for chunks 2-5. Note: chunk 4 (promote_to_raw) needs MediaRef threaded from on_voice/on_photo to the point where target WIKI is known — to be designed in chunk 4 Discovery. media_staging_root now exists as Settings field (chunk 4 sweep job will read it). No tail regeneration needed.</Reassess>
@@ -59,5 +61,6 @@
   <TotalTestLog>
     <Run chunk="1" ts_utc="2026-05-12" exit="0">ruff-check 0; ruff-format 0 reformat; mypy 66 files 0 errors; grace-lint governed=66 xml=3 errors=0 warnings=0; inv-lint 14/14; test-cov 419 passed coverage=90.65%. ALL PASSED.</Run>
     <Run chunk="2" ts_utc="2026-05-12" exit="0">ruff-check 0; ruff-format 0 reformat; mypy 66 files 0 errors; grace-lint governed=66 xml=3 errors=0 warnings=0; inv-lint 14/14; test-cov 424 passed coverage=90.70%. ALL PASSED.</Run>
+    <Run chunk="3" ts_utc="2026-05-12" exit="0">ruff-check 0; ruff-format 0 reformat; mypy 66 files 0 errors; grace-lint governed=66 xml=3 errors=0 warnings=0; inv-lint 14/14; test-cov 428 passed coverage=90.74%. ALL PASSED.</Run>
   </TotalTestLog>
 </Breakdown>

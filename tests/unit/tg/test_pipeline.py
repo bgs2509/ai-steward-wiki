@@ -231,6 +231,33 @@ async def test_on_photo_full_pipeline_runs_runner_with_media() -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_photo_with_caption_passes_caption_in_prompt() -> None:
+    sender = FakeSender()
+    photo = MagicMock()
+    photo.handle = MagicMock(return_value=_FakeRef(ext="jpg"))
+    runner = _make_runner()
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=_make_confirm(),
+        photo=photo,
+        classifier=_make_classifier(),
+        runner=runner,
+        output=_make_output(),
+    )
+    await pipe.on_photo(
+        telegram_id=1,
+        chat_id=10,
+        update_id=100,
+        photo_bytes=b"\xff\xd8",
+        mime="image/jpeg",
+        caption="занеси расходы в budget",
+    )
+    runner.run.assert_awaited_once()
+    assert "занеси расходы в budget" in runner.run.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
 async def test_on_photo_l2_dedup_hit_sends_dedup_ack() -> None:
     from ai_steward_wiki.tg.pipeline import ACK_DEDUP_RU
 
