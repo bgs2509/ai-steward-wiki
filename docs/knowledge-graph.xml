@@ -10,7 +10,7 @@
       <depends>none</depends>
       <verification-ref>V-M-FOUNDATION-SETTINGS</verification-ref>
       <annotations>
-        <type-Settings PURPOSE="Frozen BaseSettings: log_level, workspace_root, claude_config_dir_local/_vps (resolved by env), *_db_url"/>
+        <type-Settings PURPOSE="Frozen BaseSettings: log_level, workspace_root, claude_config_dir_local/_vps (resolved by env), *_db_url, default_user_tz (fallback IANA TZ for NL time, default 'Europe/Moscow', aisw-kcz)"/>
         <type-LogLevel PURPOSE="Literal alias for accepted log levels"/>
         <fn-get_settings PURPOSE="lru_cached singleton accessor"/>
       </annotations>
@@ -70,7 +70,8 @@
         <type-Job PURPOSE="Row in jobs.jobs (flat columns + JSON payload)"/>
         <type-TrackerAnswer PURPOSE="Top-3 prediction window (D-014)"/>
         <type-JobDLQ PURPOSE="Dead-letter row for permanently-failed jobs (D-019)"/>
-        <type-JobPayload PURPOSE="Annotated discriminated union over WikiRun/Digest/CronUser/Purge"/>
+        <type-JobPayload PURPOSE="Annotated discriminated union over WikiRun/Digest/CronUser/Purge/Reminder"/>
+        <type-ReminderPayload PURPOSE="kind='reminder_job' payload: message:str, lead_time_min:int=0 (aisw-kcz)"/>
         <fn-build_engine PURPOSE="Create AsyncEngine with PRAGMAs applied"/>
         <fn-build_sessionmaker PURPOSE="async_sessionmaker bound to engine"/>
         <fn-parse_job_payload PURPOSE="Validate dict into JobPayload union"/>
@@ -119,7 +120,7 @@
     <M-RUNTIME-WIRING NAME="Runtime wiring / __main__" TYPE="RUNTIME" STATUS="done">
       <purpose>Process entrypoint (python -m ai_steward_wiki). Composes Settings, per-DB alembic migrations, engines, allowlist sync, APScheduler (incl. the daily media _staging sweep job), classifier+runner+output adapters, VoiceHandler/PhotoIngestor, aiogram Bot+Dispatcher; runs long-polling with graceful SIGINT/SIGTERM shutdown. The runner adapter promotes staged media into &lt;wiki&gt;/raw/media after a successful Stage-1 run (D-022).</purpose>
       <path>src/ai_steward_wiki/__main__.py</path>
-      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-OPS-PII</depends>
+      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-SCHEDULER-FIRING, M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-OPS-PII</depends>
       <verification-ref>V-M-RUNTIME-WIRING</verification-ref>
       <annotations>
         <fn-main PURPOSE="sync wrapper: asyncio.run(_amain())"/>
@@ -132,6 +133,7 @@
         <type-_RouterAdapter PURPOSE="Inbox-WIKI Stage-1a router: ensure_inbox_wiki → stage raw payload → run_wiki_session in Inbox-WIKI/ → parse_router_reply; WikiRunnerError→RouterError (aisw-dsg)"/>
         <fn-_render_raw_sidecar PURPOSE="build (filename, content) for Inbox-WIKI/raw/&lt;ts&gt;_&lt;source&gt;.md — plain body for text, YAML front-matter + staged_path sidecar for media"/>
         <type-_LibrarianAdapter PURPOSE="Inbox-WIKI Stage-1b librarian: resolve_target_wiki → stage_raw_into_wiki → run_wiki_session in &lt;Domain&gt;-WIKI/ (wiki.md + domain overlay) → IngestOutcome; WikiRunnerError→run_failed (aisw-zd9)"/>
+        <fn-_on_job_missed PURPOSE="APScheduler EVENT_JOB_MISSED listener → logs scheduler.reminder.misfired (aisw-kcz)"/>
       </annotations>
     </M-RUNTIME-WIRING>
 
@@ -196,6 +198,18 @@
       </annotations>
     </M-SCHEDULER>
 
+    <M-SCHEDULER-FIRING NAME="Scheduler / job firing" TYPE="RUNTIME" STATUS="planned">
+      <purpose>One-shot reminder bridge (aisw-kcz, Inbox-WIKI Phase-D.a): create_reminder_job writes a jobs.Job row then registers an APScheduler DateTrigger with picklable int args; fire_job (module-level callable APScheduler invokes on fire) loads the Job by id and delivers it as a plain Telegram message — guarded on status, no Claude/WIKI; firing context (TgSender + jobs sessionmaker) is set once at startup (D-002, D-010, D-022, tech-spec §3/§6, ADR-006).</purpose>
+      <path>src/ai_steward_wiki/scheduler/firing.py</path>
+      <depends>M-STORAGE-JOBS, M-SCHEDULER, M-TG-TEXT</depends>
+      <verification-ref>V-M-SCHEDULER-FIRING</verification-ref>
+      <annotations>
+        <fn-set_firing_context PURPOSE="install the module-level (TgSender, jobs async_sessionmaker) registry once at startup"/>
+        <fn-create_reminder_job PURPOSE="INSERT+commit a jobs.Job(kind='reminder_job', status='pending', scheduled_at_utc, payload=ReminderPayload) then scheduler.add_job(fire_job, DateTrigger, args=[job_id], misfire_grace_time=None); returns job_id"/>
+        <fn-fire_job PURPOSE="APScheduler callback (picklable int arg): load Job, guard status=='pending' else skip, mark in_progress → sender.send_message('🔔 Напоминание: …') → done (or failed+last_error); fail-fast RuntimeError if context not set"/>
+      </annotations>
+    </M-SCHEDULER-FIRING>
+
     <M-CLASSIFIER-STAGE0 NAME="Classifier / Stage-0" TYPE="RUNTIME" STATUS="done">
       <purpose>Stage-0 Haiku intent classifier — prompt cache (semver+sha256), backend abstraction (Claude CLI default / Anthropic API optional / Fake), Pydantic intent schema, NL time parser (dateparser → Haiku-fallback → escalate) (D-009, D-010, D-013, D-015).</purpose>
       <path>src/ai_steward_wiki/classifier/</path>
@@ -203,7 +217,7 @@
       <verification-ref>V-M-CLASSIFIER-STAGE0</verification-ref>
       <annotations>
         <fn-classify PURPOSE="Stage-0 orchestrator: backend call + Pydantic validation + audit upsert + structlog"/>
-        <fn-parse_time PURPOSE="NL time parser: dateparser → Haiku-fallback → escalate (D-010)"/>
+        <fn-parse_time PURPOSE="NL time parser: dateparser → Haiku-fallback → escalate (D-010); prefer_future kwarg threads PREFER_DATES_FROM='future' for reminders (aisw-kcz)"/>
         <fn-record_prompt_version PURPOSE="idempotent upsert into audit.prompt_versions (D-015)"/>
         <type-PromptCache PURPOSE="per-process prompt cache (text+semver+sha256); reload() clears"/>
         <type-Intent PURPOSE="closed enum of Stage-0 intents (D-009, mapped to spec §3 job kinds)"/>
@@ -391,9 +405,9 @@
     </M-TG-PHOTO>
 
     <M-TG-PIPELINE-CLASSIFIER NAME="Ingest pipeline / classify→run→deliver" TYPE="RUNTIME" STATUS="done">
-      <purpose>DefaultPipeline coordinator over already-built ingest blocks — L1/L2 dedup, Stage-0 classify → Stage-1 run → deliver_output; voice transcript path; photo→vision via media_paths; document mime router (PDF text extract, size cap); Inbox-WIKI routing: a ROUTE/CREATE_WIKI RouterDecision is proposed via an inline-button route confirm (persisted as a route_ingest pending row) and the Stage-1b move+ingest runs in on_confirm_callback on "confirmed" (Phase-C, aisw-e45); Russian safe-fallback acks (chunk 20, D-022, D-023).</purpose>
+      <purpose>DefaultPipeline coordinator over already-built ingest blocks — L1/L2 dedup, Stage-0 classify → Stage-1 run → deliver_output; voice transcript path; photo→vision via media_paths; document mime router (PDF text extract, size cap); Inbox-WIKI routing: a ROUTE/CREATE_WIKI RouterDecision is proposed via an inline-button route confirm (persisted as a route_ingest pending row) and the Stage-1b move+ingest runs in on_confirm_callback on "confirmed" (Phase-C, aisw-e45); a Stage-0 intent=reminder fast-path (BEFORE the Stage-1a router) parses NL time (prefer_future), proposes a one-shot reminder via the same inline-button confirm and on "confirmed" calls scheduler.firing.create_reminder_job — recurring-digest phrasing answered with a ru "not yet" line (Phase-D.a, aisw-kcz); Russian safe-fallback acks (chunk 20, D-022, D-023).</purpose>
       <path>src/ai_steward_wiki/tg/pipeline.py</path>
-      <depends>M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-TEXT, M-INGEST-IDEM, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE</depends>
+      <depends>M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-TEXT, M-INGEST-IDEM, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-SCHEDULER-FIRING</depends>
       <verification-ref>V-M-TG-PIPELINE-CLASSIFIER</verification-ref>
       <annotations>
         <type-DefaultPipeline PURPOSE="concrete coordinator wiring classifier/router/librarian/runner/output/voice/photo/document blocks"/>
@@ -404,6 +418,8 @@
         <type-IngestOutcome PURPOSE="frozen dataclass returned by Librarian.ingest (status ok|rejected|run_failed, reply, run_id, target_wiki, created)"/>
         <type-WikiRunner PURPOSE="narrow Stage-1a/1b wrapper Protocol; WikiRunOutcome result dataclass"/>
         <type-OutputDelivery PURPOSE="narrow deliver_output wrapper Protocol"/>
+        <fn-_handle_reminder_confirm PURPOSE="on_confirm_callback branch for category=='reminder' pending rows: resolve race-safely → on 'confirmed' rebuild the draft + scheduler.firing.create_reminder_job + ack; cancel/stale → ru notice (aisw-kcz)"/>
+        <fn-build_reminder_recap PURPOSE="ru recap line 'Поставлю напоминание на DD.MM HH:MM (TZ): «message». Подтверждаешь?' for the reminder confirm draft (aisw-kcz)"/>
       </annotations>
     </M-TG-PIPELINE-CLASSIFIER>
 
@@ -481,5 +497,11 @@
     <CrossLink from="M-TG-PIPELINE-STREAMING" to="M-TG-PIPELINE-CLASSIFIER" relation="wraps the run→deliver slow path"/>
     <CrossLink from="M-TG-PIPELINE-STREAMING" to="M-TG-TEXT" relation="feeds stream events into StreamEditor (D-026)"/>
     <CrossLink from="M-TG-PIPELINE-STREAMING" to="M-WIKI-RUNNER" relation="consumes on_event stream callback from run_wiki_session"/>
+    <CrossLink from="M-SCHEDULER-FIRING" to="M-STORAGE-JOBS" relation="create_reminder_job INSERTs a jobs.Job(kind='reminder_job', payload=ReminderPayload); fire_job loads it by id and updates status"/>
+    <CrossLink from="M-SCHEDULER-FIRING" to="M-SCHEDULER" relation="create_reminder_job registers a DateTrigger on the AsyncIOScheduler (picklable int args); priority=Lane.USER_WRITE"/>
+    <CrossLink from="M-SCHEDULER-FIRING" to="M-TG-TEXT" relation="fire_job delivers the reminder via the TgSender Protocol (AiogramSender)"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-SCHEDULER-FIRING" relation="the reminder confirm callback calls create_reminder_job on 'confirmed'"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-CLASSIFIER-STAGE0" relation="reminder fast-path calls parse_time(..., prefer_future=True) (aisw-kcz)"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-SCHEDULER-FIRING" relation="firing.set_firing_context(sender, jobs_session_maker) after scheduler.start(); add_listener(_on_job_missed, EVENT_JOB_MISSED); passes jobs sessionmaker + scheduler to DefaultPipeline"/>
   </Project>
 </KnowledgeGraph>

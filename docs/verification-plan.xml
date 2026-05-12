@@ -268,6 +268,36 @@
       <evidence>build_scheduler (AsyncIOScheduler + SQLAlchemyJobStore, D-003); PriorityJobQueue 5 lanes FIFO tiebreak; WikiLockManager 3-tier acquire/release + stale-PID recovery; classify_exception taxonomy + FailureCounter 3-strikes auto-disable (D-019); move_to_dlq writes jobs_dlq; kill_with_sequence SIGTERM→grace→SIGKILL (D-021); register_all_retention_jobs wires purge-pending + media _staging sweep + retention.</evidence>
     </V-M-SCHEDULER>
 
+    <V-M-SCHEDULER-FIRING MODULE="M-SCHEDULER-FIRING">
+      <tests>
+        <test path="tests/unit/scheduler/test_firing.py"/>
+        <test path="tests/unit/tg/test_pipeline_reminder.py"/>
+        <test path="tests/integration/test_reminder_flow.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/scheduler/test_firing.py tests/unit/tg/test_pipeline_reminder.py -q</cmd>
+        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/test_reminder_flow.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>tg.pipeline.reminder.detected</marker>
+        <marker>tg.pipeline.reminder.unparseable</marker>
+        <marker>tg.pipeline.reminder.rejected_past</marker>
+        <marker>tg.pipeline.reminder.recurring_not_yet</marker>
+        <marker>tg.pipeline.reminder.confirm_requested</marker>
+        <marker>tg.pipeline.reminder.confirm_created</marker>
+        <marker>tg.pipeline.reminder.confirm_cancelled</marker>
+        <marker>tg.pipeline.reminder.confirm_stale</marker>
+        <marker>tg.pipeline.confirm.reminder_dispatched</marker>
+        <marker>scheduler.reminder.scheduled</marker>
+        <marker>scheduler.reminder.fired</marker>
+        <marker>scheduler.reminder.delivered</marker>
+        <marker>scheduler.reminder.deliver_failed</marker>
+        <marker>scheduler.reminder.skipped</marker>
+        <marker>scheduler.reminder.misfired</marker>
+      </log-markers>
+      <evidence>Pipeline reminder fast-path (BEFORE the Stage-1a router): intent==REMINDER & confidence≥THRESHOLD + future time → ConfirmationService.request_explicit with category='reminder' draft (when_utc, message, lead_time_min) + 2-button keyboard, no Job row yet; message resolution = distilled_payload['reminder_text'] if non-empty str else raw text; prefer_future=True rolls a bare past wall-clock time forward; explicitly-past absolute date → ru rejection, no confirm; escalate → ru clarification, no confirm; recurring-digest phrasing → ru "not yet", no confirm. on_confirm_callback category=='reminder' + resolve→'confirmed' → create_reminder_job writes a jobs.Job(kind='reminder_job', payload round-trips through parse_job_payload, scheduled_at_utc==when_utc) + scheduler.add_job once with a DateTrigger at when_utc, id=='reminder:&lt;id&gt;', misfire_grace_time is None; ack sent. cancel→ru cancelled, no Job row; resolve→None→ru stale; double-confirm idempotent. firing.fire_job: context set + Job pending → sender.send_message(chat_id, '🔔 Напоминание: &lt;message&gt;') + row done; Job not pending → skipped, no send; send raises → row failed + last_error + scheduler.reminder.deliver_failed; context not set → RuntimeError. ReminderPayload in parse_job_payload: valid → ReminderPayload, extra key → ValidationError. Integration: reminder message → request_explicit → simulate confirm → jobs.jobs row with kind='reminder_job' & matching scheduled_at_utc → invoke fire_job(job_id) with a fake sender → one send_message + row done. Known limitation (documented, no MVP reconciliation): a crash between the Job commit and scheduler.add_job leaves a pending row with no trigger → silent miss. (aisw-kcz; D-002/D-010/D-022; tech-spec §3/§6; ADR-006.)</evidence>
+    </V-M-SCHEDULER-FIRING>
+
     <V-M-CLASSIFIER-STAGE0 MODULE="M-CLASSIFIER-STAGE0">
       <tests>
         <test path="tests/unit/classifier/test_stage0.py"/>
