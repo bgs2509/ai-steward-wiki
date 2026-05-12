@@ -1,0 +1,123 @@
+"""Tests for the Inbox-WIKI Stage-1a Router reply parser (aisw-dsg, Phase-A)."""
+
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from ai_steward_wiki.inbox.router import (
+    RouterDecision,
+    RouterError,
+    RouterIntent,
+    parse_router_reply,
+)
+
+
+def _block(target: str, intent: str, notes: str) -> str:
+    return f"```router\ntarget_wiki: {target}\nintent: {intent}\nnotes: {notes}\n```"
+
+
+def test_route_happy_path() -> None:
+    d = parse_router_reply(_block("Travel-WIKI", "route", "Похоже на авиабилет SVO→IST"))
+    assert d.intent is RouterIntent.ROUTE
+    assert d.target_wiki == "Travel-WIKI"
+    assert d.notes == "Похоже на авиабилет SVO→IST"
+    assert d.parsed_ok is True
+    assert d.raw  # original text preserved
+
+
+def test_create_wiki_happy_path() -> None:
+    d = parse_router_reply(_block("Garden-WIKI", "create_wiki", "Заведём вики про сад?"))
+    assert d.intent is RouterIntent.CREATE_WIKI
+    assert d.target_wiki == "Garden-WIKI"
+    assert d.parsed_ok is True
+
+
+def test_clarify_with_null_target() -> None:
+    d = parse_router_reply(_block("null", "clarify", "Уточни, к какой теме это относится?"))
+    assert d.intent is RouterIntent.CLARIFY
+    assert d.target_wiki is None
+    assert d.parsed_ok is True
+
+
+def test_reject_with_empty_target() -> None:
+    d = parse_router_reply("```router\ntarget_wiki:\nintent: reject\nnotes: Вне зоны бота.\n```")
+    assert d.intent is RouterIntent.REJECT
+    assert d.target_wiki is None
+    assert d.parsed_ok is True
+
+
+def test_multiline_notes() -> None:
+    text = (
+        "```router\n"
+        "target_wiki: Health-WIKI\n"
+        "intent: route\n"
+        "notes: Первая строка.\nВторая строка.\nТретья.\n"
+        "```"
+    )
+    d = parse_router_reply(text)
+    assert d.intent is RouterIntent.ROUTE
+    assert d.notes == "Первая строка.\nВторая строка.\nТретья."
+
+
+def test_preamble_and_quoted_example_last_block_wins() -> None:
+    text = (
+        "Конечно! Формат такой:\n"
+        "```router\ntarget_wiki: <имя>\nintent: <route|...>\nnotes: <текст>\n```\n"
+        "А вот мой ответ:\n" + _block("Career-WIKI", "route", "Резюме — сюда.")
+    )
+    d = parse_router_reply(text)
+    assert d.target_wiki == "Career-WIKI"
+    assert d.notes == "Резюме — сюда."
+    assert d.parsed_ok is True
+
+
+def test_no_block_falls_back_to_clarify() -> None:
+    text = "Извини, я не уверен, к чему это отнести. Можешь уточнить?"
+    d = parse_router_reply(text)
+    assert d.intent is RouterIntent.CLARIFY
+    assert d.target_wiki is None
+    assert d.parsed_ok is False
+    assert d.notes  # non-empty: trimmed original
+    assert "уточнить" in d.notes
+
+
+def test_empty_text_falls_back_with_generic_notes() -> None:
+    d = parse_router_reply("   \n  ")
+    assert d.intent is RouterIntent.CLARIFY
+    assert d.parsed_ok is False
+    assert d.notes.strip()  # generic ru prompt, not empty
+
+
+def test_unknown_intent_value_falls_back() -> None:
+    d = parse_router_reply(_block("X-WIKI", "frobnicate", "что-то"))
+    assert d.intent is RouterIntent.CLARIFY
+    assert d.parsed_ok is False
+
+
+def test_route_without_target_demoted_to_clarify() -> None:
+    d = parse_router_reply(_block("null", "route", "..."))
+    assert d.intent is RouterIntent.CLARIFY
+    assert d.target_wiki is None
+    assert d.parsed_ok is False
+    assert d.notes.strip()
+
+
+def test_create_wiki_without_target_demoted_to_clarify() -> None:
+    d = parse_router_reply(_block("", "create_wiki", "..."))
+    assert d.intent is RouterIntent.CLARIFY
+    assert d.parsed_ok is False
+
+
+def test_decision_is_frozen_and_forbids_extra() -> None:
+    d = parse_router_reply(_block("A-WIKI", "route", "x"))
+    with pytest.raises(ValidationError):
+        d.intent = RouterIntent.REJECT  # type: ignore[misc]
+    with pytest.raises(ValidationError):
+        RouterDecision(  # type: ignore[call-arg]
+            intent=RouterIntent.ROUTE, target_wiki="A", notes="n", raw="r", parsed_ok=True, x=1
+        )
+
+
+def test_router_error_is_exception() -> None:
+    assert issubclass(RouterError, Exception)
