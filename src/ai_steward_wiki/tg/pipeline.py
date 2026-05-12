@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.7.0
+# VERSION: 0.8.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -176,6 +176,7 @@ from zoneinfo import ZoneInfo
 
 import structlog
 
+from ai_steward_wiki.classifier.recurrence import Recurrence, RecurrenceParseResult
 from ai_steward_wiki.classifier.schema import (
     ClassifierError,
     ClassifierResult,
@@ -213,6 +214,11 @@ __all__ = [
     "ACK_TEXT_RU",
     "ACK_VOICE_RU",
     "ACK_VOICE_UNAVAILABLE_RU",
+    "DIGEST_ACK_RU",
+    "DIGEST_CONFIRM_CANCELLED_RU",
+    "DIGEST_CONFIRM_STALE_RU",
+    "DIGEST_RECAP_RU",
+    "DIGEST_UNPARSEABLE_RU",
     "MAX_DOC_BYTES",
     "PDF_MAX_EXTRACT_CHARS",
     "PHOTO_CAPTION_PROMPT_RU",
@@ -239,13 +245,16 @@ __all__ = [
     "Librarian",
     "MessagePipeline",
     "OutputDelivery",
+    "RecurrenceParser",
     "Router",
     "StreamingDelivery",
     "TimeParser",
     "WikiRunOutcome",
     "WikiRunner",
+    "build_digest_recap",
     "build_reminder_recap",
     "build_route_recap",
+    "humanize_recurrence",
 ]
 
 STREAMING_PLACEHOLDER_RU = "\u23f3 Думаю\u2026"
@@ -312,6 +321,18 @@ REMINDER_RECURRING_RU = "Регулярные сводки — скоро буд
 REMINDER_CONFIRM_CANCELLED_RU = "Отменено — напоминание не поставил."
 REMINDER_CONFIRM_STALE_RU = "Время на подтверждение истекло — пришли заново."
 
+# Recurring-digest fast-path (aisw-oqq, Inbox-WIKI Phase-D.b.1). Reuses the
+# reminder fast-path's recurring-keyword detection: when a recurrence parser is
+# wired the phrasing is parsed and a category='digest' explicit confirm proposed.
+DIGEST_RECAP_RU = "Буду присылать сводку: {schedule_human}. Подтверждаешь?"
+DIGEST_ACK_RU = "Готово — буду присылать сводку: {schedule_human}."
+DIGEST_UNPARSEABLE_RU = (
+    "Не понял расписание сводки. Скажи, например: «каждый день в 9» или «по будням в 19:00»."  # noqa: RUF001
+)
+DIGEST_CONFIRM_CANCELLED_RU = "Хорошо, сводку настраивать не буду."
+DIGEST_CONFIRM_STALE_RU = "Время на подтверждение истекло — пришли заново."
+_WEEKDAY_RU_SHORT = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")  # noqa: RUF001
+
 
 def _with_caption(text: str, caption: str | None) -> str:
     """Prepend a user caption (if any) as context for the Stage-1 prompt."""
@@ -335,6 +356,23 @@ def build_reminder_recap(*, when_utc: datetime, user_tz: ZoneInfo, message: str)
     """Russian recap text for a reminder confirm (aisw-kcz). Time shown in user TZ."""
     when_local = when_utc.astimezone(user_tz).strftime("%d.%m %H:%M")
     return REMINDER_RECAP_RU.format(when_local=when_local, tz=str(user_tz), message=message)
+
+
+def humanize_recurrence(rec: Recurrence) -> str:
+    """Short Russian rendering of a Recurrence for the digest recap/ack (aisw-oqq)."""
+    if rec.kind == "daily":
+        return f"каждый день в {rec.time_hhmm}"
+    if tuple(sorted(rec.weekdays)) == (0, 1, 2, 3, 4):
+        return f"по будням в {rec.time_hhmm}"
+    if tuple(sorted(rec.weekdays)) == (5, 6):
+        return f"по выходным в {rec.time_hhmm}"
+    days = ", ".join(_WEEKDAY_RU_SHORT[d] for d in sorted(set(rec.weekdays)))
+    return f"по дням ({days}) в {rec.time_hhmm}"
+
+
+def build_digest_recap(rec: Recurrence) -> str:
+    """Russian recap text for a digest confirm (aisw-oqq)."""
+    return DIGEST_RECAP_RU.format(schedule_human=humanize_recurrence(rec))
 
 
 # Stage-0 intents that mean "route this somewhere" → handled by the Inbox-WIKI
@@ -361,6 +399,14 @@ class TimeParser(Protocol):
         prefer_future: bool = False,
         correlation_id: str = "",
     ) -> TimeParseResult: ...
+
+
+class RecurrenceParser(Protocol):
+    """NL-recurrence parser wrapper used by the digest fast-path (aisw-oqq)."""
+
+    def __call__(
+        self, text: str, *, user_tz: str, correlation_id: str = ""
+    ) -> RecurrenceParseResult: ...
 
 
 class Router(Protocol):
@@ -574,6 +620,7 @@ class DefaultPipeline:
         pii: PIIRedactor | None = None,
         photo_vision_timeout_s: float | None = None,
         time_parser: TimeParser | None = None,
+        recurrence_parser: RecurrenceParser | None = None,
         jobs_session_maker: async_sessionmaker[AsyncSession] | None = None,
         scheduler: AsyncIOScheduler | None = None,
         user_tz_lookup: Callable[[int], str | None] | None = None,
@@ -603,6 +650,10 @@ class DefaultPipeline:
         # the fast-path (REMINDER falls through to the legacy runner); the job is
         # only created on confirm when jobs_session_maker AND scheduler are wired.
         self._time_parser = time_parser
+        # Digest fast-path (aisw-oqq): recurrence_parser=None falls back to the
+        # legacy "not yet" line; the job is created on confirm only when
+        # jobs_session_maker AND scheduler are wired.
+        self._recurrence_parser = recurrence_parser
         self._jobs_session_maker = jobs_session_maker
         self._scheduler = scheduler
         self._user_tz_lookup = user_tz_lookup
@@ -904,11 +955,11 @@ class DefaultPipeline:
         """
         low = text.lower()
         if any(kw in low for kw in _RECURRING_KEYWORDS):
-            await self._sender.send_message(chat_id, REMINDER_RECURRING_RU)
-            _log.info(
-                "tg.pipeline.reminder.recurring_not_yet",
-                correlation_id=correlation_id,
+            await self._handle_digest_intent(
                 telegram_id=telegram_id,
+                chat_id=chat_id,
+                text=text,
+                correlation_id=correlation_id,
             )
             return
 
@@ -981,6 +1032,75 @@ class DefaultPipeline:
         )
 
     # END_BLOCK_REMINDER_INTENT
+
+    # START_BLOCK_DIGEST_INTENT (aisw-oqq, Inbox-WIKI Phase-D.b.1)
+    async def _handle_digest_intent(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        text: str,
+        correlation_id: str,
+    ) -> None:
+        """Recurring-digest fast-path: parse recurrence → propose an explicit confirm.
+
+        When no recurrence parser is wired (e.g. a unit pipeline without the
+        digest deps) falls back to the legacy "not yet" line. On a parse failure
+        a ru clarification; otherwise a category='digest' confirm draft + recap
+        proposed via ConfirmationService.request_explicit with the 2-button
+        keyboard. The jobs.Job row is created only on confirm.
+        """
+        if self._recurrence_parser is None:
+            await self._sender.send_message(chat_id, REMINDER_RECURRING_RU)
+            _log.info(
+                "tg.pipeline.reminder.recurring_not_yet",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+            )
+            return
+        user_tz = self._resolve_user_tz(telegram_id)
+        res = self._recurrence_parser(text, user_tz=str(user_tz), correlation_id=correlation_id)
+        if res.recurrence is None:
+            await self._sender.send_message(chat_id, DIGEST_UNPARSEABLE_RU)
+            _log.info(
+                "tg.pipeline.digest.unparseable",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                reason=res.reason,
+            )
+            return
+        rec = res.recurrence
+        _log.info(
+            "tg.pipeline.digest.detected",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            recurrence=rec.model_dump(mode="json"),
+        )
+        draft = {
+            "recurrence": rec.model_dump(mode="json"),
+            "wiki_scope": "all",
+            "window_hours": 24,
+            "user_tz": str(user_tz),
+            "correlation_id": correlation_id,
+        }
+        confirm_draft = PendingConfirmDraft(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            category="digest",
+            draft=draft,
+            recap_text=build_digest_recap(rec),
+        )
+        record = await self._confirm.request_explicit(
+            confirm_draft, keyboard_factory=build_route_confirm_keyboard
+        )
+        _log.info(
+            "tg.pipeline.digest.confirm_requested",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=record.pending_id,
+        )
+
+    # END_BLOCK_DIGEST_INTENT
 
     async def on_text(
         self,
@@ -1420,6 +1540,15 @@ class DefaultPipeline:
                 draft_json=pending.draft_json,
             )
             return
+        if pending is not None and getattr(pending, "category", None) == "digest":
+            await self._handle_digest_confirm(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                pending_id=pending_id,
+                action=action,
+                draft_json=pending.draft_json,
+            )
+            return
         status = await self._confirm.resolve(telegram_id, pending_id, action)
         _log.info(
             "tg.pipeline.confirm",
@@ -1602,6 +1731,91 @@ class DefaultPipeline:
         )
 
     # END_BLOCK_REMINDER_CONFIRM
+
+    # START_BLOCK_DIGEST_CONFIRM (aisw-oqq, Inbox-WIKI Phase-D.b.1)
+    async def _handle_digest_confirm(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        pending_id: int,
+        action: ConfirmKeyboardAction,
+        draft_json: str | None,
+    ) -> None:
+        """Resolve a digest pending row; on 'confirmed' create the digest job.
+
+        Mirrors _handle_reminder_confirm: race-safe resolve; on a lost race a ru
+        'stale' notice; on cancel a ru 'cancelled' notice; on 'confirmed'
+        scheduler.firing.create_digest_job (jobs.Job row + CronTrigger) + a ru ack.
+        """
+        status = await self._confirm.resolve(telegram_id, pending_id, action)
+        _log.info(
+            "tg.pipeline.confirm.digest_dispatched",
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            pending_id=pending_id,
+            action=action,
+            status=status,
+        )
+        if status is None:
+            await self._sender.send_message(chat_id, DIGEST_CONFIRM_STALE_RU)
+            _log.info(
+                "tg.pipeline.digest.confirm_stale",
+                telegram_id=telegram_id,
+                pending_id=pending_id,
+            )
+            return
+        if status != "confirmed":  # cancelled / corrected
+            await self._sender.send_message(chat_id, DIGEST_CONFIRM_CANCELLED_RU)
+            _log.info(
+                "tg.pipeline.digest.confirm_cancelled",
+                telegram_id=telegram_id,
+                pending_id=pending_id,
+                status=status,
+            )
+            return
+
+        draft = json.loads(draft_json or "{}")
+        rec = Recurrence(**draft["recurrence"])
+        window_hours = int(draft.get("window_hours") or 24)
+        wiki_scope = str(draft.get("wiki_scope") or "all")
+        correlation_id = str(
+            draft.get("correlation_id") or f"digest-confirm-{pending_id}-{telegram_id}"
+        )
+        if self._jobs_session_maker is None or self._scheduler is None:
+            await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
+            _log.error(
+                "tg.pipeline.digest.confirm_misconfigured",
+                telegram_id=telegram_id,
+                pending_id=pending_id,
+            )
+            return
+        # Local import: keep the scheduler/firing dependency lazy and test-friendly.
+        from ai_steward_wiki.scheduler.firing import create_digest_job
+
+        async with self._jobs_session_maker() as session:
+            job_id = await create_digest_job(
+                session,
+                self._scheduler,
+                owner_telegram_id=telegram_id,
+                chat_id=chat_id,
+                recurrence=rec,
+                wiki_scope=wiki_scope,
+                window_hours=window_hours,
+                correlation_id=correlation_id,
+            )
+        await self._sender.send_message(
+            chat_id, DIGEST_ACK_RU.format(schedule_human=humanize_recurrence(rec))
+        )
+        _log.info(
+            "tg.pipeline.digest.confirm_created",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=pending_id,
+            job_id=job_id,
+        )
+
+    # END_BLOCK_DIGEST_CONFIRM
 
 
 class DefaultStreamingDelivery:
