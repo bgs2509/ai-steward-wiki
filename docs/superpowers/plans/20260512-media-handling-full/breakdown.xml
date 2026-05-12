@@ -3,7 +3,7 @@
   <Source>docs/superpowers/plans/20260512-media-handling-full-plan.md</Source>
   <Goal>Полное подключение обработки медиа (voice/photo/document/audio/video_note) end-to-end: от TG handler до Claude и обратно, со стейджингом/промоушеном, тестами и документацией.</Goal>
 
-  <RunState current_chunk="2" last_commit_sha="pending" total_test_status="pass-after-chunk-1" updated_utc="2026-05-12"/>
+  <RunState current_chunk="2" last_commit_sha="06b1e92" total_test_status="pass-after-chunk-1" updated_utc="2026-05-12" note="chunk 1 (aisw-zny) closed. Resume: /superautocoder --resume 20260512-media-handling-full -> starts chunk 2 (aisw-m2m)."/>
 
   <Chunks>
     <Chunk n="1" bd_id="aisw-zny" module="M-RUNTIME-WIRING" est_window_pct="35" depends_on="">
