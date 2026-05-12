@@ -324,10 +324,22 @@ class _OkRunner:
         self.calls: list[dict[str, Any]] = []
 
     async def __call__(
-        self, *, wiki_id, wiki_path, extra_add_dirs, planner_context, correlation_id
+        self,
+        *,
+        wiki_id,
+        wiki_path,
+        extra_add_dirs,
+        planner_context,
+        correlation_id,
+        section=None,
     ):
         self.calls.append(
-            {"wiki_id": wiki_id, "wiki_path": wiki_path, "extra_add_dirs": extra_add_dirs}
+            {
+                "wiki_id": wiki_id,
+                "wiki_path": wiki_path,
+                "extra_add_dirs": extra_add_dirs,
+                "section": section,
+            }
         )
         return "TL;DR: всё спокойно.\n📅 Сегодня: —"
 
@@ -365,6 +377,115 @@ async def test_create_digest_job_writes_row_and_cron(session_factory) -> None:
     assert "hour='9'" in str(call["trigger"]) or "hour=9" in repr(call["trigger"])
 
 
+async def test_create_digest_job_named_subset_scope(session_factory) -> None:
+    # aisw-269 — create_digest_job accepts wiki_scope: str | list[str].
+    sched = _FakeCronScheduler()
+    async with session_factory() as s:
+        job_id = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=_rec(),
+            wiki_scope=["Health", "Money"],
+        )
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row is not None
+        parsed = parse_job_payload(row.payload)
+        assert isinstance(parsed, DigestPayload)
+        assert parsed.wiki_scope == ["Health", "Money"]
+    assert len(sched.added) == 1
+
+
+async def test_list_owner_digest_job_ids(session_factory, audit_session_maker, wiki_dirs) -> None:
+    # aisw-269 — only the owner's enabled (status=='scheduled') digest_job ids.
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    async with session_factory() as s:
+        a = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
+        )
+        b = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="20:00", tz="UTC"),
+        )
+        other = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=99,
+            chat_id=99,
+            recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
+        )
+        c = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="06:00", tz="UTC"),
+        )
+        row_c = await s.get(Job, c)
+        assert row_c is not None
+        row_c.status = "disabled"
+        await s.commit()
+    from ai_steward_wiki.scheduler.firing import list_owner_digest_job_ids
+
+    set_digest_context(
+        scheduler=sched,
+        runner=_OkRunner(),
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=_DigestSender(),
+    )
+    ids = await list_owner_digest_job_ids(7)
+    assert set(ids) == {a, b}
+    assert other not in ids
+    assert c not in ids
+
+
+async def test_run_section_expand(session_factory, audit_session_maker, wiki_dirs) -> None:
+    # aisw-269 — re-run Claude scoped to one section over the owner's WIKI set.
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    runner = _OkRunner()
+    from ai_steward_wiki.scheduler.firing import run_section_expand
+
+    set_digest_context(
+        scheduler=sched,
+        runner=runner,
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=_DigestSender(),
+    )
+    out = await run_section_expand(7, "trackers")
+    assert isinstance(out, str)
+    assert runner.calls[0]["wiki_id"] == "health"
+    assert runner.calls[0]["extra_add_dirs"] == [finance]
+    assert runner.calls[0]["section"] == "trackers"
+
+    async def _resolve_none(owner_id: int):
+        return []
+
+    set_digest_context(
+        scheduler=sched,
+        runner=_OkRunner(),
+        resolve_owner_wikis=_resolve_none,
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=_DigestSender(),
+    )
+    assert await run_section_expand(7, "today") is None
+
+
 async def test_fire_digest_job_runs_and_delivers(
     session_factory, audit_session_maker, wiki_dirs
 ) -> None:
@@ -399,6 +520,80 @@ async def test_fire_digest_job_runs_and_delivers(
         assert row.status == "scheduled"
         assert row.retry_count == 0
         assert row.finished_at_utc is not None
+
+
+async def test_fire_digest_job_scope_filter_keeps_named_subset(
+    session_factory, audit_session_maker, wiki_dirs
+) -> None:
+    # aisw-269 — a digest job scoped to ['health'] runs only that WIKI.
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    async with session_factory() as s:
+        job_id = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
+            wiki_scope=["health"],
+        )
+    runner = _OkRunner()
+    sender = _DigestSender()
+    set_digest_context(
+        scheduler=sched,
+        runner=runner,
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=sender,
+    )
+    await fire_digest_job(job_id)
+    assert runner.calls[0]["wiki_id"] == "health"
+    assert runner.calls[0]["extra_add_dirs"] == []
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row.status == "scheduled"
+        assert row.retry_count == 0
+
+
+async def test_fire_digest_job_scope_all_vanished_notice_no_strike(
+    session_factory, audit_session_maker, wiki_dirs
+) -> None:
+    # aisw-269 — scoped to a WIKI that no longer exists → ru notice, no run, no strike.
+    health, _finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    async with session_factory() as s:
+        job_id = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
+            wiki_scope=["gone"],
+        )
+    runner = _OkRunner()
+    sender = _DigestSender()
+
+    async def _resolve_one(owner_id: int):
+        return [("health", health)]
+
+    set_digest_context(
+        scheduler=sched,
+        runner=runner,
+        resolve_owner_wikis=_resolve_one,
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=sender,
+    )
+    await fire_digest_job(job_id)
+    assert runner.calls == []  # never ran Claude
+    assert len(sender.sent) == 1  # the ru "vanished" notice
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row.status == "scheduled"  # no strike
+        assert row.retry_count == 0
+        assert row.finished_at_utc is not None
+    assert sched.removed == []  # no remove_job
 
 
 async def test_fire_digest_job_delivers_via_deliver_output(

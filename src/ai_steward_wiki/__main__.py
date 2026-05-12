@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.5.0
+# VERSION: 0.5.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -30,7 +30,13 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.1 - aisw-w3k (Inbox-WIKI Phase-D.b.2a): digest delivery routed
+#   LAST_CHANGE: v0.5.2 - aisw-269 (Inbox-WIKI Phase-D.b.2b): _DigestRunnerAdapter
+#                gains digest_expand_prompt_path + a section: str|None=None arg —
+#                section None ⇒ prompts/digest.md (byte-identical), a section key ⇒
+#                prompts/digest_expand.md with the section name in user_input (for
+#                /expand); the firing slash-command accessors read the same digest
+#                context, so no extra wiring beyond the new prompt path.
+#   PREVIOUS:    v0.5.1 - aisw-w3k (Inbox-WIKI Phase-D.b.2a): digest delivery routed
 #                through tg.output.deliver_output(kind='digest') —
 #                firing.set_digest_context(...) now also gets
 #                audit_session_maker=audit_maker.
@@ -374,6 +380,7 @@ class _DigestRunnerAdapter:
         *,
         base_prompt_path: Path,
         digest_prompt_path: Path,
+        digest_expand_prompt_path: Path,
         runtime_dir: Path,
         acquirer: WikiLockAdapter,
         spawner: AsyncioSpawner,
@@ -381,6 +388,7 @@ class _DigestRunnerAdapter:
     ) -> None:
         self._base_prompt_path = base_prompt_path
         self._digest_prompt_path = digest_prompt_path
+        self._digest_expand_prompt_path = digest_expand_prompt_path
         self._runtime_dir = runtime_dir
         self._acquirer = acquirer
         self._spawner = spawner
@@ -394,21 +402,33 @@ class _DigestRunnerAdapter:
         extra_add_dirs: list[Path],
         planner_context: str,
         correlation_id: str,
+        section: str | None = None,
     ) -> str:
+        # section is None ⇒ the full D-024 digest (prompts/digest.md, byte-identical
+        # to aisw-oqq/w3k); a section key ⇒ on-demand detail (prompts/digest_expand.md,
+        # the section name passed in user_input) — aisw-269 /expand.
+        if section is None:
+            overlay_prompt_path = self._digest_prompt_path
+            user_input = planner_context
+            run_prefix = "digest"
+        else:
+            overlay_prompt_path = self._digest_expand_prompt_path
+            user_input = f"Детализируй раздел сводки: {section}"
+            run_prefix = "expand"
         wiki_path.mkdir(parents=True, exist_ok=True)
-        run_id = f"digest-{uuid4().hex[:12]}"
+        run_id = f"{run_prefix}-{uuid4().hex[:12]}"
         result = await run_wiki_session(
             wiki_id=wiki_id,
             wiki_path=wiki_path,
             base_prompt_path=self._base_prompt_path,
-            overlay_prompt_path=self._digest_prompt_path,
+            overlay_prompt_path=overlay_prompt_path,
             run_id=run_id,
             correlation_id=correlation_id,
             runtime_dir=self._runtime_dir,
             acquirer=self._acquirer,
             spawner=self._spawner,
             config=self._run_config,
-            user_input=planner_context,
+            user_input=user_input,
             extra_add_dirs=extra_add_dirs,
             timeout_s=600.0,
         )
@@ -957,6 +977,7 @@ async def _amain() -> None:
     digest_runner_adapter = _DigestRunnerAdapter(
         base_prompt_path=settings.prompts_dir / "wiki.md",
         digest_prompt_path=settings.prompts_dir / "digest.md",
+        digest_expand_prompt_path=settings.prompts_dir / "digest_expand.md",
         runtime_dir=runtime_dir,
         acquirer=WikiLockAdapter(lock_manager),
         spawner=AsyncioSpawner(),
