@@ -153,6 +153,34 @@ async def test_on_voice_empty_transcript_falls_back_to_default_ack() -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_voice_with_caption_prepends_caption_to_text() -> None:
+    sender = FakeSender()
+    voice = MagicMock()
+    voice.handle = AsyncMock(return_value=(_FakeRef(), _FakeTranscript(text="купил молоко")))
+    runner = _make_runner()
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=_make_confirm(),
+        voice=voice,
+        classifier=_make_classifier(),
+        runner=runner,
+        output=_make_output(),
+    )
+    await pipe.on_voice(
+        telegram_id=1,
+        chat_id=10,
+        update_id=100,
+        audio_bytes=b"\x00",
+        caption="запиши в budget",
+    )
+    runner.run.assert_awaited_once()
+    sent_text = runner.run.await_args.kwargs["text"]
+    assert "запиши в budget" in sent_text
+    assert "купил молоко" in sent_text
+
+
+@pytest.mark.asyncio
 async def test_on_voice_stt_unavailable_sends_specific_ack() -> None:
     sender = FakeSender()
     voice = MagicMock()

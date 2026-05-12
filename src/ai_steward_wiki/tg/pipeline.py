@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.3.5
+# VERSION: 0.3.6
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -63,11 +63,15 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.3.5 - aisw-t0n: DefaultPipeline gains photo_vision_timeout_s;
+#   LAST_CHANGE: v0.3.6 - aisw-b2x: on_document + on_voice accept an optional
+#                caption — _with_caption() prepends "Подпись пользователя: …" to
+#                the extracted text / transcript, image-document uses
+#                PHOTO_CAPTION_PROMPT_RU; MessagePipeline Protocol updated.
+#   PREVIOUS:    v0.3.5 - aisw-t0n: DefaultPipeline gains photo_vision_timeout_s;
 #                on_photo + image-document run with that per-call runner timeout
 #                (D-022 ~30s vision vs ~300s text); WikiRunner.run + _run_text_pipeline
 #                gain timeout_s.
-#   PREVIOUS:    v0.3.4 - aisw-ahv (media chunk 3): on_photo accepts an optional
+#                v0.3.4 - aisw-ahv (media chunk 3): on_photo accepts an optional
 #                caption — when present, PHOTO_CAPTION_PROMPT_RU carries the user
 #                request alongside the image (D-022). MessagePipeline.on_photo
 #                Protocol gains caption.
@@ -179,6 +183,13 @@ PHOTO_CAPTION_PROMPT_RU = (
 ConfirmKeyboardAction = Literal["confirm", "correct", "cancel"]
 
 
+def _with_caption(text: str, caption: str | None) -> str:
+    """Prepend a user caption (if any) as context for the Stage-1 prompt."""
+    if not caption:
+        return text
+    return f"Подпись пользователя: {caption}\n\n{text}".strip()
+
+
 class Classifier(Protocol):
     """Stage-0 Haiku classifier wrapper (D-016 + DEC-TPC-1)."""
 
@@ -264,6 +275,7 @@ class MessagePipeline(Protocol):
         chat_id: int,
         update_id: int,
         audio_bytes: bytes,
+        caption: str | None = None,
     ) -> None: ...
 
     async def on_photo(
@@ -286,6 +298,7 @@ class MessagePipeline(Protocol):
         doc_bytes: bytes,
         mime: str,
         filename: str,
+        caption: str | None = None,
     ) -> None: ...
 
     async def on_confirm_callback(
@@ -562,6 +575,7 @@ class DefaultPipeline:
         chat_id: int,
         update_id: int,
         audio_bytes: bytes,
+        caption: str | None = None,
     ) -> None:
         if not await self._l1_check(update_id=update_id, telegram_id=telegram_id, kind="voice"):
             return
@@ -585,19 +599,21 @@ class DefaultPipeline:
             sha256=ref.sha256,
             lang=transcript.lang,
             chars=len(transcript.text),
+            has_caption=bool(caption),
         )
-        if not transcript.text:
+        user_text = _with_caption(transcript.text, caption)
+        if not user_text:
             await self._sender.send_message(chat_id, ACK_TEXT_RU)
             return
         if not self._full_pipeline_available():
-            body = f"{ACK_VOICE_RU}\n{transcript.text}"
+            body = f"{ACK_VOICE_RU}\n{transcript.text}" if transcript.text else ACK_TEXT_RU
             await self._sender.send_message(chat_id, body)
             return
         await self._run_text_pipeline(
             telegram_id=telegram_id,
             chat_id=chat_id,
             update_id=update_id,
-            text=transcript.text,
+            text=user_text,
             source="voice",
         )
 
@@ -677,6 +693,7 @@ class DefaultPipeline:
         doc_bytes: bytes,
         mime: str,
         filename: str,
+        caption: str | None = None,
     ) -> None:
         """Mime-routed document ingest (DEC-L3, chunk 22 M-TG-DOCUMENT-FULL).
 
@@ -734,6 +751,7 @@ class DefaultPipeline:
             mime=mime_lc,
             size=size,
             sha256_short=sha256[:8],
+            has_caption=bool(caption),
         )
 
         # Mime dispatch (DEC-L3).
@@ -744,6 +762,7 @@ class DefaultPipeline:
                 update_id=update_id,
                 doc_bytes=doc_bytes,
                 hashed_filename=hashed_filename,
+                caption=caption,
             )
             return
         if mime_lc.startswith("text/"):
@@ -754,6 +773,7 @@ class DefaultPipeline:
                 doc_bytes=doc_bytes,
                 hashed_filename=hashed_filename,
                 mime=mime_lc,
+                caption=caption,
             )
             return
         if mime_lc in SUPPORTED_IMAGE_MIMES:
@@ -764,6 +784,7 @@ class DefaultPipeline:
                 doc_bytes=doc_bytes,
                 mime=mime_lc,
                 hashed_filename=hashed_filename,
+                caption=caption,
             )
             return
 
@@ -786,9 +807,10 @@ class DefaultPipeline:
         update_id: int,
         doc_bytes: bytes,
         hashed_filename: str,
+        caption: str | None = None,
     ) -> None:
-        text = _extract_pdf_text(doc_bytes)
-        if not text:
+        extracted = _extract_pdf_text(doc_bytes)
+        if not extracted:
             _log.info(
                 "tg.pipeline.document.rejected",
                 telegram_id=telegram_id,
@@ -800,6 +822,7 @@ class DefaultPipeline:
             )
             await self._sender.send_message(chat_id, ACK_DOC_PDF_NO_TEXT_RU)
             return
+        text = _with_caption(extracted, caption)
         _log.info(
             "tg.pipeline.document.routed_text",
             telegram_id=telegram_id,
@@ -808,6 +831,7 @@ class DefaultPipeline:
             hashed_filename=hashed_filename,
             source="pdf",
             chars=len(text),
+            has_caption=bool(caption),
         )
         if not self._full_pipeline_available():
             await self._sender.send_message(chat_id, ACK_DOC_RU)
@@ -829,9 +853,10 @@ class DefaultPipeline:
         doc_bytes: bytes,
         hashed_filename: str,
         mime: str,
+        caption: str | None = None,
     ) -> None:
         try:
-            text = doc_bytes.decode("utf-8-sig", errors="strict")
+            decoded = doc_bytes.decode("utf-8-sig", errors="strict")
         except UnicodeDecodeError:
             _log.info(
                 "tg.pipeline.document.rejected",
@@ -844,6 +869,7 @@ class DefaultPipeline:
             )
             await self._sender.send_message(chat_id, ACK_DOC_UNSUPPORTED_RU)
             return
+        text = _with_caption(decoded, caption)
         _log.info(
             "tg.pipeline.document.routed_text",
             telegram_id=telegram_id,
@@ -852,6 +878,7 @@ class DefaultPipeline:
             hashed_filename=hashed_filename,
             source="text",
             chars=len(text),
+            has_caption=bool(caption),
         )
         if not self._full_pipeline_available():
             await self._sender.send_message(chat_id, ACK_DOC_RU)
@@ -873,6 +900,7 @@ class DefaultPipeline:
         doc_bytes: bytes,
         mime: str,
         hashed_filename: str,
+        caption: str | None = None,
     ) -> None:
         if self._photo is None:
             _log.warning(
@@ -894,16 +922,22 @@ class DefaultPipeline:
             run_id=run_id,
             sha256_short=ref.sha256[:8],
             ext=ref.ext,
+            has_caption=bool(caption),
         )
         # doc_bytes were L2-deduped at on_document entry → skip dedup here.
         if not self._full_pipeline_available():
             await self._sender.send_message(chat_id, ACK_PHOTO_RU)
             return
+        prompt = (
+            PHOTO_CAPTION_PROMPT_RU.format(path=ref.staging_path, caption=caption)
+            if caption
+            else PHOTO_PROMPT_RU.format(path=ref.staging_path)
+        )
         await self._run_text_pipeline(
             telegram_id=telegram_id,
             chat_id=chat_id,
             update_id=update_id,
-            text=PHOTO_PROMPT_RU.format(path=ref.staging_path),
+            text=prompt,
             source="photo",
             media_paths=[ref.staging_path],
             skip_l2_dedup=True,

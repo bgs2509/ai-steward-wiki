@@ -252,7 +252,57 @@ async def test_router_audio_handler_routes_to_on_voice() -> None:
     )
     await handler(msg)
     pipeline.on_voice.assert_awaited_once_with(
-        telegram_id=3, chat_id=10, update_id=600, audio_bytes=b"MP3"
+        telegram_id=3, chat_id=10, update_id=600, audio_bytes=b"MP3", caption=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_router_audio_handler_forwards_caption() -> None:
+    pipeline = MagicMock()
+    pipeline.on_voice = AsyncMock()
+    router = build_router(pipeline)
+    handler = _handler_by_name(router, "_on_audio")
+    msg = FakeMessage(
+        message_id=603,
+        chat=FakeChat(id=10),
+        from_user=FakeUser(id=6),
+        audio=FakeAudio(file_id="AID2"),
+        caption="это лекция по биологии",
+        bot=_fake_bot_returning(b"MP3"),
+    )
+    await handler(msg)
+    pipeline.on_voice.assert_awaited_once_with(
+        telegram_id=6,
+        chat_id=10,
+        update_id=603,
+        audio_bytes=b"MP3",
+        caption="это лекция по биологии",
+    )
+
+
+@pytest.mark.asyncio
+async def test_router_document_handler_forwards_caption() -> None:
+    pipeline = MagicMock()
+    pipeline.on_document = AsyncMock()
+    router = build_router(pipeline)
+    handler = _handler_by_name(router, "_on_document")
+    msg = FakeMessage(
+        message_id=604,
+        chat=FakeChat(id=10),
+        from_user=FakeUser(id=7),
+        document=FakeDocument(file_id="DID", file_name="report.pdf", mime_type="application/pdf"),
+        caption="свод за квартал",
+        bot=_fake_bot_returning(b"%PDF-1.4"),
+    )
+    await handler(msg)
+    pipeline.on_document.assert_awaited_once_with(
+        telegram_id=7,
+        chat_id=10,
+        update_id=604,
+        doc_bytes=b"%PDF-1.4",
+        mime="application/pdf",
+        filename="report.pdf",
+        caption="свод за квартал",
     )
 
 

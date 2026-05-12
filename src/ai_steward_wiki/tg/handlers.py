@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/handlers.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: aiogram Router that adapts Telegram message/callback events to
 #            the MessagePipeline Protocol. Handlers stay thin: extract IDs,
@@ -22,10 +22,12 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-ahv (media chunk 3): add F.audio + F.video_note
+#   LAST_CHANGE: v0.0.3 - aisw-b2x: audio and document handlers also forward
+#                message.caption (to on_voice / on_document) so it reaches Stage-1.
+#   PREVIOUS:    v0.0.2 - aisw-ahv (media chunk 3): add F.audio + F.video_note
 #                handlers (route to on_voice STT path); photo handler forwards
 #                message.caption to on_photo (D-022).
-#   PREVIOUS:    v0.0.1 - chunk 19: initial Router wiring delegating to pipeline
+#                v0.0.1 - chunk 19: initial Router wiring delegating to pipeline
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -164,6 +166,7 @@ def build_router(pipeline: MessagePipeline) -> Router:
             chat_id=message.chat.id,
             update_id=message.message_id,
             audio_bytes=data,
+            caption=message.caption,
         )
         # END_BLOCK_HANDLER_AUDIO
 
@@ -209,6 +212,7 @@ def build_router(pipeline: MessagePipeline) -> Router:
             doc_bytes=data,
             mime=doc.mime_type or "application/octet-stream",
             filename=doc.file_name or "unnamed",
+            caption=message.caption,
         )
         # END_BLOCK_HANDLER_DOCUMENT
 

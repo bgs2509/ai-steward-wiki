@@ -234,6 +234,46 @@ async def test_text_plain_utf8_bom_decodes_and_routes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_text_plain_with_caption_prepends_caption() -> None:
+    sender = FakeSender()
+    runner = _make_runner()
+    pipe = _make_pipeline(sender=sender, runner=runner)
+
+    await pipe.on_document(
+        telegram_id=1,
+        chat_id=10,
+        update_id=100,
+        doc_bytes=b"line one\nline two",
+        mime="text/plain",
+        filename="note.txt",
+        caption="разбери и занеси в study",
+    )
+    runner.run.assert_awaited_once()
+    text_arg = runner.run.await_args.kwargs["text"]
+    assert "разбери и занеси в study" in text_arg
+    assert "line one" in text_arg
+
+
+@pytest.mark.asyncio
+async def test_pdf_no_text_with_caption_still_rejected() -> None:
+    sender = FakeSender()
+    runner = _make_runner()
+    pipe = _make_pipeline(sender=sender, runner=runner)
+
+    await pipe.on_document(
+        telegram_id=1,
+        chat_id=10,
+        update_id=100,
+        doc_bytes=_build_empty_pdf(),
+        mime="application/pdf",
+        filename="empty.pdf",
+        caption="это важно",
+    )
+    runner.run.assert_not_awaited()
+    assert sender.sends[-1]["text"] == ACK_DOC_PDF_NO_TEXT_RU
+
+
+@pytest.mark.asyncio
 async def test_text_plain_non_utf8_rejected_as_unsupported() -> None:
     sender = FakeSender()
     runner = _make_runner()
@@ -272,6 +312,27 @@ async def test_image_jpeg_routed_to_runner_with_media() -> None:
     runner.run.assert_awaited_once()
     assert runner.run.await_args.kwargs["media_paths"] is not None
     output.deliver.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_image_jpeg_with_caption_carries_caption() -> None:
+    sender = FakeSender()
+    photo = _make_photo()
+    runner = _make_runner()
+    pipe = _make_pipeline(sender=sender, photo=photo, runner=runner)
+
+    await pipe.on_document(
+        telegram_id=1,
+        chat_id=10,
+        update_id=100,
+        doc_bytes=b"\xff\xd8\xff\xe0fake-jpeg",
+        mime="image/jpeg",
+        filename="photo.jpg",
+        caption="что на скрине",
+    )
+    runner.run.assert_awaited_once()
+    assert "что на скрине" in runner.run.await_args.kwargs["text"]
+    assert runner.run.await_args.kwargs["media_paths"] is not None
 
 
 @pytest.mark.asyncio
