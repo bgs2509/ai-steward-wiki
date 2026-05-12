@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/inbox/route.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Resolve/create the target <Domain>-WIKI from a RouterDecision, stage the
 #            raw payload into it, pick the Stage-1b domain overlay, and build the
@@ -27,10 +27,14 @@
 #   stage_raw_into_wiki - write the raw sidecar + promote media binaries into <wiki>/raw/
 #   pick_domain_overlay - prompts/domain-<slug>.md if it exists else domain-default.md
 #   build_ingest_prompt - the ru Stage-1b ingest instruction referencing the raw paths
+#   RouteAction - a staged route+ingest action awaiting user confirmation (Phase-C)
+#   route_action_to_payload - serialise a RouteAction to a JSON-able dict for draft_json
+#   route_action_from_payload - inverse: reconstruct a typed RouteAction from the dict
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - initial route+ingest helpers (aisw-zd9, Inbox-WIKI Phase-B)
+#   LAST_CHANGE: v0.0.2 - aisw-e45 (Phase-C): RouteAction + route_action_to/from_payload (confirm-loop draft round-trip)
+#   PREVIOUS:    v0.0.1 - initial route+ingest helpers (aisw-zd9, Inbox-WIKI Phase-B)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from ai_steward_wiki.inbox.router import RouterDecision, RouterIntent
 from ai_steward_wiki.inbox.staging import promote_path_to_raw
@@ -50,6 +54,7 @@ from ai_steward_wiki.wiki.lifecycle import AntiSpamCapError, WikiLifecycleManage
 from ai_steward_wiki.wiki.name import WikiName, WikiNameError
 
 __all__ = [
+    "RouteAction",
     "RouteOutcome",
     "RouteRejection",
     "RouteTarget",
@@ -58,6 +63,8 @@ __all__ = [
     "pick_domain_overlay",
     "render_target_raw",
     "resolve_target_wiki",
+    "route_action_from_payload",
+    "route_action_to_payload",
     "stage_raw_into_wiki",
 ]
 
@@ -90,6 +97,59 @@ class StagedRaw:
     sidecar_rel: str  # "raw/<ts>_<source>.md" relative to the wiki dir
     media_rel: list[str]  # ["raw/media/<ISO8601>_<sha8>.<ext>", ...] relative
     media_abs: list[Path]  # absolute paths of promoted media (for run_wiki_session media_paths)
+
+
+@dataclass(frozen=True, slots=True)
+class RouteAction:
+    """A staged route+ingest action awaiting user confirmation (Phase-C, aisw-e45).
+
+    Persisted as JSON in pending_confirms.draft_json; replayed by the pipeline's
+    on_confirm_callback to drive Librarian.ingest after the user taps Подтвердить.
+    """
+
+    decision: RouterDecision
+    user_text: str
+    source: _RawSource
+    media_paths: list[str]  # POSIX path strings (re-hydrated to Path on replay)
+    correlation_id: str
+
+
+def route_action_to_payload(
+    decision: RouterDecision,
+    *,
+    user_text: str,
+    source: _RawSource,
+    media_paths: list[Path] | None,
+    correlation_id: str,
+) -> dict[str, object]:
+    """Serialise a route action to a plain JSON-able dict for draft_json."""
+    return {
+        "decision": decision.model_dump(mode="json"),
+        "user_text": user_text,
+        "source": source,
+        "media_paths": [Path(p).as_posix() for p in (media_paths or [])],
+        "correlation_id": correlation_id,
+    }
+
+
+def route_action_from_payload(payload: dict[str, object]) -> RouteAction:
+    """Inverse of route_action_to_payload — reconstruct a typed RouteAction."""
+    raw_decision = payload.get("decision")
+    if not isinstance(raw_decision, dict):
+        raise ValueError("route action payload missing 'decision' object")
+    decision = RouterDecision(**raw_decision)
+    raw_media = payload.get("media_paths") or []
+    media = [str(p) for p in raw_media] if isinstance(raw_media, list) else []
+    source = payload.get("source")
+    if source not in ("text", "voice", "document", "photo"):
+        raise ValueError(f"route action payload bad source: {source!r}")
+    return RouteAction(
+        decision=decision,
+        user_text=str(payload.get("user_text", "")),
+        source=cast(_RawSource, source),
+        media_paths=media,
+        correlation_id=str(payload.get("correlation_id", "")),
+    )
 
 
 # START_CONTRACT: resolve_target_wiki

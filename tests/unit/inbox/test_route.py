@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
+
 from ai_steward_wiki.inbox.route import (
+    RouteAction,
     RouteRejection,
     RouteTarget,
     StagedRaw,
     build_ingest_prompt,
     pick_domain_overlay,
     resolve_target_wiki,
+    route_action_from_payload,
+    route_action_to_payload,
     stage_raw_into_wiki,
 )
 from ai_steward_wiki.inbox.router import RouterDecision, RouterIntent
@@ -188,3 +194,60 @@ def test_build_ingest_prompt_mentions_media(tmp_path: Path) -> None:
     )
     prompt = build_ingest_prompt("чек", staged)
     assert "raw/media/iso_ab.jpg" in prompt
+
+
+# ---------- RouteAction (de)serialisation (aisw-e45, Phase-C) ----------
+
+
+def _route_decision(
+    intent: RouterIntent = RouterIntent.ROUTE, target: str | None = "Travel-WIKI"
+) -> RouterDecision:
+    return RouterDecision(
+        intent=intent,
+        target_wiki=target,
+        notes="Положу в Travel-WIKI.",
+        raw="```router\nintent: route\n```",
+        parsed_ok=True,
+    )
+
+
+@pytest.mark.parametrize("intent", [RouterIntent.ROUTE, RouterIntent.CREATE_WIKI])
+@pytest.mark.parametrize("media", [[], [Path("/tmp/raw/a.jpg"), Path("/tmp/raw/b.png")]])
+def test_route_action_payload_roundtrip(intent: RouterIntent, media: list[Path]) -> None:
+    decision = _route_decision(intent)
+    payload = route_action_to_payload(
+        decision,
+        user_text="вот билет",
+        source="photo" if media else "text",
+        media_paths=media,
+        correlation_id="tg-5-42",
+    )
+    assert json.loads(json.dumps(payload)) == payload  # plain JSON-able types
+    back = route_action_from_payload(payload)
+    assert isinstance(back, RouteAction)
+    assert back.decision == decision
+    assert back.user_text == "вот билет"
+    assert back.source == ("photo" if media else "text")
+    assert back.media_paths == [p.as_posix() for p in media]
+    assert back.correlation_id == "tg-5-42"
+
+
+def test_route_action_from_payload_tolerates_missing_media() -> None:
+    payload = route_action_to_payload(
+        _route_decision(),
+        user_text="x",
+        source="text",
+        media_paths=None,
+        correlation_id="c",
+    )
+    assert payload["media_paths"] == []
+    assert route_action_from_payload(payload).media_paths == []
+
+
+def test_route_action_from_payload_rejects_bad_input() -> None:
+    with pytest.raises(ValueError, match="decision"):
+        route_action_from_payload({"user_text": "x"})
+    with pytest.raises(ValueError, match="source"):
+        route_action_from_payload(
+            {"decision": _route_decision().model_dump(mode="json"), "source": "bogus"}
+        )
