@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.3">
+<VerificationPlan VERSION="0.0.4">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -114,34 +114,40 @@
         <marker>runtime.migrations.done</marker>
         <marker>runtime.allowlist.loaded</marker>
         <marker>runtime.scheduler.started</marker>
+        <marker>runtime.media_pipeline.wired</marker>
+        <marker>runtime.media.promoted</marker>
+        <marker>runtime.handlers.registered</marker>
         <marker>runtime.polling.start</marker>
         <marker>runtime.signal.received</marker>
         <marker>runtime.shutdown.done</marker>
       </log-markers>
-      <evidence>13 unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. Manual smoke: `python -m ai_steward_wiki` starts, logs polling.start, Ctrl-C → shutdown.done, exit 0.</evidence>
+      <evidence>13 unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. aisw-hcl: VoiceHandler/PhotoIngestor wired into DefaultPipeline; media _staging sweep job registered; _WikiRunnerAdapter.run promotes staged media into &lt;wiki&gt;/raw/media after a successful run. Manual smoke: `python -m ai_steward_wiki` starts, logs runtime.media_pipeline.wired voice=true photo=true + polling.start, send voice/photo → not "Принято.", Ctrl-C → shutdown.done, exit 0.</evidence>
     </V-M-RUNTIME-WIRING>
 
     <V-M-TG-HANDLERS-WIRING MODULE="M-TG-HANDLERS-WIRING">
       <tests>
         <test path="tests/unit/tg/test_handlers.py"/>
         <test path="tests/unit/tg/test_pipeline.py"/>
+        <test path="tests/unit/tg/test_pipeline_document.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/tg/test_handlers.py tests/unit/tg/test_pipeline.py -q</cmd>
+        <cmd>uv run pytest tests/unit/tg/test_handlers.py tests/unit/tg/test_pipeline.py tests/unit/tg/test_pipeline_document.py -q</cmd>
       </commands>
       <log-markers>
-        <marker>tg.pipeline.text.received</marker>
-        <marker>tg.pipeline.text.l1_duplicate</marker>
-        <marker>tg.pipeline.voice.received</marker>
+        <marker>tg.pipeline.text</marker>
+        <marker>tg.pipeline.skip.l1_dup</marker>
+        <marker>tg.pipeline.voice</marker>
         <marker>tg.pipeline.voice.no_handler</marker>
-        <marker>tg.pipeline.photo.received</marker>
-        <marker>tg.pipeline.photo.no_ingestor</marker>
+        <marker>tg.pipeline.voice.stt_unavailable</marker>
+        <marker>tg.pipeline.photo</marker>
+        <marker>tg.pipeline.photo.no_handler</marker>
+        <marker>tg.pipeline.photo.dedup_hit</marker>
         <marker>tg.pipeline.document.received</marker>
-        <marker>tg.pipeline.confirm.received</marker>
+        <marker>tg.pipeline.confirm</marker>
         <marker>tg.handlers.callback.malformed</marker>
         <marker>runtime.handlers.registered</marker>
       </log-markers>
-      <evidence>28 unit tests cover callback parsing (8 variants), router/dispatcher wiring, _download_bytes, text/voice/photo/document/confirm end-to-end dispatch with fake aiogram Message+CallbackQuery, L1 dedup short-circuit, fallback paths when voice/photo handlers absent.</evidence>
+      <evidence>Unit tests cover callback parsing (8 variants), router/dispatcher wiring (7 message handlers: text/voice/photo/audio/video_note/document/callback), _download_bytes, text/voice/photo/audio/video_note/document/confirm dispatch with fake aiogram Message+CallbackQuery, L1 dedup short-circuit, photo→runner(media_paths)→deliver, photo+caption, photo L2 dedup, image-document routed, STT-unavailable graceful path, fallback acks when voice/photo handlers absent. aisw-hcl (media handling): F.audio + F.video_note route to on_voice; photo handler forwards message.caption; on_photo runs Claude vision via the wiki pipeline.</evidence>
     </V-M-TG-HANDLERS-WIRING>
 
     <V-M-TG-PIPELINE-CLASSIFIER MODULE="M-TG-PIPELINE-CLASSIFIER">
