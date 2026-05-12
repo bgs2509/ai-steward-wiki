@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/confirm.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Graduated 3-tier confirmation flow (D-023) — auto / implicit /
 #            explicit. Explicit-level draft is persisted in
@@ -28,17 +28,20 @@
 #   ConfirmRecord - returned from request_explicit (id, payload_hash, recap msg id)
 #   compute_payload_hash - canonical-json sha256 of draft dict
 #   build_explicit_keyboard - 3-button InlineKeyboardMarkup
+#   build_route_confirm_keyboard - 2-button route-confirm keyboard (Phase-C, aisw-e45)
 #   ConfirmationService - main facade
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 10: D-023 graduated confirmation flow
+#   LAST_CHANGE: v0.0.2 - aisw-e45 (Phase-C): build_route_confirm_keyboard + request_explicit keyboard_factory
+#   PREVIOUS:    v0.0.1 - chunk 10: D-023 graduated confirmation flow
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
@@ -62,6 +65,7 @@ __all__ = [
     "ConfirmationService",
     "PendingConfirmDraft",
     "build_explicit_keyboard",
+    "build_route_confirm_keyboard",
     "compute_payload_hash",
 ]
 
@@ -102,6 +106,22 @@ def build_explicit_keyboard(pending_id: int) -> Any:
         inline_keyboard=[
             [InlineKeyboardButton(text=BTN_CONFIRM, callback_data=f"confirm:{pending_id}:confirm")],
             [InlineKeyboardButton(text=BTN_CORRECT, callback_data=f"confirm:{pending_id}:correct")],
+            [InlineKeyboardButton(text=BTN_CANCEL, callback_data=f"confirm:{pending_id}:cancel")],
+        ]
+    )
+
+
+def build_route_confirm_keyboard(pending_id: int) -> Any:
+    """2-button keyboard for Inbox-WIKI route confirms (Phase-C, aisw-e45).
+
+    Callback data: ``confirm:<pending_id>:confirm`` / ``confirm:<pending_id>:cancel``
+    — reuses the existing ``confirm:`` callback prefix and parser (no «Изменить»).
+    """
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=BTN_CONFIRM, callback_data=f"confirm:{pending_id}:confirm")],
             [InlineKeyboardButton(text=BTN_CANCEL, callback_data=f"confirm:{pending_id}:cancel")],
         ]
     )
@@ -154,11 +174,20 @@ class ConfirmationService:
         _log.info("tg.confirm.implicit_ack", chat_id=chat_id, message_id=msg.message_id)
         return msg.message_id
 
-    async def request_explicit(self, draft: PendingConfirmDraft) -> ConfirmRecord:
+    async def request_explicit(
+        self,
+        draft: PendingConfirmDraft,
+        *,
+        keyboard_factory: Callable[[int], Any] = build_explicit_keyboard,
+    ) -> ConfirmRecord:
         """Level=explicit — persist pending row + send recap + keyboard.
 
         Idempotent on (telegram_id, payload_hash) in 'pending' status: returns
         the existing record without sending a new recap.
+
+        ``keyboard_factory`` builds the inline keyboard from the freshly-minted
+        pending_id (default: the 3-button explicit keyboard; route confirms pass
+        ``build_route_confirm_keyboard``).
         """
         payload_hash = compute_payload_hash(draft.draft)
         now = _utcnow_naive()
@@ -204,7 +233,7 @@ class ConfirmationService:
             await session.flush()
             pending_id = new_row.id
 
-        keyboard = build_explicit_keyboard(pending_id)
+        keyboard = keyboard_factory(pending_id)
         sent = await self._sender.send_message(
             draft.chat_id, draft.recap_text, reply_markup=keyboard
         )

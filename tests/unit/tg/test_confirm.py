@@ -183,3 +183,38 @@ async def test_expire_due_does_not_touch_resolved(session_maker) -> None:
     async with session_maker() as s:
         row = (await s.execute(select(PendingConfirm))).scalars().one()
         assert row.status == "cancelled"
+
+
+# ---------- Phase-C: route confirm keyboard + custom keyboard_factory (aisw-e45) ----------
+
+
+def test_build_route_confirm_keyboard_has_two_buttons() -> None:
+    from ai_steward_wiki.tg.confirm import BTN_CANCEL, BTN_CONFIRM, build_route_confirm_keyboard
+
+    kb = build_route_confirm_keyboard(77)
+    rows = kb.inline_keyboard
+    assert len(rows) == 2
+    assert rows[0][0].text == BTN_CONFIRM
+    assert rows[0][0].callback_data == "confirm:77:confirm"
+    assert rows[1][0].text == BTN_CANCEL
+    assert rows[1][0].callback_data == "confirm:77:cancel"
+
+
+@pytest.mark.asyncio
+async def test_request_explicit_uses_custom_keyboard_factory(session_maker) -> None:
+    from ai_steward_wiki.tg.confirm import build_route_confirm_keyboard
+
+    sender = FakeSender()
+    svc = ConfirmationService(sender, session_maker)
+    draft = PendingConfirmDraft(
+        telegram_id=1,
+        chat_id=2,
+        category="route_ingest",
+        draft={"decision": {"intent": "route"}},
+        recap_text="Положу в Travel-WIKI. Подтверждаешь?",
+    )
+    rec = await svc.request_explicit(draft, keyboard_factory=build_route_confirm_keyboard)
+
+    kb = sender.sends[0]["reply_markup"]
+    assert len(kb.inline_keyboard) == 2  # route keyboard, not the 3-button default
+    assert kb.inline_keyboard[0][0].callback_data == f"confirm:{rec.pending_id}:confirm"
