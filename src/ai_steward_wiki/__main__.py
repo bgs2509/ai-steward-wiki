@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.1.5
+# VERSION: 0.2.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -10,22 +10,29 @@
 #          asyncio.run), private helpers _sync_url_for_jobstore,
 #          _ensure_data_dirs, _run_all_migrations, _load_users_config,
 #          _install_signal_handlers, _build_classifier_backend,
-#          _ClassifierAdapter, _WikiRunnerAdapter, _OutputDeliveryAdapter.
+#          _ClassifierAdapter, _WikiRunnerAdapter, _OutputDeliveryAdapter,
+#          _RouterAdapter, _render_raw_sidecar.
 #   DEPENDS: aiogram, apscheduler, alembic, structlog, sqlalchemy.async,
 #            ai_steward_wiki.{settings, logging_setup, tg.bot, tg.pipeline,
 #            tg.output, tg.voice, tg.photo, scheduler.core, scheduler.locks,
-#            scheduler.maintenance, inbox.staging,
+#            scheduler.maintenance, inbox.materialize, inbox.router, inbox.staging,
 #            classifier.{backend,schema,stage0}, wiki.{runner,acquire},
 #            storage.{jobs,audit,sessions}.engine, auth.{allowlist,users_toml}}
 #   LINKS: M-FOUNDATION, M-STORAGE, M-AUTH-USERS, M-SCHEDULER,
 #          M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-OUTPUT,
-#          M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-DEPLOY
+#          M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX,
+#          M-INBOX-ROUTER, M-DEPLOY
 #   ROLE: RUNTIME
 #   MAP_MODE: NONE
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.5 - aisw-t0n: pass photo_vision_timeout_s into DefaultPipeline
+#   LAST_CHANGE: v0.2.0 - aisw-dsg (Inbox-WIKI Phase-A): add _RouterAdapter —
+#                ensure_inbox_wiki → stage raw payload into Inbox-WIKI/raw/ →
+#                run_wiki_session in Inbox-WIKI/ with prompts/inbox.md →
+#                parse_router_reply; WikiRunnerError → RouterError. Wired into
+#                DefaultPipeline as `router=`. New log anchors inbox.router.*.
+#   PREVIOUS:    v0.1.5 - aisw-t0n: pass photo_vision_timeout_s into DefaultPipeline
 #                and timeout_s through _WikiRunnerAdapter.run → run_wiki_session
 #                (D-022 per-call vision timeout).
 #   PREVIOUS:    v0.1.4 - aisw-7k0: wire register_all_retention_jobs into _amain
@@ -48,9 +55,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import signal
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 import structlog
@@ -72,6 +82,8 @@ from ai_steward_wiki.classifier.backend import (
 from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
 from ai_steward_wiki.classifier.stage0 import PromptCache, classify
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
+from ai_steward_wiki.inbox.materialize import ensure_inbox_wiki
+from ai_steward_wiki.inbox.router import RouterDecision, RouterError, parse_router_reply
 from ai_steward_wiki.inbox.staging import promote_path_to_raw
 from ai_steward_wiki.logging_setup import configure_logging
 from ai_steward_wiki.ops.pii import PIIRedactor
@@ -299,6 +311,174 @@ class _OutputDeliveryAdapter:
         )
 
 
+# START_BLOCK_INBOX_ROUTER_ADAPTER (aisw-dsg, Inbox-WIKI Phase-A)
+_RawSource = Literal["text", "voice", "document", "photo"]
+
+
+def _render_raw_sidecar(
+    *, source: _RawSource, text: str, media_paths: list[Path] | None
+) -> tuple[str, str]:
+    """Return (filename, content) for the Inbox-WIKI/raw/<ts>_<source>.<ext> entry.
+
+    text → a plain .md with the message body; media → a .md sidecar with a YAML
+    front-matter (source, received_utc, staged_path[s]) plus the carried text
+    (voice transcript / synthetic photo prompt / extracted document text). The
+    binary itself stays in media_staging_root — its move into the target WIKI
+    is Phase-B/Phase-E (aisw-zd9 / aisw-12t).
+    """
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    filename = f"{ts}_{source}.md"
+    if source == "text":
+        return filename, text if text.endswith("\n") else text + "\n"
+    staged = [str(p) for p in (media_paths or [])]
+    lines = [
+        "---",
+        f"source: {source}",
+        f"received_utc: {ts}",
+        f"staged_path: {staged[0] if staged else 'null'}",
+    ]
+    if len(staged) > 1:
+        lines.append("staged_paths:")
+        lines.extend(f"  - {p}" for p in staged)
+    lines += ["---", "", "## Содержимое", "", text.rstrip("\n"), ""]
+    return filename, "\n".join(lines)
+
+
+class _RouterAdapter:
+    """Inbox-WIKI Stage-1a router: materialise Inbox-WIKI, stage the raw payload,
+    run Claude inside it with prompts/inbox.md, parse the reply (M-INBOX-ROUTER)."""
+
+    def __init__(
+        self,
+        *,
+        wiki_root: Path,
+        inbox_template_path: Path,
+        base_prompt_path: Path,
+        inbox_overlay_path: Path,
+        runtime_dir: Path,
+        acquirer: WikiLockAdapter,
+        spawner: AsyncioSpawner,
+        run_config: _RunConfig,
+    ) -> None:
+        self._wiki_root = wiki_root
+        self._inbox_template_path = inbox_template_path
+        self._base_prompt_path = base_prompt_path
+        self._inbox_overlay_path = inbox_overlay_path
+        self._runtime_dir = runtime_dir
+        self._acquirer = acquirer
+        self._spawner = spawner
+        self._run_config = run_config
+
+    async def route(
+        self,
+        *,
+        text: str,
+        telegram_id: int,
+        correlation_id: str,
+        source: _RawSource,
+        media_paths: list[Path] | None = None,
+        timeout_s: float | None = None,
+    ) -> RouterDecision:
+        inbox_dir = await ensure_inbox_wiki(
+            telegram_id,
+            wiki_root=self._wiki_root,
+            template_path=self._inbox_template_path,
+        )
+        raw_path = await asyncio.to_thread(
+            self._write_raw, inbox_dir, source=source, text=text, media_paths=media_paths
+        )
+        logger.info(
+            "inbox.router.staged_raw",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            source=source,
+            raw_path=str(raw_path),
+        )
+        wiki_id = f"{telegram_id}/Inbox-WIKI"
+        run_id = f"router-{uuid4().hex[:12]}"
+        logger.info(
+            "inbox.router.run.begin",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            wiki_id=wiki_id,
+            run_id=run_id,
+            source=source,
+            media_count=len(media_paths) if media_paths else 0,
+        )
+        try:
+            result = await run_wiki_session(
+                wiki_id=wiki_id,
+                wiki_path=inbox_dir,
+                base_prompt_path=self._base_prompt_path,
+                overlay_prompt_path=self._inbox_overlay_path,
+                run_id=run_id,
+                correlation_id=correlation_id,
+                runtime_dir=self._runtime_dir,
+                acquirer=self._acquirer,
+                spawner=self._spawner,
+                config=self._run_config,
+                user_input=text,
+                media_paths=media_paths,
+                timeout_s=timeout_s,
+            )
+        except WikiRunnerError as e:
+            raise RouterError(str(e)) from e
+        reply_text = aggregate_text(result.events)
+        logger.info(
+            "inbox.router.run.done",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            wiki_id=wiki_id,
+            run_id=run_id,
+            latency_ms=result.latency_ms,
+            chars=len(reply_text),
+        )
+        decision = parse_router_reply(reply_text)
+        if not decision.parsed_ok:
+            logger.info(
+                "inbox.router.parse_error",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                run_id=run_id,
+                raw_preview=reply_text[:200],
+            )
+        logger.info(
+            "inbox.router.parsed",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            run_id=run_id,
+            intent=decision.intent.value,
+            target_wiki=decision.target_wiki,
+            parsed_ok=decision.parsed_ok,
+        )
+        return decision
+
+    def _write_raw(
+        self,
+        inbox_dir: Path,
+        *,
+        source: _RawSource,
+        text: str,
+        media_paths: list[Path] | None,
+    ) -> Path:
+        raw_dir = inbox_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        filename, content = _render_raw_sidecar(source=source, text=text, media_paths=media_paths)
+        target = raw_dir / filename
+        tmp = raw_dir / f"{filename}.tmp"
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            os.replace(tmp, target)
+        finally:
+            if tmp.exists():
+                with contextlib.suppress(OSError):
+                    tmp.unlink()
+        return target
+
+
+# END_BLOCK_INBOX_ROUTER_ADAPTER
+
+
 def _build_classifier_backend(settings: Settings) -> ClassifierBackend:
     """Construct the configured Stage-0 backend; raise on misconfiguration."""
     if settings.stage0_backend == "anthropic_api":
@@ -447,6 +627,21 @@ async def _amain() -> None:
             claude_config_dir=settings.claude_config_dir,
         ),
     )
+    router_adapter = _RouterAdapter(
+        wiki_root=settings.wiki_root,
+        inbox_template_path=settings.wiki_template_dir / "inbox-wiki" / "CLAUDE.md",
+        base_prompt_path=settings.prompts_dir / "wiki.md",
+        inbox_overlay_path=settings.prompts_dir / "inbox.md",
+        runtime_dir=runtime_dir,
+        acquirer=WikiLockAdapter(lock_manager),
+        spawner=AsyncioSpawner(),
+        run_config=_RunConfig(
+            model=settings.wiki_runner_model,
+            timeout_s=settings.wiki_runner_timeout_s,
+            term_grace_s=settings.wiki_runner_term_grace_s,
+            claude_config_dir=settings.claude_config_dir,
+        ),
+    )
     runs_dir = settings.workspace_root / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     output_adapter = _OutputDeliveryAdapter(
@@ -491,6 +686,7 @@ async def _amain() -> None:
         runner=runner_adapter,
         output=output_adapter,
         streaming=streaming_delivery,
+        router=router_adapter,
         pii=PIIRedactor(hash_secret=settings.pii_hash_secret.get_secret_value().encode("utf-8")),
         photo_vision_timeout_s=settings.photo_vision_timeout_s,
     )
