@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.4.0
+# VERSION: 0.5.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -10,26 +10,34 @@
 #          asyncio.run), private helpers _sync_url_for_jobstore,
 #          _ensure_data_dirs, _run_all_migrations, _load_users_config,
 #          _install_signal_handlers, _build_classifier_backend,
-#          _ClassifierAdapter, _TimeParserAdapter, _on_job_missed,
-#          _WikiRunnerAdapter, _OutputDeliveryAdapter,
+#          _ClassifierAdapter, _TimeParserAdapter, _RecurrenceParserAdapter,
+#          _on_job_missed, _WikiRunnerAdapter, _DigestRunnerAdapter,
+#          _resolve_owner_wikis_factory, _OutputDeliveryAdapter,
 #          _RouterAdapter, _render_raw_sidecar, _LibrarianAdapter.
 #   DEPENDS: aiogram, apscheduler, alembic, structlog, sqlalchemy.async,
 #            ai_steward_wiki.{settings, logging_setup, tg.bot, tg.pipeline,
 #            tg.output, tg.voice, tg.photo, scheduler.core, scheduler.locks,
 #            scheduler.maintenance, scheduler.firing, inbox.materialize, inbox.router,
-#            inbox.route, inbox.staging, classifier.{backend,schema,stage0,time_parse},
+#            inbox.route, inbox.staging, classifier.{backend,schema,stage0,time_parse,recurrence},
 #            wiki.{runner,acquire,lifecycle},
 #            storage.{jobs,audit,sessions}.engine, auth.{allowlist,users_toml}}
 #   LINKS: M-FOUNDATION, M-STORAGE, M-AUTH-USERS, M-SCHEDULER, M-SCHEDULER-FIRING,
-#          M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-TG-OUTPUT,
-#          M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX,
+#          M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-WIKI-LIFECYCLE,
+#          M-TG-OUTPUT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX,
 #          M-INBOX-ROUTER, M-INBOX-ROUTE, M-DEPLOY
 #   ROLE: RUNTIME
 #   MAP_MODE: NONE
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.4.0 - aisw-kcz (Inbox-WIKI Phase-D.a): wire the reminder cron
+#   LAST_CHANGE: v0.5.0 - aisw-oqq (Inbox-WIKI Phase-D.b.1): wire the recurring digest —
+#                _RecurrenceParserAdapter (rule-based parse_recurrence) → DefaultPipeline
+#                recurrence_parser=; _DigestRunnerAdapter (run_wiki_session over
+#                prompts/wiki.md + prompts/digest.md with extra_add_dirs, 600s) +
+#                _resolve_owner_wikis_factory (glob <wiki_root>/<owner>/*-WIKI minus
+#                Inbox-WIKI) → firing.set_digest_context(scheduler, runner, resolver,
+#                jobs_maker, sender).
+#   PREVIOUS:    v0.4.0 - aisw-kcz (Inbox-WIKI Phase-D.a): wire the reminder cron
 #                bridge — firing.set_firing_context(sender, jobs_maker) after the
 #                scheduler starts; scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED);
 #                _TimeParserAdapter (parse_time over prompts/time-parse.md) + a
@@ -96,6 +104,7 @@ from ai_steward_wiki.classifier.backend import (
     ClassifierBackend,
     ClaudeCliBackend,
 )
+from ai_steward_wiki.classifier.recurrence import RecurrenceParseResult, parse_recurrence
 from ai_steward_wiki.classifier.schema import ClassifierResult, Intent, TimeParseResult
 from ai_steward_wiki.classifier.stage0 import PromptCache, classify
 from ai_steward_wiki.classifier.time_parse import parse_time as _parse_time_fn
@@ -333,6 +342,94 @@ class _WikiRunnerAdapter:
             text=aggregate_text(result.events),
             latency_ms=result.latency_ms,
         )
+
+
+class _RecurrenceParserAdapter:
+    """Bind classifier.recurrence.parse_recurrence into the RecurrenceParser Protocol (aisw-oqq).
+
+    The Haiku-fallback path is a stub in the MVP; this adapter just forwards to
+    the rule-based parser. ``prompts/recurrence.md`` is shipped for a later wiring.
+    """
+
+    def __call__(
+        self, text: str, *, user_tz: str, correlation_id: str = ""
+    ) -> RecurrenceParseResult:
+        return parse_recurrence(text, user_tz=user_tz, correlation_id=correlation_id)
+
+
+class _DigestRunnerAdapter:
+    """Run one Stage-1 digest session against the owner's WIKIs (aisw-oqq).
+
+    Mirrors _WikiRunnerAdapter: assembles prompts/wiki.md + prompts/digest.md,
+    acquires the per-WIKI lock via run_wiki_session's own LockAcquirer, grants
+    --add-dir on the other WIKIs, returns the aggregated assistant text.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_prompt_path: Path,
+        digest_prompt_path: Path,
+        runtime_dir: Path,
+        acquirer: WikiLockAdapter,
+        spawner: AsyncioSpawner,
+        run_config: _RunConfig,
+    ) -> None:
+        self._base_prompt_path = base_prompt_path
+        self._digest_prompt_path = digest_prompt_path
+        self._runtime_dir = runtime_dir
+        self._acquirer = acquirer
+        self._spawner = spawner
+        self._run_config = run_config
+
+    async def __call__(
+        self,
+        *,
+        wiki_id: str,
+        wiki_path: Path,
+        extra_add_dirs: list[Path],
+        planner_context: str,
+        correlation_id: str,
+    ) -> str:
+        wiki_path.mkdir(parents=True, exist_ok=True)
+        run_id = f"digest-{uuid4().hex[:12]}"
+        result = await run_wiki_session(
+            wiki_id=wiki_id,
+            wiki_path=wiki_path,
+            base_prompt_path=self._base_prompt_path,
+            overlay_prompt_path=self._digest_prompt_path,
+            run_id=run_id,
+            correlation_id=correlation_id,
+            runtime_dir=self._runtime_dir,
+            acquirer=self._acquirer,
+            spawner=self._spawner,
+            config=self._run_config,
+            user_input=planner_context,
+            extra_add_dirs=extra_add_dirs,
+            timeout_s=600.0,
+        )
+        return aggregate_text(result.events)
+
+
+def _resolve_owner_wikis_factory(
+    wiki_root: Path,
+) -> Callable[[int], Awaitable[list[tuple[str, Path]]]]:
+    """Return an async resolver: owner_telegram_id → [(wiki_dir_name, path), …] minus Inbox-WIKI."""
+
+    async def _resolve(owner_telegram_id: int) -> list[tuple[str, Path]]:
+        owner_dir = wiki_root / str(owner_telegram_id)
+        if not owner_dir.is_dir():
+            return []
+        out: list[tuple[str, Path]] = []
+        for entry in sorted(owner_dir.iterdir()):
+            if not entry.is_dir() or not entry.name.endswith("-WIKI"):
+                continue
+            if entry.name == "Inbox-WIKI":
+                continue
+            out.append((entry.name, entry))
+        return out
+
+    return _resolve
 
 
 class _OutputDeliveryAdapter:
@@ -851,6 +948,28 @@ async def _amain() -> None:
             claude_config_dir=settings.claude_config_dir,
         ),
     )
+    # aisw-oqq: recurring-digest fast-path parser + digest firing context.
+    recurrence_parser_adapter = _RecurrenceParserAdapter()
+    digest_runner_adapter = _DigestRunnerAdapter(
+        base_prompt_path=settings.prompts_dir / "wiki.md",
+        digest_prompt_path=settings.prompts_dir / "digest.md",
+        runtime_dir=runtime_dir,
+        acquirer=WikiLockAdapter(lock_manager),
+        spawner=AsyncioSpawner(),
+        run_config=_RunConfig(
+            model=settings.wiki_runner_model,
+            timeout_s=600.0,
+            term_grace_s=settings.wiki_runner_term_grace_s,
+            claude_config_dir=settings.claude_config_dir,
+        ),
+    )
+    firing.set_digest_context(
+        scheduler=scheduler,
+        runner=digest_runner_adapter,
+        resolve_owner_wikis=_resolve_owner_wikis_factory(settings.wiki_root),
+        jobs_session_maker=jobs_maker,
+        sender=sender,
+    )
     router_adapter = _RouterAdapter(
         wiki_root=settings.wiki_root,
         inbox_template_path=settings.wiki_template_dir / "inbox-wiki" / "CLAUDE.md",
@@ -933,6 +1052,7 @@ async def _amain() -> None:
         pii=PIIRedactor(hash_secret=settings.pii_hash_secret.get_secret_value().encode("utf-8")),
         photo_vision_timeout_s=settings.photo_vision_timeout_s,
         time_parser=time_parser_adapter,
+        recurrence_parser=recurrence_parser_adapter,
         jobs_session_maker=jobs_maker,
         scheduler=scheduler,
         user_tz_lookup=_user_tz_lookup,
