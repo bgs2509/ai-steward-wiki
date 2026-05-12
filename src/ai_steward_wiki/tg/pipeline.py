@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.3.7
+# VERSION: 0.4.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -21,6 +21,7 @@
 #   DEPENDS: ai_steward_wiki.classifier.schema (ClassifierResult, Intent,
 #            ClassifierError),
 #            ai_steward_wiki.inbox.idempotency.IdempotencyService,
+#            ai_steward_wiki.inbox.router (RouterDecision, RouterError),
 #            ai_steward_wiki.inbox.staging.MediaRef,
 #            ai_steward_wiki.ops.pii.PIIRedactor,
 #            ai_steward_wiki.tg.voice.VoiceHandler (optional),
@@ -53,6 +54,7 @@
 #   SUPPORTED_IMAGE_MIMES - frozenset of mimes routed to PhotoIngestor
 #   ConfirmKeyboardAction - Literal[confirm|correct|cancel]
 #   Classifier - Protocol (Stage-0 wrapper, narrow API)
+#   Router - Protocol (Inbox-WIKI Stage-1a router wrapper; aisw-dsg)
 #   WikiRunOutcome - frozen dataclass returned by WikiRunner.run
 #   WikiRunner - Protocol (Stage-1a/1b wrapper, narrow API)
 #   OutputDelivery - Protocol (deliver_output wrapper)
@@ -63,7 +65,14 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.3.7 - aisw-3dr: on_voice accepts ext/mime (default ogg) and
+#   LAST_CHANGE: v0.4.0 - aisw-dsg (Inbox-WIKI Phase-A): _ROUTABLE_INTENTS +
+#                Router Protocol; DefaultPipeline gains an optional `router`;
+#                _run_text_pipeline routes WIKI_INGEST/WIKI_QUERY/UNKNOWN through
+#                router.route() (Stage-1a in Inbox-WIKI/) and replies with the
+#                parsed RouterDecision.notes — legacy flat run kept for the
+#                other intents and when no router is wired. New log anchors
+#                tg.pipeline.router.dispatched|delivered|error.
+#   PREVIOUS:    v0.3.7 - aisw-3dr: on_voice accepts ext/mime (default ogg) and
 #                forwards them to VoiceHandler.handle so video notes (mp4) and
 #                audio files are staged with the right extension, not .ogg.
 #   PREVIOUS:    v0.3.6 - aisw-b2x: on_document + on_voice accept an optional
@@ -110,6 +119,7 @@ from ai_steward_wiki.classifier.schema import (
     Intent,
 )
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
+from ai_steward_wiki.inbox.router import RouterDecision, RouterError
 from ai_steward_wiki.ops.pii import PIIRedactor
 from ai_steward_wiki.tg.bot import TgSender
 from ai_steward_wiki.tg.confirm import ConfirmationService
@@ -140,6 +150,7 @@ __all__ = [
     "DefaultStreamingDelivery",
     "MessagePipeline",
     "OutputDelivery",
+    "Router",
     "StreamingDelivery",
     "WikiRunOutcome",
     "WikiRunner",
@@ -193,10 +204,32 @@ def _with_caption(text: str, caption: str | None) -> str:
     return f"Подпись пользователя: {caption}\n\n{text}".strip()
 
 
+# Stage-0 intents that mean "route this somewhere" → handled by the Inbox-WIKI
+# Router (Stage-1a) when one is wired (aisw-dsg, Inbox-WIKI Phase-A). The other
+# intents (REMINDER, DIGEST, WIKI_LINT, ADMIN) keep their legacy handling.
+_ROUTABLE_INTENTS = frozenset({Intent.WIKI_INGEST, Intent.WIKI_QUERY, Intent.UNKNOWN})
+
+
 class Classifier(Protocol):
     """Stage-0 Haiku classifier wrapper (D-016 + DEC-TPC-1)."""
 
     async def classify(self, text: str, *, correlation_id: str) -> ClassifierResult: ...
+
+
+class Router(Protocol):
+    """Inbox-WIKI Stage-1a router wrapper (aisw-dsg). Runs Claude inside the
+    user's Inbox-WIKI/ with prompts/inbox.md and returns a parsed decision."""
+
+    async def route(
+        self,
+        *,
+        text: str,
+        telegram_id: int,
+        correlation_id: str,
+        source: Literal["text", "voice", "document", "photo"],
+        media_paths: list[Path] | None = None,
+        timeout_s: float | None = None,
+    ) -> RouterDecision: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,6 +394,7 @@ class DefaultPipeline:
         runner: WikiRunner | None = None,
         output: OutputDelivery | None = None,
         streaming: StreamingDelivery | None = None,
+        router: Router | None = None,
         pii: PIIRedactor | None = None,
         photo_vision_timeout_s: float | None = None,
     ) -> None:
@@ -373,6 +407,9 @@ class DefaultPipeline:
         self._runner = runner
         self._output = output
         self._streaming = streaming
+        # Inbox-WIKI Stage-1a router (aisw-dsg). When wired, it intercepts
+        # routable intents; when None, those fall through to the legacy run.
+        self._router = router
         self._pii = pii or PIIRedactor()
         # D-022: shorter cap for photo→vision runs (vs the default text-turn cap).
         self._photo_vision_timeout_s = photo_vision_timeout_s
@@ -464,6 +501,45 @@ class DefaultPipeline:
             confidence=result.confidence,
             latency_ms=result.latency_ms,
         )
+
+        # START_BLOCK_ROUTABLE_BRANCH (aisw-dsg, Inbox-WIKI Phase-A)
+        if result.intent in _ROUTABLE_INTENTS and self._router is not None:
+            _log.info(
+                "tg.pipeline.router.dispatched",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                intent=result.intent.value,
+                source=source,
+            )
+            try:
+                decision = await self._router.route(
+                    text=text,
+                    telegram_id=telegram_id,
+                    correlation_id=correlation_id,
+                    source=source,
+                    media_paths=media_paths,
+                    timeout_s=timeout_s,
+                )
+            except RouterError:
+                _log.exception(
+                    "tg.pipeline.router.error",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    error_class="RouterError",
+                )
+                await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
+                return
+            _log.info(
+                "tg.pipeline.router.delivered",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                intent=decision.intent.value,
+                target_wiki=decision.target_wiki,
+                parsed_ok=decision.parsed_ok,
+            )
+            await self._sender.send_message(chat_id, decision.notes)
+            return
+        # END_BLOCK_ROUTABLE_BRANCH
 
         _log.info(
             "tg.pipeline.runner.dispatched",
