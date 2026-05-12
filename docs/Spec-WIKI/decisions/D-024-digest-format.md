@@ -88,4 +88,5 @@ Read-only items (на завтра, статистика, wiki updates) — **в
 
 ## Перенос в ADR
 
-- [ ] перенесено в `docs/adr/ADR-024-digest-format.md` (когда финализируется)
+- [x] delivery-часть (HTML parse_mode, TL;DR-секция, `<b>`-section split + `(n/m)`, `send_document` fallthrough, `data/runs/` persist, `notify_policy=always` empty-line) перенесена в [`docs/adr/ADR-024-digest-presentation.md`](../../adr/ADR-024-digest-presentation.md) (2026-05-12, bd `aisw-w3k`).
+- [ ] interactive-часть (actionable ±2h cards, `/expand`, per-user section toggles) — за bd `aisw-269` (Phase-D.b.2b), будущий ADR.
