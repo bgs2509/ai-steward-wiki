@@ -30,7 +30,11 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.0 - aisw-oqq (Inbox-WIKI Phase-D.b.1): wire the recurring digest —
+#   LAST_CHANGE: v0.5.1 - aisw-w3k (Inbox-WIKI Phase-D.b.2a): digest delivery routed
+#                through tg.output.deliver_output(kind='digest') —
+#                firing.set_digest_context(...) now also gets
+#                audit_session_maker=audit_maker.
+#   PREVIOUS:    v0.5.0 - aisw-oqq (Inbox-WIKI Phase-D.b.1): wire the recurring digest —
 #                _RecurrenceParserAdapter (rule-based parse_recurrence) → DefaultPipeline
 #                recurrence_parser=; _DigestRunnerAdapter (run_wiki_session over
 #                prompts/wiki.md + prompts/digest.md with extra_add_dirs, 600s) +
@@ -968,6 +972,7 @@ async def _amain() -> None:
         runner=digest_runner_adapter,
         resolve_owner_wikis=_resolve_owner_wikis_factory(settings.wiki_root),
         jobs_session_maker=jobs_maker,
+        audit_session_maker=audit_maker,
         sender=sender,
     )
     router_adapter = _RouterAdapter(

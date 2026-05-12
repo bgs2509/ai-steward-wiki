@@ -54,6 +54,19 @@ async def jobs_maker(tmp_path: Any):
     await engine.dispose()
 
 
+@pytest.fixture
+async def audit_maker(tmp_path: Any, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / "audit.db"
+    monkeypatch.setenv("AISW_AUDIT_DB_URL_SYNC", f"sqlite:///{db_path}")
+    cfg = Config(str(REPO_ROOT / "alembic" / "audit" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic" / "audit"))
+    command.upgrade(cfg, "head")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    yield maker
+    await engine.dispose()
+
+
 @pytest.fixture(autouse=True)
 def _reset_ctx():
     firing._digest_ctx = None
@@ -126,7 +139,7 @@ def _idem() -> MagicMock:
     return idem
 
 
-async def test_digest_end_to_end(sessions_maker, jobs_maker) -> None:
+async def test_digest_end_to_end(sessions_maker, jobs_maker, audit_maker, tmp_path: Any) -> None:
     bot = FakeSender()
     sched = _FakeScheduler()
     confirmation = ConfirmationService(bot, sessions_maker)
@@ -180,25 +193,28 @@ async def test_digest_end_to_end(sessions_maker, jobs_maker) -> None:
     # 3) APScheduler fires → digest runner + delivery + row stays 'scheduled'
     deliver_bot = FakeSender()
     runner = _DigestRunner()
+    health_dir = tmp_path / "Health-WIKI"
+    finance_dir = tmp_path / "Finance-WIKI"
+    health_dir.mkdir()
+    finance_dir.mkdir()
 
     async def _resolve(owner_id: int) -> list[tuple[str, Path]]:
-        return [
-            ("Health-WIKI", Path("/w/42/Health-WIKI")),
-            ("Finance-WIKI", Path("/w/42/Finance-WIKI")),
-        ]
+        return [("Health-WIKI", health_dir), ("Finance-WIKI", finance_dir)]
 
     set_digest_context(
         scheduler=sched,
         runner=runner,
         resolve_owner_wikis=_resolve,
         jobs_session_maker=jobs_maker,
+        audit_session_maker=audit_maker,
         sender=deliver_bot,
     )
     await fire_digest_job(job.id)
     assert len(deliver_bot.sends) == 1
     assert "TL;DR" in deliver_bot.sends[-1]["text"]
     assert runner.calls[0]["wiki_id"] == "Health-WIKI"
-    assert runner.calls[0]["extra_add_dirs"] == [Path("/w/42/Finance-WIKI")]
+    assert runner.calls[0]["extra_add_dirs"] == [finance_dir]
+    assert (health_dir / "data" / "runs").is_dir()
     async with jobs_maker() as s:
         row = await s.get(Job, job.id)
         assert row is not None

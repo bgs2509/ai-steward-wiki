@@ -202,6 +202,8 @@ async def test_fire_job_without_context_raises(session_factory) -> None:
 
 from pathlib import Path  # noqa: E402
 
+from alembic import command as _alembic_command  # noqa: E402
+from alembic.config import Config as _AlembicConfig  # noqa: E402
 from sqlalchemy import select as _sa_select  # noqa: E402
 
 from ai_steward_wiki.classifier.recurrence import Recurrence  # noqa: E402
@@ -213,6 +215,21 @@ from ai_steward_wiki.scheduler.firing import (  # noqa: E402
 )
 from ai_steward_wiki.storage.jobs.models import JobDLQ  # noqa: E402
 from ai_steward_wiki.storage.jobs.payloads import DigestPayload  # noqa: E402
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.fixture
+async def audit_session_maker(tmp_path, monkeypatch):
+    db_path = tmp_path / "audit.db"
+    monkeypatch.setenv("AISW_AUDIT_DB_URL_SYNC", f"sqlite:///{db_path}")
+    cfg = _AlembicConfig(str(_REPO_ROOT / "alembic" / "audit" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_REPO_ROOT / "alembic" / "audit"))
+    _alembic_command.upgrade(cfg, "head")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    yield maker
+    await engine.dispose()
 
 
 @pytest.fixture(autouse=True)
@@ -259,6 +276,7 @@ class _NullCtx:
 class _DigestSender:
     def __init__(self, *, fail: bool = False) -> None:
         self.sent: list[tuple[int, str]] = []
+        self.documents: list[tuple[int, str]] = []
         self._fail = fail
 
     async def send_message(self, chat_id: int, text: str, **kw: Any) -> object:
@@ -267,13 +285,38 @@ class _DigestSender:
         self.sent.append((chat_id, text))
         return object()
 
+    async def send_document(
+        self, chat_id: int, *, path: object, caption: str = "", **kw: Any
+    ) -> object:
+        if self._fail:
+            raise RuntimeError("chat blocked")
+        self.documents.append((chat_id, str(path)))
+        return object()
+
 
 async def _resolve_two(owner_id: int):
+    # Fake paths — only for tests that return before deliver_output touches them.
     return [("health", Path("/w/u/Health-WIKI")), ("finance", Path("/w/u/Finance-WIKI"))]
 
 
 async def _resolve_none(owner_id: int):
     return []
+
+
+@pytest.fixture
+def wiki_dirs(tmp_path):
+    health = tmp_path / "Health-WIKI"
+    finance = tmp_path / "Finance-WIKI"
+    health.mkdir()
+    finance.mkdir()
+    return health, finance
+
+
+def _make_resolve_two(health: Path, finance: Path):
+    async def _resolve(owner_id: int):
+        return [("health", health), ("finance", finance)]
+
+    return _resolve
 
 
 class _OkRunner:
@@ -322,7 +365,10 @@ async def test_create_digest_job_writes_row_and_cron(session_factory) -> None:
     assert "hour='9'" in str(call["trigger"]) or "hour=9" in repr(call["trigger"])
 
 
-async def test_fire_digest_job_runs_and_delivers(session_factory) -> None:
+async def test_fire_digest_job_runs_and_delivers(
+    session_factory, audit_session_maker, wiki_dirs
+) -> None:
+    health, finance = wiki_dirs
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -337,8 +383,9 @@ async def test_fire_digest_job_runs_and_delivers(session_factory) -> None:
     set_digest_context(
         scheduler=sched,
         runner=runner,
-        resolve_owner_wikis=_resolve_two,
+        resolve_owner_wikis=_make_resolve_two(health, finance),
         jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
         sender=sender,
     )
     await fire_digest_job(job_id)
@@ -346,7 +393,7 @@ async def test_fire_digest_job_runs_and_delivers(session_factory) -> None:
     assert "TL;DR" in sender.sent[0][1]
     # primary WIKI is the first; the rest are extra_add_dirs
     assert runner.calls[0]["wiki_id"] == "health"
-    assert runner.calls[0]["extra_add_dirs"] == [Path("/w/u/Finance-WIKI")]
+    assert runner.calls[0]["extra_add_dirs"] == [finance]
     async with session_factory() as s:
         row = await s.get(Job, job_id)
         assert row.status == "scheduled"
@@ -354,7 +401,138 @@ async def test_fire_digest_job_runs_and_delivers(session_factory) -> None:
         assert row.finished_at_utc is not None
 
 
-async def test_fire_digest_job_no_wiki_set(session_factory) -> None:
+async def test_fire_digest_job_delivers_via_deliver_output(
+    session_factory, audit_session_maker, wiki_dirs
+) -> None:
+    from ai_steward_wiki.storage.audit.models import RunOutput
+
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    async with session_factory() as s:
+        job_id = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
+        )
+    sender = _DigestSender()
+    set_digest_context(
+        scheduler=sched,
+        runner=_OkRunner(),
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=sender,
+    )
+    await fire_digest_job(job_id)
+    runs_root = health / "data" / "runs"
+    assert runs_root.is_dir()
+    md_files = list(runs_root.rglob("*.md"))
+    assert len(md_files) == 1
+    assert "TL;DR" in md_files[0].read_text(encoding="utf-8")
+    async with audit_session_maker() as s:
+        rows = (await s.execute(_sa_select(RunOutput))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].kind == "digest"
+    assert rows[0].job_id == job_id
+    assert rows[0].owner_telegram_id == 7
+    assert len(sender.sent) == 1
+
+
+async def test_fire_digest_job_deliver_failure_strikes(
+    session_factory, audit_session_maker, wiki_dirs
+) -> None:
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    async with session_factory() as s:
+        job_id = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
+        )
+    set_digest_context(
+        scheduler=sched,
+        runner=_OkRunner(),
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=_DigestSender(fail=True),
+    )
+    await fire_digest_job(job_id)
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row.retry_count == 1
+        assert row.status == "scheduled"
+
+
+async def test_build_planner_context_lists_in_window_jobs(session_factory) -> None:
+    from datetime import timedelta
+
+    from ai_steward_wiki.scheduler.firing import _build_planner_context
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    async with session_factory() as s:
+        s.add(
+            Job(
+                owner_telegram_id=7,
+                chat_id=7,
+                kind="reminder_job",
+                status="scheduled",
+                priority=int(Lane.DIGEST),
+                scheduled_at_utc=now + timedelta(hours=2),
+                payload=ReminderPayload(message="приём ферретаб").model_dump(mode="json"),
+                created_at_utc=now,
+            )
+        )
+        s.add(
+            Job(
+                owner_telegram_id=7,
+                chat_id=7,
+                kind="reminder_job",
+                status="scheduled",
+                priority=int(Lane.DIGEST),
+                scheduled_at_utc=now + timedelta(hours=48),
+                payload=ReminderPayload(message="через два дня").model_dump(mode="json"),
+                created_at_utc=now,
+            )
+        )
+        s.add(
+            Job(
+                owner_telegram_id=99,
+                chat_id=99,
+                kind="reminder_job",
+                status="scheduled",
+                priority=int(Lane.DIGEST),
+                scheduled_at_utc=now + timedelta(hours=1),
+                payload=ReminderPayload(message="чужое").model_dump(mode="json"),
+                created_at_utc=now,
+            )
+        )
+        await s.commit()
+        ctx = await _build_planner_context(
+            s, owner_telegram_id=7, window_hours=24, now_utc=now, tz="UTC"
+        )
+    assert "приём ферретаб" in ctx
+    assert "через два дня" not in ctx
+    assert "чужое" not in ctx
+    assert "ближайшие 24 ч" in ctx
+
+
+async def test_build_planner_context_empty(session_factory) -> None:
+    from ai_steward_wiki.scheduler.firing import _build_planner_context
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    async with session_factory() as s:
+        ctx = await _build_planner_context(
+            s, owner_telegram_id=7, window_hours=24, now_utc=now, tz="UTC"
+        )
+    assert ctx == "На ближайшие 24 ч ничего не запланировано."
+
+
+async def test_fire_digest_job_no_wiki_set(session_factory, audit_session_maker) -> None:
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -370,6 +548,7 @@ async def test_fire_digest_job_no_wiki_set(session_factory) -> None:
         runner=_OkRunner(),
         resolve_owner_wikis=_resolve_none,
         jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
         sender=sender,
     )
     await fire_digest_job(job_id)
@@ -381,7 +560,7 @@ async def test_fire_digest_job_no_wiki_set(session_factory) -> None:
         assert row.retry_count == 0
 
 
-async def test_fire_digest_job_third_failure_disables(session_factory) -> None:
+async def test_fire_digest_job_third_failure_disables(session_factory, audit_session_maker) -> None:
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -396,6 +575,7 @@ async def test_fire_digest_job_third_failure_disables(session_factory) -> None:
         runner=_FailRunner(),
         resolve_owner_wikis=_resolve_two,
         jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
     )
     await fire_digest_job(job_id)
@@ -414,7 +594,7 @@ async def test_fire_digest_job_third_failure_disables(session_factory) -> None:
     assert f"digest:{job_id}" in sched.removed
 
 
-async def test_fire_digest_job_bad_payload_disables(session_factory) -> None:
+async def test_fire_digest_job_bad_payload_disables(session_factory, audit_session_maker) -> None:
     async with session_factory() as s:
         job = Job(
             owner_telegram_id=7,
@@ -432,8 +612,9 @@ async def test_fire_digest_job_bad_payload_disables(session_factory) -> None:
     set_digest_context(
         scheduler=_FakeCronScheduler(),
         runner=_OkRunner(),
-        resolve_owner_wikis=_resolve_two,
+        resolve_owner_wikis=_resolve_none,
         jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
     )
     await fire_digest_job(job_id)
@@ -444,7 +625,7 @@ async def test_fire_digest_job_bad_payload_disables(session_factory) -> None:
         assert len(dlq) == 1
 
 
-async def test_fire_digest_job_skips_non_scheduled(session_factory) -> None:
+async def test_fire_digest_job_skips_non_scheduled(session_factory, audit_session_maker) -> None:
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -461,8 +642,9 @@ async def test_fire_digest_job_skips_non_scheduled(session_factory) -> None:
     set_digest_context(
         scheduler=sched,
         runner=runner,
-        resolve_owner_wikis=_resolve_two,
+        resolve_owner_wikis=_resolve_none,
         jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
     )
     await fire_digest_job(job_id)
