@@ -110,6 +110,29 @@ async def test_voice_handler_stages_and_transcribes(
 
 
 @pytest.mark.asyncio
+async def test_voice_handler_per_call_inbox_root_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_model: _FakeModel
+) -> None:
+    t = FasterWhisperTranscriber()
+    monkeypatch.setattr(t, "_load_model", lambda: fake_model)
+
+    handler = VoiceHandler(t)  # no constructor root
+    inbox = tmp_path / "111" / "Inbox-WIKI"
+    ref, _ = await handler.handle(b"OggS" + b"\x00" * 8, run_id="r1", inbox_root=inbox)
+    assert ref.staging_path.parent == inbox / "raw" / "media" / "_staging"
+
+
+@pytest.mark.asyncio
+async def test_voice_handler_no_root_anywhere_raises(
+    monkeypatch: pytest.MonkeyPatch, fake_model: _FakeModel
+) -> None:
+    t = FasterWhisperTranscriber()
+    monkeypatch.setattr(t, "_load_model", lambda: fake_model)
+    with pytest.raises(ValueError, match="inbox_root required"):
+        await VoiceHandler(t).handle(b"x", run_id="r1")
+
+
+@pytest.mark.asyncio
 async def test_transcribe_zero_duration_rtf_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

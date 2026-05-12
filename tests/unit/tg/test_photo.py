@@ -31,6 +31,18 @@ def test_unsupported_mime_raises(tmp_path: Path) -> None:
         ingestor.handle(b"x", run_id="r", mime="image/gif")
 
 
+def test_per_call_inbox_root_overrides(tmp_path: Path) -> None:
+    ingestor = PhotoIngestor()  # no constructor root
+    inbox = tmp_path / "222" / "Inbox-WIKI"
+    ref = ingestor.handle(b"\xff\xd8\xff", run_id="r1", mime="image/jpeg", inbox_root=inbox)
+    assert ref.staging_path.parent == inbox / "raw" / "media" / "_staging"
+
+
+def test_no_root_anywhere_raises() -> None:
+    with pytest.raises(ValueError, match="inbox_root required"):
+        PhotoIngestor().handle(b"\xff\xd8\xff", run_id="r1", mime="image/jpeg")
+
+
 def test_mime_to_ext_mapping_is_closed() -> None:
     # Defensive: ensure no accidental new entries (PII tier-2: closed allowlist).
     assert set(PHOTO_MIME_TO_EXT) == {

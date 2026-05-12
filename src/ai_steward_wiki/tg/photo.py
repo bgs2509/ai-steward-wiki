@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/photo.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Photo ingestion — stage bytes to _staging/, return a MediaRef. The
 #            actual Claude vision call is performed by the wiki pipeline, which
@@ -18,7 +18,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-m2m (media chunk 2): contract clarified — vision
+#   LAST_CHANGE: v0.0.3 - aisw-12t (Phase-E.a): per-call inbox_root override on
+#                PhotoIngestor.handle (per-user Inbox-WIKI media staging, D-022);
+#                __init__ inbox_root is now an optional default.
+#   PREVIOUS:    v0.0.2 - aisw-m2m (media chunk 2): contract clarified — vision
 #                call is owned by the wiki pipeline (media_paths); no code change.
 #   PREVIOUS:    v0.0.1 - chunk 11: initial photo staging (D-022)
 # END_CHANGE_SUMMARY
@@ -46,9 +49,14 @@ PHOTO_MIME_TO_EXT: dict[str, str] = {
 
 
 class PhotoIngestor:
-    """Stages photo bytes and returns a MediaRef for downstream Sonnet vision."""
+    """Stages photo bytes and returns a MediaRef for downstream Sonnet vision.
 
-    def __init__(self, *, inbox_root: Path) -> None:
+    The media-staging root is per-sender (``<wiki_root>/<telegram_id>/Inbox-WIKI``,
+    D-022) and resolved at call time; ``__init__``'s ``inbox_root`` is an optional
+    default and ``handle``'s ``inbox_root`` overrides it. At least one MUST be set.
+    """
+
+    def __init__(self, *, inbox_root: Path | None = None) -> None:
         self._inbox_root = inbox_root
 
     def handle(
@@ -57,15 +65,19 @@ class PhotoIngestor:
         *,
         run_id: str,
         mime: str,
+        inbox_root: Path | None = None,
     ) -> MediaRef:
         ext = PHOTO_MIME_TO_EXT.get(mime.lower())
         if ext is None:
             raise ValueError(f"unsupported photo mime: {mime!r}")
+        root = inbox_root if inbox_root is not None else self._inbox_root
+        if root is None:
+            raise ValueError("PhotoIngestor.handle: inbox_root required (no constructor default)")
         ref = stage_media(
             photo_bytes,
             ext=ext,
             run_id=run_id,
-            inbox_root=self._inbox_root,
+            inbox_root=root,
             mime=mime,
         )
         _log.info(

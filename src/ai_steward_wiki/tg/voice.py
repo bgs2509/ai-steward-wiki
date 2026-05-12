@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/voice.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Voice (ogg/opus) ingestion — faster-whisper CPU STT + staging hand-off.
 #   SCOPE: VoiceTranscriber Protocol, Transcript dataclass, FasterWhisperTranscriber
@@ -21,7 +21,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-zny (media chunk 1): _load_model raises
+#   LAST_CHANGE: v0.0.3 - aisw-12t (Phase-E.a): per-call inbox_root override on
+#                VoiceHandler.handle (per-user Inbox-WIKI media staging, D-022);
+#                __init__ inbox_root is now an optional default.
+#   PREVIOUS:    v0.0.2 - aisw-zny (media chunk 1): _load_model raises
 #                VoiceUnavailableError on missing faster-whisper so the runtime
 #                can degrade gracefully instead of a silent generic ack.
 #   PREVIOUS:    v0.0.1 - chunk 11: initial voice STT + staging (D-022)
@@ -165,13 +168,19 @@ class FasterWhisperTranscriber:
 
 
 class VoiceHandler:
-    """Bridges raw ogg bytes → staged MediaRef + Transcript."""
+    """Bridges raw ogg bytes → staged MediaRef + Transcript.
+
+    The media-staging root is per-sender (``<wiki_root>/<telegram_id>/Inbox-WIKI``,
+    D-022) and therefore resolved at call time. ``__init__``'s ``inbox_root`` is an
+    optional default (used standalone / by integration tests); ``handle``'s
+    ``inbox_root`` overrides it. At least one of the two MUST be set.
+    """
 
     def __init__(
         self,
         transcriber: VoiceTranscriber,
         *,
-        inbox_root: Path,
+        inbox_root: Path | None = None,
     ) -> None:
         self._transcriber = transcriber
         self._inbox_root = inbox_root
@@ -184,12 +193,16 @@ class VoiceHandler:
         hint_lang: str | None = None,
         mime: str = "audio/ogg",
         ext: str = "ogg",
+        inbox_root: Path | None = None,
     ) -> tuple[MediaRef, Transcript]:
+        root = inbox_root if inbox_root is not None else self._inbox_root
+        if root is None:
+            raise ValueError("VoiceHandler.handle: inbox_root required (no constructor default)")
         ref = stage_media(
             audio_bytes,
             ext=ext,
             run_id=run_id,
-            inbox_root=self._inbox_root,
+            inbox_root=root,
             mime=mime,
         )
         transcript = await self._transcriber.transcribe(audio_bytes, hint_lang=hint_lang)
