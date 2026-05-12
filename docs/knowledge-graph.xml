@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <KnowledgeGraph>
-  <Project NAME="ai-steward-wiki" VERSION="0.0.5">
+  <Project NAME="ai-steward-wiki" VERSION="0.0.6">
     <keywords>telegram, claude-code, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
     <annotation>Isolated multi-user Telegram service that wraps Claude Code CLI as a personal WIKI assistant (Karpathy LLM Wiki method). Full module map: foundation (settings, logging), three-DB storage (jobs/audit/sessions), auth/onboarding/admin, scheduler core, Stage-0 classifier, Stage-1 wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer, voice STT, photo ingest, ingest pipeline (classifier + streaming), runtime wiring.</annotation>
 
@@ -119,7 +119,7 @@
     <M-RUNTIME-WIRING NAME="Runtime wiring / __main__" TYPE="RUNTIME" STATUS="done">
       <purpose>Process entrypoint (python -m ai_steward_wiki). Composes Settings, per-DB alembic migrations, engines, allowlist sync, APScheduler (incl. the daily media _staging sweep job), classifier+runner+output adapters, VoiceHandler/PhotoIngestor, aiogram Bot+Dispatcher; runs long-polling with graceful SIGINT/SIGTERM shutdown. The runner adapter promotes staged media into &lt;wiki&gt;/raw/media after a successful Stage-1 run (D-022).</purpose>
       <path>src/ai_steward_wiki/__main__.py</path>
-      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-OPS-PII</depends>
+      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-OPS-PII</depends>
       <verification-ref>V-M-RUNTIME-WIRING</verification-ref>
       <annotations>
         <fn-main PURPOSE="sync wrapper: asyncio.run(_amain())"/>
@@ -129,6 +129,8 @@
         <fn-_run_all_migrations PURPOSE="alembic upgrade head per-DB via asyncio.to_thread"/>
         <fn-_load_users_config PURPOSE="load users.toml or return empty config when path missing"/>
         <fn-_install_signal_handlers PURPOSE="wire SIGINT/SIGTERM to stop event"/>
+        <type-_RouterAdapter PURPOSE="Inbox-WIKI Stage-1a router: ensure_inbox_wiki → stage raw payload → run_wiki_session in Inbox-WIKI/ → parse_router_reply; WikiRunnerError→RouterError (aisw-dsg)"/>
+        <fn-_render_raw_sidecar PURPOSE="build (filename, content) for Inbox-WIKI/raw/&lt;ts&gt;_&lt;source&gt;.md — plain body for text, YAML front-matter + staged_path sidecar for media"/>
       </annotations>
     </M-RUNTIME-WIRING>
 
@@ -266,6 +268,19 @@
       </annotations>
     </M-INBOX>
 
+    <M-INBOX-ROUTER NAME="Inbox-WIKI Stage-1a router reply parser" TYPE="RUNTIME" STATUS="done">
+      <purpose>Parse the Stage-1a Inbox-WIKI Router reply (a fenced ```router block) into a RouterDecision; tolerant — falls back to CLARIFY on a missing/malformed block (aisw-dsg, Inbox-WIKI Phase-A; D-004, D-016, prompts/inbox.md ≥1.1.0).</purpose>
+      <path>src/ai_steward_wiki/inbox/router.py</path>
+      <depends>none</depends>
+      <verification-ref>V-M-INBOX-ROUTER</verification-ref>
+      <annotations>
+        <type-RouterIntent PURPOSE="closed enum: route | create_wiki | clarify | reject"/>
+        <type-RouterDecision PURPOSE="frozen Pydantic model (intent, target_wiki, notes, raw, parsed_ok)"/>
+        <type-RouterError PURPOSE="raised by the runtime adapter when the Router CLI run fails unrecoverably"/>
+        <fn-parse_router_reply PURPOSE="extract the last ```router block, parse key:value, normalise cross-field, fallback to CLARIFY"/>
+      </annotations>
+    </M-INBOX-ROUTER>
+
     <M-INGEST-IDEM NAME="Ingest idempotency" TYPE="RUNTIME" STATUS="done">
       <purpose>Two-layer ingest dedup (D-018): L1 TG update_id (24h) + L2 SHA-256 content hash (30d) with NFKC text normalisation; records dedup outcomes into audit.db.</purpose>
       <path>src/ai_steward_wiki/inbox/idempotency.py</path>
@@ -357,12 +372,13 @@
     <M-TG-PIPELINE-CLASSIFIER NAME="Ingest pipeline / classify→run→deliver" TYPE="RUNTIME" STATUS="done">
       <purpose>DefaultPipeline coordinator over already-built ingest blocks — L1/L2 dedup, Stage-0 classify → Stage-1 run → deliver_output; voice transcript path; photo→vision via media_paths; document mime router (PDF text extract, size cap); Russian safe-fallback acks (chunk 20, D-022, D-023).</purpose>
       <path>src/ai_steward_wiki/tg/pipeline.py</path>
-      <depends>M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-TEXT, M-INGEST-IDEM, M-TG-VOICE, M-TG-PHOTO, M-INBOX</depends>
+      <depends>M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-TEXT, M-INGEST-IDEM, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER</depends>
       <verification-ref>V-M-TG-PIPELINE-CLASSIFIER</verification-ref>
       <annotations>
-        <type-DefaultPipeline PURPOSE="concrete coordinator wiring classifier/runner/output/voice/photo/document blocks"/>
+        <type-DefaultPipeline PURPOSE="concrete coordinator wiring classifier/router/runner/output/voice/photo/document blocks"/>
         <type-MessagePipeline PURPOSE="Protocol for the 5 handler entry points (on_text/on_voice/on_photo/on_document/on_confirm_callback)"/>
         <type-Classifier PURPOSE="narrow Stage-0 wrapper Protocol"/>
+        <type-Router PURPOSE="narrow Inbox-WIKI Stage-1a router wrapper Protocol (aisw-dsg); intercepts WIKI_INGEST/WIKI_QUERY/UNKNOWN"/>
         <type-WikiRunner PURPOSE="narrow Stage-1a/1b wrapper Protocol; WikiRunOutcome result dataclass"/>
         <type-OutputDelivery PURPOSE="narrow deliver_output wrapper Protocol"/>
       </annotations>
@@ -431,6 +447,9 @@
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-INGEST-IDEM" relation="L1/L2 dedup via IdempotencyService"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-TG-VOICE" relation="voice transcript path → on_voice"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-TG-PHOTO" relation="photo→vision via media_paths"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-INBOX-ROUTER" relation="Router Protocol returns RouterDecision; RouterError → safe ack (aisw-dsg)"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX-ROUTER" relation="_RouterAdapter parses run_wiki_session reply via parse_router_reply; raises RouterError (aisw-dsg)"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX" relation="_RouterAdapter calls ensure_inbox_wiki before each Stage-1a router run (aisw-dsg)"/>
     <CrossLink from="M-TG-PIPELINE-STREAMING" to="M-TG-PIPELINE-CLASSIFIER" relation="wraps the run→deliver slow path"/>
     <CrossLink from="M-TG-PIPELINE-STREAMING" to="M-TG-TEXT" relation="feeds stream events into StreamEditor (D-026)"/>
     <CrossLink from="M-TG-PIPELINE-STREAMING" to="M-WIKI-RUNNER" relation="consumes on_event stream callback from run_wiki_session"/>

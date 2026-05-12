@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.5">
+<VerificationPlan VERSION="0.0.6">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -100,9 +100,10 @@
     <V-M-RUNTIME-WIRING MODULE="M-RUNTIME-WIRING">
       <tests>
         <test path="tests/unit/test_runtime_wiring.py"/>
+        <test path="tests/unit/test_router_adapter.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/test_runtime_wiring.py -q</cmd>
+        <cmd>uv run pytest tests/unit/test_runtime_wiring.py tests/unit/test_router_adapter.py -q</cmd>
         <cmd>uv run python -m ai_steward_wiki  # manual smoke with AISW_TG_BOT_TOKEN_LOCAL</cmd>
       </commands>
       <log-markers>
@@ -117,8 +118,13 @@
         <marker>runtime.polling.start</marker>
         <marker>runtime.signal.received</marker>
         <marker>runtime.shutdown.done</marker>
+        <marker>inbox.router.staged_raw</marker>
+        <marker>inbox.router.run.begin</marker>
+        <marker>inbox.router.run.done</marker>
+        <marker>inbox.router.parsed</marker>
+        <marker>inbox.router.parse_error</marker>
       </log-markers>
-      <evidence>13 unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. aisw-hcl: VoiceHandler/PhotoIngestor wired into DefaultPipeline; media _staging sweep job registered; _WikiRunnerAdapter.run promotes staged media into &lt;wiki&gt;/raw/media after a successful run. Manual smoke: `python -m ai_steward_wiki` starts, logs runtime.media_pipeline.wired voice=true photo=true + polling.start, send voice/photo → not "Принято.", Ctrl-C → shutdown.done, exit 0.</evidence>
+      <evidence>Unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. aisw-hcl: VoiceHandler/PhotoIngestor wired into DefaultPipeline; media _staging sweep job registered; _WikiRunnerAdapter.run promotes staged media into &lt;wiki&gt;/raw/media after a successful run. aisw-dsg: _RouterAdapter — ensure_inbox_wiki materialises Inbox-WIKI, _render_raw_sidecar writes raw/&lt;ts&gt;_&lt;source&gt;.md (plain body for text; YAML front-matter + staged_path for media), run_wiki_session invoked with wiki_id=f"{tid}/Inbox-WIKI" and overlay=prompts/inbox.md, reply parsed via parse_router_reply, WikiRunnerError→RouterError, inbox.router.* markers; _render_raw_sidecar text/voice/document shapes. Manual smoke: `python -m ai_steward_wiki` starts, logs runtime.media_pipeline.wired + polling.start, Ctrl-C → shutdown.done, exit 0.</evidence>
     </V-M-RUNTIME-WIRING>
 
     <V-M-TG-HANDLERS-WIRING MODULE="M-TG-HANDLERS-WIRING">
@@ -150,11 +156,12 @@
     <V-M-TG-PIPELINE-CLASSIFIER MODULE="M-TG-PIPELINE-CLASSIFIER">
       <tests>
         <test path="tests/unit/tg/test_pipeline_classifier_wiring.py"/>
+        <test path="tests/unit/tg/test_pipeline_router.py"/>
         <test path="tests/unit/wiki/test_runner_aggregate.py"/>
         <test path="tests/integration/test_pipeline_classifier_e2e.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/tg/test_pipeline_classifier_wiring.py tests/unit/wiki/test_runner_aggregate.py -q</cmd>
+        <cmd>uv run pytest tests/unit/tg/test_pipeline_classifier_wiring.py tests/unit/tg/test_pipeline_router.py tests/unit/wiki/test_runner_aggregate.py -q</cmd>
         <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/test_pipeline_classifier_e2e.py -q</cmd>
       </commands>
       <log-markers>
@@ -162,12 +169,15 @@
         <marker>tg.pipeline.classify.done</marker>
         <marker>tg.pipeline.classify.error</marker>
         <marker>tg.pipeline.inbox.l2_dedup_hit</marker>
+        <marker>tg.pipeline.router.dispatched</marker>
+        <marker>tg.pipeline.router.delivered</marker>
+        <marker>tg.pipeline.router.error</marker>
         <marker>tg.pipeline.runner.dispatched</marker>
         <marker>tg.pipeline.runner.completed</marker>
         <marker>tg.pipeline.runner.error</marker>
         <marker>tg.pipeline.deliver.sent</marker>
       </log-markers>
-      <evidence>11 unit tests cover text happy path, L1 dup short-circuit, L2 dedup hit (records auto_skip + ACK_DEDUP_RU), classifier error → ACK_CLASSIFY_ERR_RU, runner error → ACK_RUNNER_ERR_RU, empty runner output → ACK_TEXT_RU via deliver, back-compat None injection, voice happy path with transcript, voice empty transcript fallback, voice back-compat legacy ack, structlog markers via capsys. 6 unit tests cover aggregate_text across stream-json payload shapes (message.content text blocks, delta.text, flat text, non-assistant ignore, empty events, unknown shape).</evidence>
+      <evidence>Unit tests cover text happy path, L1 dup short-circuit, L2 dedup hit (records auto_skip + ACK_DEDUP_RU), classifier error → ACK_CLASSIFY_ERR_RU, runner error → ACK_RUNNER_ERR_RU, empty runner output → ACK_TEXT_RU via deliver, back-compat None injection, voice happy path with transcript, voice empty transcript fallback, voice back-compat legacy ack, structlog markers via capsys; aggregate_text across stream-json payload shapes. aisw-dsg: routable intents (WIKI_INGEST/WIKI_QUERY/UNKNOWN) with a wired Router go through router.route() → reply with RouterDecision.notes (legacy runner NOT called); non-routable intents use the legacy path; router=None falls through to legacy; RouterError → ACK_RUNNER_ERR_RU; tg.pipeline.router.* markers via capsys.</evidence>
     </V-M-TG-PIPELINE-CLASSIFIER>
 
     <V-M-TG-PIPELINE-STREAMING MODULE="M-TG-PIPELINE-STREAMING">
@@ -330,6 +340,17 @@
       </log-markers>
       <evidence>ensure_inbox_wiki idempotent first-contact materialise (D-004); extract_inbox_hint parses "## Inbox hint" body or None (D-016); InboxHintCacheRepo UPSERT/get/invalidate + get_or_refresh_hint stat→cache-hit on (size,mtime) else read+sha256; stage_media atomic write to _staging/&lt;run_id&gt;_&lt;sha8&gt;.&lt;ext&gt;; promote_to_raw / promote_path_to_raw atomic move to raw/media/&lt;ISO8601&gt;_&lt;sha8&gt;.&lt;ext&gt;; sweep_staging TTL delete (D-022).</evidence>
     </V-M-INBOX>
+
+    <V-M-INBOX-ROUTER MODULE="M-INBOX-ROUTER">
+      <tests>
+        <test path="tests/unit/inbox/test_router.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/inbox/test_router.py -q</cmd>
+      </commands>
+      <log-markers/>
+      <evidence>parse_router_reply: happy path for each RouterIntent (route/create_wiki/clarify/reject), multi-line notes, target_wiki null/empty → None, preamble + quoted example → last ```router block wins, missing block → RouterDecision(intent=CLARIFY, parsed_ok=False, notes=trimmed-original-or-generic), unknown intent value → fallback, ROUTE/CREATE_WIKI without target → demoted to CLARIFY, RouterDecision frozen + extra=forbid, RouterError is an Exception (aisw-dsg; prompts/inbox.md ≥1.1.0).</evidence>
+    </V-M-INBOX-ROUTER>
 
     <V-M-INGEST-IDEM MODULE="M-INGEST-IDEM">
       <tests>

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<DevelopmentPlan VERSION="0.0.4">
+<DevelopmentPlan VERSION="0.0.5">
   <ArchitectureNotes>
     <objective>Multi-user Telegram → Claude Code CLI WIKI assistant (Karpathy LLM Wiki method). MVP delivers: foundation (settings/logging/three-DB SQLite), auth + onboarding + admin, scheduler core, Stage-0 Haiku classifier, Stage-1 Sonnet wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer + voice STT + photo ingest, ingest pipeline (classifier + streaming), runtime wiring, integration E2E.</objective>
     <non-goal>No i18n catalog (ru-only, D-032); off-site backup deferred; web UI / non-Telegram channels out of scope.</non-goal>
@@ -63,6 +63,9 @@
     <Phase-23 NAME="Integration E2E suite" STATUS="done" bd_id="aisw-vb9">
       <description>tests/integration/test_e2e_pipeline.py against real Claude CLI + FakeAiogramBot. 4 scenarios: text, voice, photo+confirm, pdf. make integration target. SSoT: launch breakdown chunk-23. Last gate before production cutover (see cutover-checklist.md).</description>
     </Phase-23>
+    <Phase-A NAME="Inbox-WIKI Phase-A — stage raw content + Router-Claude invocation" STATUS="done" bd_id="aisw-dsg">
+      <description>First slice of smart-inbox-routing (epic aisw-t2r). New inbox/router.py (RouterIntent, RouterDecision, RouterError, parse_router_reply); prompts/inbox.md tightened to a fenced ```router block (v1.1.0); DefaultPipeline gains an optional Router — routable intents (WIKI_INGEST/WIKI_QUERY/UNKNOWN) go through router.route(), the bot replies with RouterDecision.notes; _RouterAdapter in __main__ (ensure_inbox_wiki → stage raw payload into Inbox-WIKI/raw/ → run_wiki_session in Inbox-WIKI/ with prompts/inbox.md → parse_router_reply; WikiRunnerError→RouterError). Domain-WIKI move + Stage-1b ingest + confirm loop + cron bridge + hint fast-path are later phases (aisw-zd9/e45/kcz/12t). NOTE: do not deploy master with Phase-A until aisw-zd9 closes. Discovery/design/plan: docs/superpowers/specs|plans/20260512-inbox-wiki-router-*.md.</description>
+    </Phase-A>
   </Phases>
 
   <Modules>
@@ -190,6 +193,12 @@
       </target>
       <verification-ref>V-M-INBOX</verification-ref>
     </M-INBOX>
+    <M-INBOX-ROUTER bd_id="aisw-dsg">
+      <target>
+        <source>src/ai_steward_wiki/inbox/router.py</source>
+      </target>
+      <verification-ref>V-M-INBOX-ROUTER</verification-ref>
+    </M-INBOX-ROUTER>
     <M-INGEST-IDEM bd_id="aisw-6t5">
       <target>
         <source>src/ai_steward_wiki/inbox/idempotency.py</source>
