@@ -429,8 +429,9 @@
         <marker>media.promoted</marker>
         <marker>media.promote_idempotent</marker>
         <marker>media.staging_swept</marker>
+        <marker>media.staging_sweep_all_done</marker>
       </log-markers>
-      <evidence>ensure_inbox_wiki idempotent first-contact materialise (D-004); extract_inbox_hint parses "## Inbox hint" body or None (D-016); InboxHintCacheRepo UPSERT/get/invalidate + get_or_refresh_hint stat→cache-hit on (size,mtime) else read+sha256; stage_media atomic write to _staging/&lt;run_id&gt;_&lt;sha8&gt;.&lt;ext&gt;; promote_to_raw / promote_path_to_raw atomic move to raw/media/&lt;ISO8601&gt;_&lt;sha8&gt;.&lt;ext&gt;; sweep_staging TTL delete (D-022).</evidence>
+      <evidence>inbox_wiki_path pure &lt;wiki_root&gt;/&lt;telegram_id&gt;/Inbox-WIKI (per-user media-staging root, D-022; aisw-12t); ensure_inbox_wiki idempotent first-contact materialise (D-004); extract_inbox_hint parses "## Inbox hint" body or None (D-016); InboxHintCacheRepo UPSERT/get/invalidate + get_or_refresh_hint stat→cache-hit on (size,mtime) else read+sha256; stage_media atomic write to _staging/&lt;run_id&gt;_&lt;sha8&gt;.&lt;ext&gt;; promote_to_raw / promote_path_to_raw atomic move to raw/media/&lt;ISO8601&gt;_&lt;sha8&gt;.&lt;ext&gt;; sweep_staging TTL delete (one inbox_root) + sweep_all_user_staging over every per-user Inbox-WIKI (D-022).</evidence>
     </V-M-INBOX>
 
     <V-M-INBOX-ROUTER MODULE="M-INBOX-ROUTER">

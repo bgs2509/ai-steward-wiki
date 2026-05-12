@@ -295,12 +295,14 @@
       <depends>M-STORAGE-SESSIONS</depends>
       <verification-ref>V-M-INBOX</verification-ref>
       <annotations>
+        <fn-inbox_wiki_path PURPOSE="pure path: &lt;wiki_root&gt;/&lt;telegram_id&gt;/Inbox-WIKI (per-user media-staging root, D-022)"/>
         <fn-ensure_inbox_wiki PURPOSE="idempotent first-contact materialise; returns Path to Inbox-WIKI dir"/>
         <fn-extract_inbox_hint PURPOSE="parse CLAUDE.md text, return trimmed '## Inbox hint' body or None"/>
         <fn-get_or_refresh_hint PURPOSE="hot-path helper: stat→cache-hit on (size,mtime) else read+sha256"/>
         <fn-stage_media PURPOSE="atomically write bytes to _staging/&lt;run_id&gt;_&lt;sha8&gt;.&lt;ext&gt;"/>
         <fn-promote_path_to_raw PURPOSE="atomic move staging→raw/media/&lt;ISO8601&gt;_&lt;sha8&gt;.&lt;ext&gt; (re-hashes)"/>
-        <fn-sweep_staging PURPOSE="delete staging files older than ttl_s; returns removed count (D-022)"/>
+        <fn-sweep_staging PURPOSE="delete staging files older than ttl_s in one inbox_root; returns count (D-022)"/>
+        <fn-sweep_all_user_staging PURPOSE="run sweep_staging on every &lt;wiki_root&gt;/&lt;user&gt;/Inbox-WIKI (per-user sweep, D-022)"/>
         <type-InboxHintCacheRepo PURPOSE="async wrapper over sessions.inbox_hint_cache (UPSERT/get/invalidate)"/>
         <type-MediaRef PURPOSE="dataclass (staging_path, sha256, mime, ext, size, run_id)"/>
       </annotations>
@@ -468,14 +470,14 @@
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-PHOTO" relation="PhotoIngestor; photos run Claude vision via the wiki pipeline (media_paths)"/>
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-SCHEDULER-FIRING" relation="/digest_now → firing.list_owner_digest_job_ids + firing.fire_digest_job per row; /expand → firing.run_section_expand (aisw-269)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-TG-HANDLERS-WIRING" relation="constructs DefaultPipeline + include_router via build_dispatcher(pipeline=...)"/>
-    <CrossLink from="M-RUNTIME-WIRING" to="M-FOUNDATION-SETTINGS" relation="reads Settings (tokens, db urls, users_toml_path, media_staging_root, voice_*, photo_*)"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-FOUNDATION-SETTINGS" relation="reads Settings (tokens, db urls, users_toml_path, wiki_root, voice_*, photo_*)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-AUTH-USERS" relation="loads users.toml then sync_to_sessions_db + replace_global"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-STORAGE-JOBS" relation="alembic upgrade head + build_engine"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-STORAGE-AUDIT" relation="alembic upgrade head + build_engine"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-STORAGE-SESSIONS" relation="alembic upgrade head + build_engine + build_sessionmaker"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-TG-VOICE" relation="constructs VoiceHandler(FasterWhisperTranscriber) when voice_enabled"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-TG-PHOTO" relation="constructs PhotoIngestor when photo_enabled"/>
-    <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX" relation="register_media_staging_sweep_job on the scheduler + promote_path_to_raw after a successful Stage-1 run (D-022)"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX" relation="register_all_retention_jobs(wiki_root_for_media_sweep) → per-user staging sweep over &lt;wiki_root&gt;/&lt;user&gt;/Inbox-WIKI + promote_path_to_raw after a successful Stage-1 run (D-022; aisw-12t)"/>
     <CrossLink from="M-FOUNDATION-LOGGING" to="M-FOUNDATION-SETTINGS" relation="reads log_level"/>
     <CrossLink from="M-AUTH-USERS" to="M-STORAGE-SESSIONS" relation="syncs users.toml snapshot to sessions.users table"/>
     <CrossLink from="M-STORAGE-JOBS" to="M-STORAGE" relation="uses apply_sqlite_pragmas in build_engine"/>
@@ -514,6 +516,7 @@
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-INGEST-IDEM" relation="L1/L2 dedup via IdempotencyService"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-TG-VOICE" relation="voice transcript path → on_voice"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-TG-PHOTO" relation="photo→vision via media_paths"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-INBOX" relation="inbox_wiki_path(telegram_id, wiki_root) resolves the per-sender media-staging root passed to VoiceHandler/PhotoIngestor.handle (aisw-12t, D-022)"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-INBOX-ROUTER" relation="Router Protocol returns RouterDecision; RouterError → safe ack (aisw-dsg)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX-ROUTER" relation="_RouterAdapter parses run_wiki_session reply via parse_router_reply; raises RouterError (aisw-dsg)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX" relation="_RouterAdapter calls ensure_inbox_wiki before each Stage-1a router run (aisw-dsg)"/>
