@@ -1,56 +1,86 @@
 # FILE: src/ai_steward_wiki/scheduler/firing.py
-# VERSION: 0.1.0
+# VERSION: 0.2.0
 # START_MODULE_CONTRACT
-#   PURPOSE: One-shot reminder bridge — create a jobs.Job + APScheduler
-#            DateTrigger, and deliver the reminder as a plain Telegram message
-#            on fire (no Claude/WIKI). (aisw-kcz, Inbox-WIKI Phase-D.a.)
-#   SCOPE: set_firing_context, create_reminder_job, fire_job. Module-level
-#          (TgSender, jobs async_sessionmaker) registry set once at startup;
-#          fire_job takes only a picklable int (SQLAlchemyJobStore-safe).
+#   PURPOSE: Cron/date job firing bridge — one-shot reminder (DateTrigger → plain
+#            TG message, no Claude; aisw-kcz, Phase-D.a) and recurring digest
+#            (CronTrigger → run Claude with --add-dir into the owner's WIKIs →
+#            deliver the summary; 3-strike auto-disable; aisw-oqq, Phase-D.b.1).
+#   SCOPE: set_firing_context/create_reminder_job/fire_job; set_digest_context/
+#          create_digest_job/fire_digest_job. Module-level registries set once at
+#          startup; the firing callbacks take only a picklable int (SQLAlchemyJobStore-safe).
 #   DEPENDS: apscheduler, sqlalchemy.ext.asyncio, structlog, pydantic,
 #            ai_steward_wiki.storage.jobs.models.Job,
-#            ai_steward_wiki.storage.jobs.payloads (ReminderPayload, parse_job_payload),
-#            ai_steward_wiki.scheduler.queue.Lane,
+#            ai_steward_wiki.storage.jobs.payloads (ReminderPayload, DigestPayload, parse_job_payload),
+#            ai_steward_wiki.classifier.recurrence.Recurrence,
+#            ai_steward_wiki.scheduler.queue.Lane, ai_steward_wiki.scheduler.dlq.move_to_dlq,
 #            ai_steward_wiki.tg.bot.TgSender (typing only)
-#   LINKS: M-SCHEDULER-FIRING, M-STORAGE-JOBS, M-SCHEDULER, M-TG-TEXT,
-#          D-002, D-010, D-022, tech-spec §3/§6, ADR-006, aisw-kcz
+#   LINKS: M-SCHEDULER-FIRING, M-STORAGE-JOBS, M-SCHEDULER, M-TG-TEXT, M-WIKI-RUNNER,
+#          M-WIKI-LIFECYCLE, M-CLASSIFIER-RECURRENCE, D-002, D-010, D-019, D-022, D-024,
+#          D-025, tech-spec §3/§6, ADR-006, ADR-007, aisw-kcz, aisw-oqq
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
-#   set_firing_context - install the module-level (TgSender, jobs sessionmaker) registry
+#   set_firing_context - install the module-level (TgSender, jobs sessionmaker) registry for fire_job
 #   create_reminder_job - INSERT+commit a jobs.Job(kind='reminder_job') then add a DateTrigger; returns job_id
 #   fire_job - APScheduler callback (picklable int): load Job, guard status, send the reminder, mark done/failed
 #   FiringNotInitialisedError - raised by fire_job when set_firing_context was never called
+#   DigestRunner - Protocol: async callable running one Stage-1 digest session → assistant text
+#   set_digest_context - install the digest registry (scheduler, runner, owner-WIKI resolver, jobs sessionmaker, sender)
+#   create_digest_job - INSERT+commit a jobs.Job(kind='digest_job') then add a CronTrigger; returns job_id
+#   fire_digest_job - APScheduler callback (picklable int): resolve WIKIs, run Claude, deliver, 3-strike auto-disable
+#   DigestNotInitialisedError - raised by fire_digest_job when set_digest_context was never called
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - aisw-kcz: reminder_job firing bridge (Stage-0 fast-path → confirm → DateTrigger → TG deliver)
+#   LAST_CHANGE: v0.2.0 - aisw-oqq: digest_job firing bridge — set_digest_context /
+#                create_digest_job (CronTrigger, replace_existing) / fire_digest_job
+#                (resolve owner WIKI set, run_wiki_session via runner adapter with
+#                extra_add_dirs, deliver assistant text, 3-strike auto-disable +
+#                move_to_dlq + remove_job; D-019/D-024/D-025; ADR-007).
+#   PREVIOUS:    v0.1.0 - aisw-kcz: reminder_job firing bridge (Stage-0 fast-path → confirm → DateTrigger → TG deliver)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import structlog
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ai_steward_wiki.classifier.recurrence import Recurrence
+from ai_steward_wiki.scheduler.dlq import move_to_dlq
 from ai_steward_wiki.scheduler.queue import Lane
 from ai_steward_wiki.storage.jobs.models import Job
-from ai_steward_wiki.storage.jobs.payloads import ReminderPayload, parse_job_payload
+from ai_steward_wiki.storage.jobs.payloads import (
+    DigestPayload,
+    ReminderPayload,
+    parse_job_payload,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Sequence
+    from pathlib import Path
+
     from ai_steward_wiki.tg.bot import TgSender
 
 __all__ = [
+    "DigestNotInitialisedError",
+    "DigestRunner",
     "FiringNotInitialisedError",
+    "create_digest_job",
     "create_reminder_job",
+    "fire_digest_job",
     "fire_job",
+    "set_digest_context",
     "set_firing_context",
 ]
 
@@ -190,3 +220,269 @@ async def fire_job(job_id: int) -> None:
 
 
 # END_BLOCK_FIRE_JOB
+
+
+# ---------------------------------------------------------------------------
+# Recurring digest bridge (aisw-oqq, Inbox-WIKI Phase-D.b.1)
+# ---------------------------------------------------------------------------
+
+_DIGEST_EMPTY_RU = "\U0001f33f Сегодня дел нет."
+_DIGEST_NO_WIKI_RU = "У тебя пока нет ни одной WIKI для сводки."  # noqa: RUF001
+_DIGEST_MAX_STRIKES = 3
+_DIGEST_TG_LIMIT = 4000  # plain-send safety cap; full delivery polish (D-024/D-025) is aisw-w3k
+
+
+class DigestNotInitialisedError(RuntimeError):
+    """Raised when fire_digest_job runs before set_digest_context was called (mis-wired)."""
+
+
+class DigestRunner(Protocol):
+    """Async callable running one Stage-1 digest session against the owner's WIKIs.
+
+    The implementation (wired in __main__) calls wiki.runner.run_wiki_session with
+    its own LockAcquirer (semaphore → memlock → flock) — fire_digest_job does NOT
+    take a lock itself.
+    """
+
+    async def __call__(
+        self,
+        *,
+        wiki_id: str,
+        wiki_path: Path,
+        extra_add_dirs: list[Path],
+        planner_context: str,
+        correlation_id: str,
+    ) -> str: ...
+
+
+# Module-level digest firing context: set once at startup. fire_digest_job takes
+# only a picklable int, so everything else is read from here.
+# tuple: (scheduler, runner, resolve_owner_wikis, jobs_session_maker, sender)
+_digest_ctx: (
+    tuple[
+        AsyncIOScheduler,
+        DigestRunner,
+        Callable[[int], Awaitable[Sequence[tuple[str, Path]]]],
+        async_sessionmaker[AsyncSession],
+        TgSender,
+    ]
+    | None
+) = None
+
+
+def set_digest_context(
+    *,
+    scheduler: AsyncIOScheduler,
+    runner: DigestRunner,
+    resolve_owner_wikis: Callable[[int], Awaitable[Sequence[tuple[str, Path]]]],
+    jobs_session_maker: async_sessionmaker[AsyncSession],
+    sender: TgSender,
+) -> None:
+    """Install the digest firing registry. Call once at startup."""
+    global _digest_ctx
+    _digest_ctx = (scheduler, runner, resolve_owner_wikis, jobs_session_maker, sender)
+
+
+# START_BLOCK_CREATE_DIGEST_JOB
+async def create_digest_job(
+    session: AsyncSession,
+    scheduler: AsyncIOScheduler,
+    *,
+    owner_telegram_id: int,
+    chat_id: int,
+    recurrence: Recurrence,
+    wiki_scope: str = "all",
+    window_hours: int = 24,
+    correlation_id: str = "",
+) -> int:
+    """Persist a digest Job row (committed) then register its CronTrigger.
+
+    Same ordering invariant as create_reminder_job: the Job row is committed
+    BEFORE scheduler.add_job. ``replace_existing=True`` makes re-registration on
+    boot idempotent. No reconciliation pass in the MVP (documented limitation).
+    """
+    payload = DigestPayload(
+        wiki_scope="all" if wiki_scope == "all" else wiki_scope,
+        recurrence=recurrence,
+        window_hours=window_hours,
+    ).model_dump(mode="json")
+    job = Job(
+        owner_telegram_id=owner_telegram_id,
+        chat_id=chat_id,
+        kind="digest_job",
+        status="scheduled",
+        priority=int(Lane.DIGEST),
+        scheduled_at_utc=None,
+        payload=payload,
+        created_at_utc=_now_naive_utc(),
+    )
+    session.add(job)
+    await session.flush()
+    job_id = job.id
+    await session.commit()
+
+    scheduler.add_job(
+        fire_digest_job,
+        trigger=CronTrigger(timezone=recurrence.tz, **recurrence.to_cron()),
+        args=[job_id],
+        id=f"digest:{job_id}",
+        replace_existing=True,
+    )
+    _log.info(
+        "scheduler.digest.scheduled",
+        correlation_id=correlation_id,
+        job_id=job_id,
+        owner_telegram_id=owner_telegram_id,
+        recurrence=recurrence.model_dump(mode="json"),
+    )
+    return job_id
+
+
+# END_BLOCK_CREATE_DIGEST_JOB
+
+
+async def _digest_strike(
+    session: AsyncSession,
+    scheduler: AsyncIOScheduler,
+    job: Job,
+    *,
+    exc: BaseException,
+) -> None:
+    """Record a digest run failure: bump retry_count, and at the strike limit
+    disable the job (remove its trigger + DLQ row). Never raises."""
+    job.retry_count = (job.retry_count or 0) + 1
+    job.finished_at_utc = _now_naive_utc()
+    job.last_error = f"{type(exc).__name__}: {exc}"
+    disabled = job.retry_count >= _DIGEST_MAX_STRIKES
+    if disabled:
+        job.status = "disabled"
+    await session.commit()
+    if disabled:
+        with contextlib.suppress(JobLookupError):
+            scheduler.remove_job(f"digest:{job.id}")
+        await move_to_dlq(
+            session,
+            job_id=job.id,
+            reason="auto_disable",
+            error_class=type(exc).__name__,
+            last_error=job.last_error,
+        )
+        await session.commit()
+        _log.warning(
+            "scheduler.digest.disabled",
+            job_id=job.id,
+            error_class=type(exc).__name__,
+            retry_count=job.retry_count,
+        )
+    _log.warning(
+        "scheduler.digest.failed",
+        job_id=job.id,
+        error_class=type(exc).__name__,
+        retry_count=job.retry_count,
+        disabled=disabled,
+    )
+
+
+# START_BLOCK_FIRE_DIGEST_JOB
+async def fire_digest_job(job_id: int) -> None:
+    """APScheduler callback for a recurring digest. Picklable int arg only.
+
+    Loads the Job, guards status=='scheduled', resolves the owner's WIKI set
+    (Inbox-WIKI already excluded by the resolver), runs the Stage-1 digest via
+    the runner adapter (which holds its own lock), delivers the assistant text
+    to Telegram, and keeps the row 'scheduled' on success. On a run/delivery
+    failure or a bad payload it strikes the job (3 strikes → disabled + DLQ +
+    remove_job). Never propagates an exception (the scheduler must stay alive).
+    """
+    if _digest_ctx is None:
+        raise DigestNotInitialisedError(
+            "digest context not initialised — call set_digest_context() at startup"
+        )
+    scheduler, runner, resolve_owner_wikis, maker, sender = _digest_ctx
+    async with maker() as session:
+        job = await session.get(Job, job_id)
+        if job is None or job.status != "scheduled":
+            _log.info(
+                "scheduler.digest.skipped",
+                job_id=job_id,
+                status=(job.status if job is not None else "missing"),
+            )
+            return
+        try:
+            payload = parse_job_payload(job.payload)
+        except ValidationError:
+            job.status = "disabled"
+            job.last_error = "bad payload"
+            await session.commit()
+            await move_to_dlq(
+                session,
+                job_id=job_id,
+                reason="bad_payload",
+                error_class="ValidationError",
+                last_error="bad payload",
+            )
+            await session.commit()
+            _log.warning(
+                "scheduler.digest.failed",
+                job_id=job_id,
+                error_class="ValidationError",
+                disabled=True,
+            )
+            return
+        if not isinstance(payload, DigestPayload):
+            job.status = "disabled"
+            await session.commit()
+            _log.warning(
+                "scheduler.digest.failed",
+                job_id=job_id,
+                error_class="WrongPayloadKind",
+                disabled=True,
+            )
+            return
+
+        owner_id = job.owner_telegram_id
+        chat_id = job.chat_id
+        job.started_at_utc = _now_naive_utc()
+        await session.commit()
+        _log.info("scheduler.digest.fired", job_id=job_id, owner_telegram_id=owner_id)
+
+        wikis = list(await resolve_owner_wikis(owner_id))
+        if not wikis:
+            await sender.send_message(chat_id, _DIGEST_NO_WIKI_RU)
+            job.finished_at_utc = _now_naive_utc()
+            await session.commit()
+            _log.info("scheduler.digest.delivered", job_id=job_id, empty="no_wiki")
+            return
+        (primary_id, primary_path), *rest = wikis
+        extra_dirs = [p for _, p in rest]
+        planner_context = f"Окно сводки: ближайшие {payload.window_hours} ч."
+
+        try:
+            text = await runner(
+                wiki_id=primary_id,
+                wiki_path=primary_path,
+                extra_add_dirs=extra_dirs,
+                planner_context=planner_context,
+                correlation_id=f"digest:{job_id}",
+            )
+        except Exception as exc:
+            await _digest_strike(session, scheduler, job, exc=exc)
+            return
+
+        body = (text or "").strip() or _DIGEST_EMPTY_RU
+        if len(body) > _DIGEST_TG_LIMIT:
+            body = body[: _DIGEST_TG_LIMIT - 1].rstrip() + "…"
+        try:
+            await sender.send_message(chat_id, body)
+        except Exception as exc:
+            await _digest_strike(session, scheduler, job, exc=exc)
+            return
+
+        job.retry_count = 0
+        job.finished_at_utc = _now_naive_utc()
+        # status stays 'scheduled' — recurring.
+        await session.commit()
+        _log.info("scheduler.digest.delivered", job_id=job_id)
+
+
+# END_BLOCK_FIRE_DIGEST_JOB

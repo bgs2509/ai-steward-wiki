@@ -195,3 +195,280 @@ async def test_fire_job_without_context_raises(session_factory) -> None:
     job_id = await _insert_job(session_factory)
     with pytest.raises(FiringNotInitialisedError):
         await fire_job(job_id)
+
+
+# --- digest_job (aisw-oqq) -------------------------------------------------
+
+
+from pathlib import Path  # noqa: E402
+
+from sqlalchemy import select as _sa_select  # noqa: E402
+
+from ai_steward_wiki.classifier.recurrence import Recurrence  # noqa: E402
+from ai_steward_wiki.scheduler.firing import (  # noqa: E402
+    DigestNotInitialisedError,
+    create_digest_job,
+    fire_digest_job,
+    set_digest_context,
+)
+from ai_steward_wiki.storage.jobs.models import JobDLQ  # noqa: E402
+from ai_steward_wiki.storage.jobs.payloads import DigestPayload  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_digest_ctx():
+    import ai_steward_wiki.scheduler.firing as _f
+
+    _f._digest_ctx = None
+    yield
+    _f._digest_ctx = None
+
+
+def _rec() -> Recurrence:
+    return Recurrence(kind="daily", time_hhmm="09:00", tz="Europe/Moscow")
+
+
+class _FakeCronScheduler:
+    def __init__(self) -> None:
+        self.added: list[dict[str, Any]] = []
+        self.removed: list[str] = []
+
+    def add_job(self, func, *, trigger, args, id, replace_existing=False, **kw) -> None:
+        self.added.append(
+            {
+                "func": func,
+                "trigger": trigger,
+                "args": args,
+                "id": id,
+                "replace_existing": replace_existing,
+            }
+        )
+
+    def remove_job(self, job_id: str) -> None:
+        self.removed.append(job_id)
+
+
+class _NullCtx:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _DigestSender:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.sent: list[tuple[int, str]] = []
+        self._fail = fail
+
+    async def send_message(self, chat_id: int, text: str, **kw: Any) -> object:
+        if self._fail:
+            raise RuntimeError("chat blocked")
+        self.sent.append((chat_id, text))
+        return object()
+
+
+async def _resolve_two(owner_id: int):
+    return [("health", Path("/w/u/Health-WIKI")), ("finance", Path("/w/u/Finance-WIKI"))]
+
+
+async def _resolve_none(owner_id: int):
+    return []
+
+
+class _OkRunner:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(
+        self, *, wiki_id, wiki_path, extra_add_dirs, planner_context, correlation_id
+    ):
+        self.calls.append(
+            {"wiki_id": wiki_id, "wiki_path": wiki_path, "extra_add_dirs": extra_add_dirs}
+        )
+        return "TL;DR: всё спокойно.\n📅 Сегодня: —"
+
+
+class _FailRunner:
+    async def __call__(self, **kw):
+        from ai_steward_wiki.wiki.runner import WikiRunnerError
+
+        raise WikiRunnerError("boom")
+
+
+async def test_create_digest_job_writes_row_and_cron(session_factory) -> None:
+    sched = _FakeCronScheduler()
+    async with session_factory() as s:
+        job_id = await create_digest_job(
+            s, sched, owner_telegram_id=7, chat_id=7, recurrence=_rec(), window_hours=24
+        )
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row is not None
+        assert row.kind == "digest_job"
+        assert row.status == "scheduled"
+        assert row.priority == int(Lane.DIGEST)
+        parsed = parse_job_payload(row.payload)
+        assert isinstance(parsed, DigestPayload)
+        assert parsed.recurrence == _rec()
+        assert parsed.wiki_scope == "all"
+    assert len(sched.added) == 1
+    call = sched.added[0]
+    assert call["func"] is fire_digest_job
+    assert call["args"] == [job_id]
+    assert call["id"] == f"digest:{job_id}"
+    assert call["replace_existing"] is True
+    # CronTrigger encodes hour=9, minute=0
+    assert "hour='9'" in str(call["trigger"]) or "hour=9" in repr(call["trigger"])
+
+
+async def test_fire_digest_job_runs_and_delivers(session_factory) -> None:
+    sched = _FakeCronScheduler()
+    async with session_factory() as s:
+        job_id = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
+        )
+    runner = _OkRunner()
+    sender = _DigestSender()
+    set_digest_context(
+        scheduler=sched,
+        runner=runner,
+        resolve_owner_wikis=_resolve_two,
+        jobs_session_maker=session_factory,
+        sender=sender,
+    )
+    await fire_digest_job(job_id)
+    assert len(sender.sent) == 1
+    assert "TL;DR" in sender.sent[0][1]
+    # primary WIKI is the first; the rest are extra_add_dirs
+    assert runner.calls[0]["wiki_id"] == "health"
+    assert runner.calls[0]["extra_add_dirs"] == [Path("/w/u/Finance-WIKI")]
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row.status == "scheduled"
+        assert row.retry_count == 0
+        assert row.finished_at_utc is not None
+
+
+async def test_fire_digest_job_no_wiki_set(session_factory) -> None:
+    sched = _FakeCronScheduler()
+    async with session_factory() as s:
+        job_id = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
+        )
+    sender = _DigestSender()
+    set_digest_context(
+        scheduler=sched,
+        runner=_OkRunner(),
+        resolve_owner_wikis=_resolve_none,
+        jobs_session_maker=session_factory,
+        sender=sender,
+    )
+    await fire_digest_job(job_id)
+    assert len(sender.sent) == 1
+    assert "WIKI" in sender.sent[0][1]
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row.status == "scheduled"
+        assert row.retry_count == 0
+
+
+async def test_fire_digest_job_third_failure_disables(session_factory) -> None:
+    sched = _FakeCronScheduler()
+    async with session_factory() as s:
+        job_id = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
+        )
+    set_digest_context(
+        scheduler=sched,
+        runner=_FailRunner(),
+        resolve_owner_wikis=_resolve_two,
+        jobs_session_maker=session_factory,
+        sender=_DigestSender(),
+    )
+    await fire_digest_job(job_id)
+    await fire_digest_job(job_id)
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row.status == "scheduled"
+        assert row.retry_count == 2
+    await fire_digest_job(job_id)
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row.status == "disabled"
+        assert row.retry_count == 3
+        dlq = (await s.execute(_sa_select(JobDLQ).where(JobDLQ.job_id == job_id))).scalars().all()
+        assert len(dlq) == 1
+    assert f"digest:{job_id}" in sched.removed
+
+
+async def test_fire_digest_job_bad_payload_disables(session_factory) -> None:
+    async with session_factory() as s:
+        job = Job(
+            owner_telegram_id=7,
+            chat_id=7,
+            kind="digest_job",
+            status="scheduled",
+            priority=int(Lane.DIGEST),
+            scheduled_at_utc=None,
+            payload={"kind": "digest", "bogus": 1},
+            created_at_utc=datetime.now(UTC).replace(tzinfo=None),
+        )
+        s.add(job)
+        await s.commit()
+        job_id = job.id
+    set_digest_context(
+        scheduler=_FakeCronScheduler(),
+        runner=_OkRunner(),
+        resolve_owner_wikis=_resolve_two,
+        jobs_session_maker=session_factory,
+        sender=_DigestSender(),
+    )
+    await fire_digest_job(job_id)
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row.status == "disabled"
+        dlq = (await s.execute(_sa_select(JobDLQ).where(JobDLQ.job_id == job_id))).scalars().all()
+        assert len(dlq) == 1
+
+
+async def test_fire_digest_job_skips_non_scheduled(session_factory) -> None:
+    sched = _FakeCronScheduler()
+    async with session_factory() as s:
+        job_id = await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
+        )
+        row = await s.get(Job, job_id)
+        row.status = "disabled"
+        await s.commit()
+    runner = _OkRunner()
+    set_digest_context(
+        scheduler=sched,
+        runner=runner,
+        resolve_owner_wikis=_resolve_two,
+        jobs_session_maker=session_factory,
+        sender=_DigestSender(),
+    )
+    await fire_digest_job(job_id)
+    assert runner.calls == []
+
+
+async def test_fire_digest_job_without_context_raises() -> None:
+    with pytest.raises(DigestNotInitialisedError):
+        await fire_digest_job(123)
