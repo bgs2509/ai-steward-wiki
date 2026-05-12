@@ -104,6 +104,7 @@ from ai_steward_wiki.storage.jobs.payloads import (
     parse_job_payload,
 )
 from ai_steward_wiki.storage.sessions.digest_prefs import (
+    SECTION_DISPLAY_NAME,
     DigestPrefs,
     get_digest_prefs,
     set_digest_section,
@@ -688,6 +689,33 @@ async def fire_digest_job(job_id: int) -> None:
             owner_telegram_id=owner_id,
             n_planned=planner_context.count("\n- "),
         )
+
+        # START_BLOCK_DIGEST_SECTION_TOGGLES
+        # Honour the owner's per-section toggles (aisw-pv8). Degrade-to-all-on:
+        # a prefs read failure must never skip the digest. Only when something is
+        # off do we append the ru section-skip directive (the prompt reads it —
+        # prompts/digest.md >=0.1.1); otherwise planner_context is byte-identical
+        # to the pre-feature build.
+        try:
+            prefs = await get_digest_prefs(sessions_maker, owner_id)
+        except Exception:
+            _log.warning(
+                "scheduler.digest.prefs_read_failed",
+                job_id=job_id,
+                owner_telegram_id=owner_id,
+            )
+            prefs = DigestPrefs()
+        disabled = prefs.disabled_keys
+        if disabled:
+            section_names = ", ".join(SECTION_DISPLAY_NAME[k] for k in disabled)
+            planner_context = f"{planner_context}\n\nНе включай разделы: {section_names}."  # noqa: RUF001
+            _log.info(
+                "scheduler.digest.sections_filtered",
+                job_id=job_id,
+                owner_telegram_id=owner_id,
+                disabled=list(disabled),
+            )
+        # END_BLOCK_DIGEST_SECTION_TOGGLES
 
         try:
             text = await runner(

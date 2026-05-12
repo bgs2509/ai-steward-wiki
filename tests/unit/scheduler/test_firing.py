@@ -933,3 +933,124 @@ async def test_owner_digest_prefs_accessors_without_context_raise() -> None:
         await firing.get_owner_digest_prefs(70)
     with pytest.raises(DigestNotInitialisedError):
         await firing.set_owner_digest_section(70, section="trackers", enabled=False)
+
+
+# --- fire_digest_job honours user_digest_prefs (aisw-pv8) ------------------
+
+
+async def _make_digest_job(session_factory, sched) -> int:
+    async with session_factory() as s:
+        return await create_digest_job(
+            s,
+            sched,
+            owner_telegram_id=7,
+            chat_id=7,
+            recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
+        )
+
+
+async def test_digest_no_prefs_planner_context_has_no_directive(
+    session_factory, audit_session_maker, sessions_factory, wiki_dirs
+) -> None:
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    job_id = await _make_digest_job(session_factory, sched)
+    runner = _OkRunner()
+    set_digest_context(
+        scheduler=sched,
+        runner=runner,
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=_DigestSender(),
+        sessions_session_maker=sessions_factory,
+    )
+    await fire_digest_job(job_id)
+    assert "Не включай разделы" not in runner.calls[0]["planner_context"]
+
+
+async def test_digest_trackers_disabled_appends_directive(
+    session_factory, audit_session_maker, sessions_factory, wiki_dirs
+) -> None:
+    import structlog
+
+    from ai_steward_wiki.storage.sessions.digest_prefs import set_digest_section
+
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    job_id = await _make_digest_job(session_factory, sched)
+    await _seed_sessions_user(sessions_factory, 7)
+    await set_digest_section(sessions_factory, 7, section="trackers", enabled=False)
+    runner = _OkRunner()
+    set_digest_context(
+        scheduler=sched,
+        runner=runner,
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=_DigestSender(),
+        sessions_session_maker=sessions_factory,
+    )
+    with structlog.testing.capture_logs() as logs:
+        await fire_digest_job(job_id)
+    assert runner.calls[0]["planner_context"].rstrip().endswith("Не включай разделы: 📈 Трекеры.")
+    assert any(
+        e["event"] == "scheduler.digest.sections_filtered" and e["disabled"] == ["trackers"]
+        for e in logs
+    )
+
+
+async def test_digest_both_disabled_lists_both(
+    session_factory, audit_session_maker, sessions_factory, wiki_dirs
+) -> None:
+    from ai_steward_wiki.storage.sessions.digest_prefs import set_digest_section
+
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    job_id = await _make_digest_job(session_factory, sched)
+    await _seed_sessions_user(sessions_factory, 7)
+    await set_digest_section(sessions_factory, 7, section="trackers", enabled=False)
+    await set_digest_section(sessions_factory, 7, section="wiki", enabled=False)
+    runner = _OkRunner()
+    set_digest_context(
+        scheduler=sched,
+        runner=runner,
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=_DigestSender(),
+        sessions_session_maker=sessions_factory,
+    )
+    await fire_digest_job(job_id)
+    assert (
+        runner.calls[0]["planner_context"]
+        .rstrip()
+        .endswith("Не включай разделы: 📈 Трекеры, 📝 Обновления WIKI.")
+    )
+
+
+async def test_digest_prefs_read_failure_degrades_to_all_on(
+    session_factory, audit_session_maker, sessions_factory, wiki_dirs, monkeypatch
+) -> None:
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    job_id = await _make_digest_job(session_factory, sched)
+    runner = _OkRunner()
+    sender = _DigestSender()
+    set_digest_context(
+        scheduler=sched,
+        runner=runner,
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=sender,
+        sessions_session_maker=sessions_factory,
+    )
+
+    async def _raise(*_a, **_k):
+        raise RuntimeError("prefs db down")
+
+    monkeypatch.setattr(firing, "get_digest_prefs", _raise)
+    await fire_digest_job(job_id)
+    assert "Не включай разделы" not in runner.calls[0]["planner_context"]
+    assert len(sender.sent) == 1  # digest still delivered
