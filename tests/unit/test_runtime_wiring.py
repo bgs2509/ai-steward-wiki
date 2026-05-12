@@ -10,6 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ai_steward_wiki import __main__ as runtime
+from ai_steward_wiki.scheduler.maintenance import (
+    MEDIA_STAGING_SWEEP_JOB_ID,
+    PURGE_PENDING_JOB_ID,
+)
 
 
 def test_sync_url_strips_aiosqlite() -> None:
@@ -131,6 +135,12 @@ def test_amain_composes_and_shuts_down_cleanly(tmp_path: Path) -> None:
     fake_dp.start_polling.assert_awaited_once()
     fake_bot.session.close.assert_awaited()
     assert fake_engine.dispose.await_count >= 3
+    # aisw-7k0: all retention/maintenance jobs are registered (pending purge,
+    # DB retention, db_snapshot, media _staging sweep).
+    registered_job_ids = {c.kwargs.get("id") for c in fake_scheduler.add_job.call_args_list}
+    assert PURGE_PENDING_JOB_ID in registered_job_ids
+    assert MEDIA_STAGING_SWEEP_JOB_ID in registered_job_ids
+    assert fake_scheduler.add_job.call_count >= 5
 
 
 def test_amain_requires_active_tg_token(tmp_path: Path) -> None:

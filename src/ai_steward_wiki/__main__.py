@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.1.3
+# VERSION: 0.1.4
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -25,11 +25,16 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.3 - aisw-8r9 (media chunk 4): register the daily media
+#   LAST_CHANGE: v0.1.4 - aisw-7k0: wire register_all_retention_jobs into _amain
+#                (was unwired — pending-purge / DB retention / db_snapshot never
+#                ran in prod); adds jobs_sessionmaker; logs registered job ids.
+#                Replaces the direct register_media_staging_sweep_job call (now
+#                inside the aggregator).
+#   PREVIOUS:    v0.1.3 - aisw-8r9 (media chunk 4): register the daily media
 #                _staging sweep job on the scheduler; _WikiRunnerAdapter.run
 #                promotes staged media into <wiki>/raw/media/ after a successful
 #                run (D-022 two-phase storage).
-#   PREVIOUS:    v0.1.2 - aisw-m2m (media chunk 2): _WikiRunnerAdapter.run
+#                v0.1.2 - aisw-m2m (media chunk 2): _WikiRunnerAdapter.run
 #                forwards media_paths to run_wiki_session (photo vision, D-022).
 #                v0.1.1 - aisw-zny (media chunk 1): wire VoiceHandler +
 #                PhotoIngestor into DefaultPipeline (D-022); runtime.media_pipeline.wired log.
@@ -69,7 +74,7 @@ from ai_steward_wiki.logging_setup import configure_logging
 from ai_steward_wiki.ops.pii import PIIRedactor
 from ai_steward_wiki.scheduler.core import build_scheduler
 from ai_steward_wiki.scheduler.locks import WikiLockManager
-from ai_steward_wiki.scheduler.maintenance import register_media_staging_sweep_job
+from ai_steward_wiki.scheduler.maintenance import register_all_retention_jobs
 from ai_steward_wiki.settings import Settings, get_settings
 from ai_steward_wiki.storage.audit.engine import build_engine, build_sessionmaker
 from ai_steward_wiki.tg.bot import AiogramSender, TgSender, build_bot, build_dispatcher
@@ -372,6 +377,7 @@ async def _amain() -> None:
     jobs_engine = build_engine(settings.jobs_db_url)
     audit_engine = build_engine(settings.audit_db_url)
     sessions_engine = build_engine(settings.sessions_db_url)
+    jobs_maker = build_sessionmaker(jobs_engine)
     audit_maker = build_sessionmaker(audit_engine)
     sessions_maker = build_sessionmaker(sessions_engine)
 
@@ -381,11 +387,26 @@ async def _amain() -> None:
 
     scheduler = build_scheduler(_sync_url_for_jobstore(settings.jobs_db_url))
     scheduler.start()
-    register_media_staging_sweep_job(scheduler, staging_root=settings.media_staging_root)
+    retention_jobs = register_all_retention_jobs(
+        scheduler,
+        audit_maker=audit_maker,
+        jobs_maker=jobs_maker,
+        sessions_maker=sessions_maker,
+        dry_run=settings.retention_dry_run,
+        snapshot_root=settings.snapshot_dir,
+        db_urls_for_snapshot={
+            "jobs": settings.jobs_db_url,
+            "audit": settings.audit_db_url,
+            "sessions": settings.sessions_db_url,
+        },
+        snapshot_retention_days=settings.snapshot_retention_days,
+        media_staging_root=settings.media_staging_root,
+    )
     logger.info(
         "runtime.scheduler.started",
         jobs_url=settings.jobs_db_url,
         media_staging_root=str(settings.media_staging_root),
+        retention_job_ids=[getattr(j, "id", None) for j in retention_jobs],
     )
 
     bot = build_bot(settings.tg_bot_token.get_secret_value())
