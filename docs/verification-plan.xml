@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.7">
+<VerificationPlan VERSION="0.0.8">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -167,12 +167,15 @@
         <test path="tests/unit/tg/test_pipeline_classifier_wiring.py"/>
         <test path="tests/unit/tg/test_pipeline_router.py"/>
         <test path="tests/unit/tg/test_pipeline_route_ingest.py"/>
+        <test path="tests/unit/tg/test_pipeline_route_confirm.py"/>
+        <test path="tests/unit/tg/test_pipeline_confirm_callback.py"/>
         <test path="tests/unit/wiki/test_runner_aggregate.py"/>
         <test path="tests/integration/test_pipeline_classifier_e2e.py"/>
+        <test path="tests/integration/test_e2e_pipeline.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/tg/test_pipeline_classifier_wiring.py tests/unit/tg/test_pipeline_router.py tests/unit/tg/test_pipeline_route_ingest.py tests/unit/wiki/test_runner_aggregate.py -q</cmd>
-        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/test_pipeline_classifier_e2e.py -q</cmd>
+        <cmd>uv run pytest tests/unit/tg/test_pipeline_classifier_wiring.py tests/unit/tg/test_pipeline_router.py tests/unit/tg/test_pipeline_route_ingest.py tests/unit/tg/test_pipeline_route_confirm.py tests/unit/tg/test_pipeline_confirm_callback.py tests/unit/wiki/test_runner_aggregate.py -q</cmd>
+        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/test_pipeline_classifier_e2e.py tests/integration/test_e2e_pipeline.py -q</cmd>
       </commands>
       <log-markers>
         <marker>tg.pipeline.classify.begin</marker>
@@ -182,14 +185,18 @@
         <marker>tg.pipeline.router.dispatched</marker>
         <marker>tg.pipeline.router.decided</marker>
         <marker>tg.pipeline.router.error</marker>
-        <marker>tg.pipeline.route.ingest_dispatched</marker>
-        <marker>tg.pipeline.route.delivered</marker>
+        <marker>tg.pipeline.route.confirm_requested</marker>
+        <marker>tg.pipeline.confirm.route_dispatched</marker>
+        <marker>tg.pipeline.route.confirm_executed</marker>
+        <marker>tg.pipeline.route.confirm_cancelled</marker>
+        <marker>tg.pipeline.route.confirm_stale</marker>
         <marker>tg.pipeline.runner.dispatched</marker>
         <marker>tg.pipeline.runner.completed</marker>
         <marker>tg.pipeline.runner.error</marker>
         <marker>tg.pipeline.deliver.sent</marker>
+        <marker>tg.pipeline.confirm</marker>
       </log-markers>
-      <evidence>Unit tests cover text happy path, L1 dup short-circuit, L2 dedup hit, classifier error → ACK_CLASSIFY_ERR_RU, runner error → ACK_RUNNER_ERR_RU, empty runner output → ACK_TEXT_RU via deliver, back-compat None injection, voice happy/empty/back-compat, structlog markers via capsys; aggregate_text across stream-json payload shapes. aisw-dsg: routable intents with a wired Router go through router.route(); router=None / non-routable use the legacy path; RouterError → ACK_RUNNER_ERR_RU; tg.pipeline.router.* markers. aisw-zd9: a ROUTE/CREATE_WIKI RouterDecision (with a wired librarian + output) → librarian.ingest() → status="ok" → output.deliver(reply); status="rejected"|"run_failed" → send_message(reply); CLARIFY/REJECT and librarian=None → send_message(decision.notes), legacy runner NOT called; tg.pipeline.route.* markers via capsys.</evidence>
+      <evidence>Unit tests cover text happy path, L1 dup short-circuit, L2 dedup hit, classifier error → ACK_CLASSIFY_ERR_RU, runner error → ACK_RUNNER_ERR_RU, empty runner output → ACK_TEXT_RU via deliver, back-compat None injection, voice happy/empty/back-compat, structlog markers via capsys; aggregate_text across stream-json payload shapes. aisw-dsg: routable intents with a wired Router go through router.route(); router=None / non-routable use the legacy path; RouterError → ACK_RUNNER_ERR_RU; tg.pipeline.router.* markers. aisw-zd9: the ROUTE/CREATE_WIKI librarian.ingest() path (now reached via the confirm callback). aisw-e45 (Phase-C): a ROUTE/CREATE_WIKI decision (wired librarian + output) → no immediate ingest; ConfirmationService.request_explicit called with category="route_ingest" + build_route_confirm_keyboard + a draft round-trippable via route_action_from_payload; recap mentions target + notes; CLARIFY/REJECT and librarian=None → send_message(decision.notes), no confirm row. on_confirm_callback: route_ingest row + resolve→"confirmed" → ROUTE_CONFIRM_ACK_RU then librarian.ingest() with the reconstructed decision + media Paths → status="ok" → output.deliver(reply) else send_message(reply); resolve→"cancelled" → ROUTE_CONFIRM_CANCELLED_RU, no ingest; resolve→None → ROUTE_CONFIRM_STALE_RU, no ingest; non-route_ingest or missing row → legacy resolve path (tg.pipeline.confirm); tg.pipeline.route.confirm_* + confirm.route_dispatched markers via capsys. Integration (RUN_INTEGRATION=1): test_e2e_pipeline.py scenario 6 — routable text → recap + route_ingest pending row (no domain WIKI yet) → on_confirm_callback("confirm") → real Stage-1b librarian writes into the target &lt;Domain&gt;-WIKI/raw/, ROUTE_CONFIRM_ACK_RU sent, reply via output.deliver; tolerant of CLARIFY/REJECT.</evidence>
     </V-M-TG-PIPELINE-CLASSIFIER>
 
     <V-M-TG-PIPELINE-STREAMING MODULE="M-TG-PIPELINE-STREAMING">
@@ -375,7 +382,7 @@
         <marker>inbox.route.raw_moved</marker>
         <marker>inbox.route.media_missing</marker>
       </log-markers>
-      <evidence>resolve_target_wiki: CREATE_WIKI → new dir, created=True; idempotent second call → created=False; ROUTE existing → created=False; ROUTE missing → create + on_route_missing callback; AntiSpamCapError → RouteRejection("cap"); WikiNameError → RouteRejection("bad_name"). stage_raw_into_wiki: text → raw/&lt;ts&gt;_text.md body verbatim, media_rel=[]; voice/photo → .md sidecar with YAML front-matter + promote_path_to_raw into raw/media/ (StagedRaw.media_abs absolute & exists, source moved); already-gone media → skipped. pick_domain_overlay: domain-&lt;slug&gt;.md if present else domain-default.md. build_ingest_prompt references the raw path(s) + the user text (aisw-zd9; D-004).</evidence>
+      <evidence>resolve_target_wiki: CREATE_WIKI → new dir, created=True; idempotent second call → created=False; ROUTE existing → created=False; ROUTE missing → create + on_route_missing callback; AntiSpamCapError → RouteRejection("cap"); WikiNameError → RouteRejection("bad_name"). stage_raw_into_wiki: text → raw/&lt;ts&gt;_text.md body verbatim, media_rel=[]; voice/photo → .md sidecar with YAML front-matter + promote_path_to_raw into raw/media/ (StagedRaw.media_abs absolute & exists, source moved); already-gone media → skipped. pick_domain_overlay: domain-&lt;slug&gt;.md if present else domain-default.md. build_ingest_prompt references the raw path(s) + the user text (aisw-zd9; D-004). aisw-e45 (Phase-C): route_action_to_payload ∘ route_action_from_payload is identity for ROUTE and CREATE_WIKI decisions with/without media (RouterIntent/RouterDecision/Path reconstructed by type; missing media → []); from_payload raises ValueError on a missing 'decision' or a bad 'source'.</evidence>
     </V-M-INBOX-ROUTE>
 
     <V-M-INGEST-IDEM MODULE="M-INGEST-IDEM">
@@ -460,7 +467,7 @@
         <marker>tg.stream.finalized</marker>
         <marker>tg.stream.final_flush_failed</marker>
       </log-markers>
-      <evidence>build_bot (HTML parse_mode) + build_dispatcher (AllowlistMiddleware outer); AllowlistMiddleware denies unknown telegram_id with DENY_TEXT_RU + auth.deny, /start bypass, carries user_record (D-031, D-042); ConfirmationService auto/implicit/explicit + 10min TTL + compute_payload_hash + 3-button keyboard (D-023); deliver_output ≤3500 inline / ≤10000 ChainSplitter (i/M footer, ≤3 parts) / &gt;10000 HaikuSummarizer→LengthCapSummarizer + RunOutput persistence (D-024, D-025); HtmlBalancer tag balancing; StreamEditor 1.5s/Δ≥50 throttle + chain-split at 4000 + final-flush on end/exception/cancel (D-026).</evidence>
+      <evidence>build_bot (HTML parse_mode) + build_dispatcher (AllowlistMiddleware outer); AllowlistMiddleware denies unknown telegram_id with DENY_TEXT_RU + auth.deny, /start bypass, carries user_record (D-031, D-042); ConfirmationService auto/implicit/explicit + 10min TTL + compute_payload_hash + 3-button keyboard (D-023); request_explicit accepts a keyboard_factory (default 3-button; build_route_confirm_keyboard → 2-button confirm/cancel for Inbox-WIKI route confirms, aisw-e45); deliver_output ≤3500 inline / ≤10000 ChainSplitter (i/M footer, ≤3 parts) / &gt;10000 HaikuSummarizer→LengthCapSummarizer + RunOutput persistence (D-024, D-025); HtmlBalancer tag balancing; StreamEditor 1.5s/Δ≥50 throttle + chain-split at 4000 + final-flush on end/exception/cancel (D-026).</evidence>
     </V-M-TG-TEXT>
 
     <V-M-TG-VOICE MODULE="M-TG-VOICE">

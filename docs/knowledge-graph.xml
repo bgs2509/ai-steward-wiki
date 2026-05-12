@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <KnowledgeGraph>
-  <Project NAME="ai-steward-wiki" VERSION="0.0.7">
+  <Project NAME="ai-steward-wiki" VERSION="0.0.8">
     <keywords>telegram, claude-code, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
     <annotation>Isolated multi-user Telegram service that wraps Claude Code CLI as a personal WIKI assistant (Karpathy LLM Wiki method). Full module map: foundation (settings, logging), three-DB storage (jobs/audit/sessions), auth/onboarding/admin, scheduler core, Stage-0 classifier, Stage-1 wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer, voice STT, photo ingest, ingest pipeline (classifier + streaming), runtime wiring.</annotation>
 
@@ -282,8 +282,8 @@
       </annotations>
     </M-INBOX-ROUTER>
 
-    <M-INBOX-ROUTE NAME="Inbox-WIKI Phase-B route+ingest helpers" TYPE="RUNTIME" STATUS="done">
-      <purpose>Resolve/create the target &lt;Domain&gt;-WIKI from a RouterDecision (lookup-or-create; AntiSpamCapError/WikiNameError → RouteRejection), stage the raw payload into it (write raw/&lt;ts&gt;_&lt;source&gt;.md + promote media via promote_path_to_raw), pick the Stage-1b domain overlay, and build the librarian ingest prompt (aisw-zd9, Inbox-WIKI Phase-B; D-004, smart-inbox-routing).</purpose>
+    <M-INBOX-ROUTE NAME="Inbox-WIKI route+ingest helpers" TYPE="RUNTIME" STATUS="done">
+      <purpose>Resolve/create the target &lt;Domain&gt;-WIKI from a RouterDecision (lookup-or-create; AntiSpamCapError/WikiNameError → RouteRejection), stage the raw payload into it (write raw/&lt;ts&gt;_&lt;source&gt;.md + promote media via promote_path_to_raw), pick the Stage-1b domain overlay, build the librarian ingest prompt, and (Phase-C, aisw-e45) (de)serialise a route+ingest action to/from a JSON-able dict for the confirm-loop draft (aisw-zd9 Phase-B + aisw-e45 Phase-C; D-004, D-023, smart-inbox-routing).</purpose>
       <path>src/ai_steward_wiki/inbox/route.py</path>
       <depends>M-WIKI-LIFECYCLE, M-INBOX, M-INBOX-ROUTER</depends>
       <verification-ref>V-M-INBOX-ROUTE</verification-ref>
@@ -291,10 +291,13 @@
         <type-RouteTarget PURPOSE="resolved target WIKI (wiki_name, wiki_dir, created)"/>
         <type-RouteRejection PURPOSE="cap / bad_name rejection with a ru hint"/>
         <type-StagedRaw PURPOSE="what stage_raw_into_wiki wrote (sidecar_rel, media_rel, media_abs)"/>
+        <type-RouteAction PURPOSE="a staged route+ingest action awaiting user confirmation (decision + user_text + source + media_paths + correlation_id) — Phase-C"/>
         <fn-resolve_target_wiki PURPOSE="lookup-or-create the target &lt;Domain&gt;-WIKI for the owner; ROUTE-missing → create + on_route_missing callback"/>
         <fn-stage_raw_into_wiki PURPOSE="write raw/&lt;ts&gt;_&lt;source&gt;.md + promote media into &lt;wiki&gt;/raw/media/ (skip already-gone media)"/>
         <fn-pick_domain_overlay PURPOSE="prompts/domain-&lt;slug&gt;.md if it exists else domain-default.md"/>
         <fn-build_ingest_prompt PURPOSE="ru Stage-1b ingest instruction referencing the raw path(s) + the user text"/>
+        <fn-route_action_to_payload PURPOSE="serialise a RouteAction to a JSON-able dict for pending_confirms.draft_json (Phase-C)"/>
+        <fn-route_action_from_payload PURPOSE="inverse: reconstruct a typed RouteAction (RouterDecision/Path) from the draft dict (Phase-C)"/>
       </annotations>
     </M-INBOX-ROUTE>
 
@@ -353,7 +356,8 @@
         <fn-deliver_output PURPOSE="D-025 hybrid size policy + persistence; returns DeliveryReceipt"/>
         <type-AiogramSender PURPOSE="adapter wrapping aiogram.Bot to satisfy the TgSender Protocol"/>
         <type-AllowlistMiddleware PURPOSE="aiogram outer-middleware gating updates by telegram_id (D-031)"/>
-        <type-ConfirmationService PURPOSE="graduated auto/implicit/explicit confirmation flow + 10min TTL (D-023)"/>
+        <type-ConfirmationService PURPOSE="graduated auto/implicit/explicit confirmation flow + 10min TTL (D-023); request_explicit takes a keyboard_factory (3-button default; route confirms pass build_route_confirm_keyboard)"/>
+        <fn-build_route_confirm_keyboard PURPOSE="2-button (Подтвердить/Отмена) inline keyboard for Inbox-WIKI route confirms (Phase-C, aisw-e45)"/>
         <type-HtmlBalancer PURPOSE="tokeniser-based open/close balancer for whitelisted TG HTML tags"/>
         <type-ChainSplitter PURPOSE="split text into ≤3 parts at semantic boundaries with (i/M) footer"/>
         <type-StreamEditor PURPOSE="D-026 throttled streaming edits: 1.5s OR Δ≥50 + chain-split at 4000 + final-flush"/>
@@ -387,7 +391,7 @@
     </M-TG-PHOTO>
 
     <M-TG-PIPELINE-CLASSIFIER NAME="Ingest pipeline / classify→run→deliver" TYPE="RUNTIME" STATUS="done">
-      <purpose>DefaultPipeline coordinator over already-built ingest blocks — L1/L2 dedup, Stage-0 classify → Stage-1 run → deliver_output; voice transcript path; photo→vision via media_paths; document mime router (PDF text extract, size cap); Russian safe-fallback acks (chunk 20, D-022, D-023).</purpose>
+      <purpose>DefaultPipeline coordinator over already-built ingest blocks — L1/L2 dedup, Stage-0 classify → Stage-1 run → deliver_output; voice transcript path; photo→vision via media_paths; document mime router (PDF text extract, size cap); Inbox-WIKI routing: a ROUTE/CREATE_WIKI RouterDecision is proposed via an inline-button route confirm (persisted as a route_ingest pending row) and the Stage-1b move+ingest runs in on_confirm_callback on "confirmed" (Phase-C, aisw-e45); Russian safe-fallback acks (chunk 20, D-022, D-023).</purpose>
       <path>src/ai_steward_wiki/tg/pipeline.py</path>
       <depends>M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, M-TG-TEXT, M-INGEST-IDEM, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE</depends>
       <verification-ref>V-M-TG-PIPELINE-CLASSIFIER</verification-ref>
@@ -462,14 +466,14 @@
     <CrossLink from="M-TG-PHOTO" to="M-INBOX" relation="PhotoIngestor stages bytes via inbox.staging.stage_media (D-022)"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-CLASSIFIER-STAGE0" relation="Classifier Protocol → classify()"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-WIKI-RUNNER" relation="WikiRunner Protocol → run_wiki_session()"/>
-    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-TG-TEXT" relation="OutputDelivery Protocol → deliver_output()"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-TG-TEXT" relation="OutputDelivery Protocol → deliver_output(); ConfirmationService.request_explicit + build_route_confirm_keyboard for the Inbox-WIKI route confirm loop (aisw-e45)"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-INGEST-IDEM" relation="L1/L2 dedup via IdempotencyService"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-TG-VOICE" relation="voice transcript path → on_voice"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-TG-PHOTO" relation="photo→vision via media_paths"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-INBOX-ROUTER" relation="Router Protocol returns RouterDecision; RouterError → safe ack (aisw-dsg)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX-ROUTER" relation="_RouterAdapter parses run_wiki_session reply via parse_router_reply; raises RouterError (aisw-dsg)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX" relation="_RouterAdapter calls ensure_inbox_wiki before each Stage-1a router run (aisw-dsg)"/>
-    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-INBOX-ROUTE" relation="Librarian Protocol returns IngestOutcome for ROUTE/CREATE_WIKI decisions (aisw-zd9)"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-INBOX-ROUTE" relation="Librarian Protocol returns IngestOutcome for ROUTE/CREATE_WIKI decisions (aisw-zd9); route_action_to_payload/route_action_from_payload (de)serialise the confirm-loop draft (aisw-e45)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX-ROUTE" relation="_LibrarianAdapter calls resolve_target_wiki/stage_raw_into_wiki/pick_domain_overlay/build_ingest_prompt (aisw-zd9)"/>
     <CrossLink from="M-INBOX-ROUTE" to="M-WIKI-LIFECYCLE" relation="resolve_target_wiki wraps WikiLifecycleManager.lookup/create_wiki (AntiSpamCapError/WikiNameError)"/>
     <CrossLink from="M-INBOX-ROUTE" to="M-INBOX" relation="stage_raw_into_wiki promotes media via inbox.staging.promote_path_to_raw"/>
