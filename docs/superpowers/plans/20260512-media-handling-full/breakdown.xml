@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Breakdown epic_slug="20260512-media-handling-full" epic_bd_id="aisw-hcl" target_repo="/home/bgs/ai-steward/Gena_Beeline_Local/ai-steward-wiki" budget="0.6" branch="feat/media-handling-full">
+  <Source>docs/superpowers/plans/20260512-media-handling-full-plan.md</Source>
+  <Goal>Полное подключение обработки медиа (voice/photo/document/audio/video_note) end-to-end: от TG handler до Claude и обратно, со стейджингом/промоушеном, тестами и документацией.</Goal>
+
+  <RunState current_chunk="2" last_commit_sha="pending" total_test_status="pass-after-chunk-1" updated_utc="2026-05-12"/>
+
+  <Chunks>
+    <Chunk n="1" bd_id="aisw-zny" module="M-RUNTIME-WIRING" est_window_pct="35" depends_on="">
+      <Title>wire VoiceHandler+PhotoIngestor into DefaultPipeline</Title>
+      <Inputs>src/ai_steward_wiki/__main__.py, src/ai_steward_wiki/settings.py, src/ai_steward_wiki/tg/pipeline.py, src/ai_steward_wiki/tg/voice.py, src/ai_steward_wiki/tg/photo.py, src/ai_steward_wiki/wiki/lifecycle.py, pyproject.toml, uv.lock, docs/Spec-WIKI/decisions/D-022-voice-photo-input.md</Inputs>
+      <Outputs>src/ai_steward_wiki/__main__.py, src/ai_steward_wiki/settings.py, src/ai_steward_wiki/tg/pipeline.py, pyproject.toml, uv.lock, tests/unit/tg/test_pipeline_voice.py, tests/unit/tg/test_pipeline_photo.py, docs/superpowers/specs/20260512-media-handling-full/discovery-chunk1.md, docs/superpowers/specs/20260512-media-handling-full/design-chunk1.md, docs/superpowers/plans/20260512-media-handling-full/step-01-plan.md, .env.example, (maybe) docs/adr/ADR-NNN-faster-whisper-packaging.md</Outputs>
+      <Verification>uv run python -m ai_steward_wiki then send voice -> reply is transcript/Stage-1 result or ACK_VOICE_UNAVAILABLE_RU; logs show runtime.media_pipeline.wired voice=true photo=true and NO tg.pipeline.voice.no_handler. make total-test exit 0.</Verification>
+    </Chunk>
+    <Chunk n="2" bd_id="aisw-m2m" module="M-WIKI-RUNNER" est_window_pct="50" depends_on="aisw-zny">
+      <Title>accept media paths so photos reach Claude vision</Title>
+      <Inputs>src/ai_steward_wiki/wiki/runner.py, src/ai_steward_wiki/claude_cli/common.py, src/ai_steward_wiki/tg/pipeline.py, src/ai_steward_wiki/tg/photo.py, src/ai_steward_wiki/__main__.py, claude --help, Context7 claude-code CLI docs</Inputs>
+      <Outputs>src/ai_steward_wiki/wiki/runner.py, src/ai_steward_wiki/tg/pipeline.py, src/ai_steward_wiki/tg/photo.py, src/ai_steward_wiki/__main__.py, tests/unit/wiki/test_runner.py, tests/unit/tg/test_pipeline_photo.py, tests/unit/tg/test_pipeline_document.py, docs/superpowers/specs/.../discovery-chunk2.md, design-chunk2.md, step-02-plan.md</Outputs>
+      <Verification>send photo -> meaningful text reply; logs tg.pipeline.photo -> tg.pipeline.runner.dispatched -> ...deliver.sent. unit: argv contains media flag; runner.run called with media_paths. make total-test exit 0.</Verification>
+      <SplitNote>If post-Discovery estimate >60% window: split into 2.a (runner media_paths+argv+unit) and 2.b (pipeline on_photo/image-doc wiring+integration).</SplitNote>
+    </Chunk>
+    <Chunk n="3" bd_id="aisw-ahv" module="M-TG-HANDLERS-WIRING" est_window_pct="30" depends_on="aisw-zny">
+      <Title>audio / video_note content types and message captions</Title>
+      <Inputs>src/ai_steward_wiki/tg/handlers.py, src/ai_steward_wiki/tg/pipeline.py, docs/Spec-WIKI/decisions/D-022-voice-photo-input.md</Inputs>
+      <Outputs>src/ai_steward_wiki/tg/handlers.py, src/ai_steward_wiki/tg/pipeline.py, tests/unit/tg/test_handlers.py, tests/unit/tg/test_pipeline_*.py, docs/superpowers/specs/.../discovery-chunk3.md, design-chunk3.md, step-03-plan.md</Outputs>
+      <Verification>send audio file -> transcribed as voice; photo with caption -> caption reaches Stage-1; video_note -> handled or reject-string. make total-test exit 0.</Verification>
+    </Chunk>
+    <Chunk n="4" bd_id="aisw-8r9" module="M-INBOX" est_window_pct="35" depends_on="aisw-m2m">
+      <Title>promote staged media to target WIKI on success + scheduled 24h staging sweep</Title>
+      <Inputs>src/ai_steward_wiki/inbox/staging.py, src/ai_steward_wiki/scheduler/maintenance.py, src/ai_steward_wiki/wiki/runner.py, src/ai_steward_wiki/tg/pipeline.py, src/ai_steward_wiki/__main__.py, docs/Spec-WIKI/decisions/D-022-voice-photo-input.md</Inputs>
+      <Outputs>src/ai_steward_wiki/scheduler/maintenance.py, src/ai_steward_wiki/wiki/runner.py (maybe), src/ai_steward_wiki/tg/pipeline.py, tests/unit/inbox/test_staging.py, tests/unit/scheduler/test_maintenance.py, docs/superpowers/specs/.../discovery-chunk4.md, design-chunk4.md, step-04-plan.md</Outputs>
+      <Verification>after processing voice/photo: file in &lt;target-wiki&gt;/raw/media/&lt;ISO8601&gt;_&lt;sha8&gt;.ext, _staging empty; stale staging file (&gt;24h) removed by background job. make total-test exit 0.</Verification>
+    </Chunk>
+    <Chunk n="5" bd_id="aisw-nzl" module="M-INTEGRATION-E2E" est_window_pct="30" depends_on="aisw-8r9,aisw-ahv">
+      <Title>media handling e2e + docs refresh + completion report</Title>
+      <Inputs>tests/e2e/*, tests/integration/*, docs/knowledge-graph.xml, docs/verification-plan.xml, CLAUDE.md, docs/Spec-WIKI/decisions/D-022-voice-photo-input.md</Inputs>
+      <Outputs>tests/integration/test_media_e2e.py (or tests/e2e/), docs/knowledge-graph.xml, docs/verification-plan.xml, CLAUDE.md, docs/reports/20260512-media-handling-full-report.md, docs/superpowers/plans/.../step-05-plan.md</Outputs>
+      <Verification>make total-test exit 0; RUN_INTEGRATION=1 uv run pytest tests/integration green; grace lint --failOn errors exit 0; report exists.</Verification>
+    </Chunk>
+  </Chunks>
+
+  <Approvals>
+    <Approval phase="4-breakdown" auto_approved="true" reason="user-directive: always-auto-approve" ts_utc="2026-05-12"/>
+  </Approvals>
+
+  <Decisions>
+    <Decision chunk="1" id="DEC-C1-1" adr="ADR-002">faster-whisper moved to core deps (not extra). Voice is primary MVP feature (D-022). + defensive ImportError→VoiceUnavailableError→ACK_VOICE_UNAVAILABLE_RU. Auto-applied (one-sided dominance: correctness/just-works vs image-size; image size not a correctness concern, no voice-less deploy profile).</Decision>
+    <Decision chunk="1" id="DEC-C1-2">media_staging_root = single dir (default /var/lib/ai-steward-wiki/workspace/media-staging), not per-user. Per-user Inbox-WIKI absent from lifecycle.py; promotion to target wiki deferred to chunk 4.</Decision>
+    <Decision chunk="1" id="DEC-C1-3">voice_whisper_model_size default 'small' (D-022 bench RTF≤0.5 on small).</Decision>
+  </Decisions>
+  <ReassessLog>
+    <Reassess after_chunk="1" ts_utc="2026-05-12">No structural drift for chunks 2-5. Note: chunk 4 (promote_to_raw) needs MediaRef threaded from on_voice/on_photo to the point where target WIKI is known — to be designed in chunk 4 Discovery. media_staging_root now exists as Settings field (chunk 4 sweep job will read it). No tail regeneration needed.</Reassess>
+  </ReassessLog>
+  <TotalTestLog>
+    <Run chunk="1" ts_utc="2026-05-12" exit="0">ruff-check 0 errors; ruff-format-check 0 reformat; mypy 66 files 0 errors; grace-lint governed=66 xml=3 errors=0 warnings=0; inv-lint 14/14; test-cov 419 passed 0 failed coverage=90.65%. ALL STEPS PASSED.</Run>
+  </TotalTestLog>
+</Breakdown>
