@@ -1,5 +1,5 @@
 # FILE: tests/integration/conftest.py
-# VERSION: 0.2.0
+# VERSION: 0.3.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Shared fixtures for tests/integration/* — spin DefaultPipeline
 #            against real Claude CLI classifier with fake runner/output/voice/
@@ -22,7 +22,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.2.0 - aisw-dsg (Inbox-WIKI Phase-A): add wiki_root_e2e,
+#   LAST_CHANGE: v0.3.0 - aisw-zd9 (Inbox-WIKI Phase-B): add real_librarian_adapter
+#                (real _LibrarianAdapter over the Claude CLI) + pipeline_full_routing
+#                (router + librarian) fixtures for the route+ingest e2e scenario.
+#   PREVIOUS:    v0.2.0 - aisw-dsg (Inbox-WIKI Phase-A): add wiki_root_e2e,
 #                real_router_adapter (real _RouterAdapter over the Claude CLI),
 #                pipeline_with_router fixtures for the Inbox-WIKI router scenario.
 #   PREVIOUS:    v0.1.0 - chunk 23 M-INTEGRATION-E2E: initial conftest with
@@ -299,6 +302,55 @@ def pipeline_with_router(
         runner=fake_runner,
         output=fake_output,
         router=real_router_adapter,
+    )
+
+
+@pytest.fixture
+def real_librarian_adapter(wiki_root_e2e: Path, tmp_path: Path):
+    """Real _LibrarianAdapter (aisw-zd9): resolves/creates the target <Domain>-WIKI
+    and runs the Stage-1b librarian via the actual Claude CLI inside it."""
+    from ai_steward_wiki.__main__ import _LibrarianAdapter
+    from ai_steward_wiki.scheduler.locks import WikiLockManager
+    from ai_steward_wiki.wiki.acquire import WikiLockAdapter
+    from ai_steward_wiki.wiki.lifecycle import WikiLifecycleManager
+    from ai_steward_wiki.wiki.runner import AsyncioSpawner, _RunConfig
+
+    cfg_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
+    return _LibrarianAdapter(
+        wiki_root=wiki_root_e2e,
+        prompts_dir=REPO_ROOT / "prompts",
+        lifecycle=WikiLifecycleManager(wiki_root_e2e),
+        runtime_dir=tmp_path / "runtime",
+        acquirer=WikiLockAdapter(WikiLockManager()),
+        spawner=AsyncioSpawner(),
+        run_config=_RunConfig(timeout_s=180.0, claude_config_dir=cfg_dir),
+    )
+
+
+@pytest.fixture
+def pipeline_full_routing(
+    fake_bot: FakeAiogramBot,
+    idempotency: IdempotencyService,
+    confirmation: ConfirmationService,
+    fake_voice: VoiceHandler,
+    fake_photo: PhotoIngestor,
+    real_classifier: _RealClassifierAdapter,
+    fake_runner,
+    fake_output,
+    real_router_adapter,
+    real_librarian_adapter,
+) -> DefaultPipeline:
+    return DefaultPipeline(
+        sender=fake_bot,
+        idempotency=idempotency,
+        confirmation=confirmation,
+        voice=fake_voice,
+        photo=fake_photo,
+        classifier=real_classifier,
+        runner=fake_runner,
+        output=fake_output,
+        router=real_router_adapter,
+        librarian=real_librarian_adapter,
     )
 
 

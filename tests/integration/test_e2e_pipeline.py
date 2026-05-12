@@ -1,17 +1,18 @@
 # FILE: tests/integration/test_e2e_pipeline.py
-# VERSION: 0.2.0
+# VERSION: 0.3.0
 # START_MODULE_CONTRACT
 #   PURPOSE: M-INTEGRATION-E2E — exercise DefaultPipeline against the real
 #            Claude CLI across representative user paths (text, voice,
-#            photo→vision, photo+caption, photo+confirm, document PDF, and the
-#            Inbox-WIKI Stage-1a router). Last safety net before production cutover.
-#   SCOPE: 7 scenarios gated by RUN_INTEGRATION=1 + claude-binary presence (see
+#            photo→vision, photo+caption, photo+confirm, document PDF, the
+#            Inbox-WIKI Stage-1a router, and Stage-1b route+ingest). Last safety
+#            net before production cutover.
+#   SCOPE: 8 scenarios gated by RUN_INTEGRATION=1 + claude-binary presence (see
 #          tests/integration/conftest.py pytest_collection_modifyitems).
-#   DEPENDS: conftest fixtures (pipeline, pipeline_with_router, real_router_adapter,
-#            wiki_root_e2e, fake_runner, fake_output, fake_bot, confirmation,
-#            sessions_sm), ai_steward_wiki.tg.pipeline, ai_steward_wiki.tg.confirm,
-#            ai_steward_wiki.__main__._RouterAdapter, pypdf
-#   LINKS: chunk-23, aisw-vb9, aisw-dsg, breakdown.xml chunk-23, DEC-E2E-1..3
+#   DEPENDS: conftest fixtures (pipeline, pipeline_with_router, pipeline_full_routing,
+#            real_router_adapter, real_librarian_adapter, wiki_root_e2e, fake_runner,
+#            fake_output, fake_bot, confirmation, sessions_sm), ai_steward_wiki.tg.pipeline,
+#            ai_steward_wiki.tg.confirm, ai_steward_wiki.__main__.{_RouterAdapter,_LibrarianAdapter}, pypdf
+#   LINKS: chunk-23, aisw-vb9, aisw-dsg, aisw-zd9, breakdown.xml chunk-23, DEC-E2E-1..3
 #   ROLE: TEST
 #   MAP_MODE: SUMMARY
 # END_MODULE_CONTRACT
@@ -24,10 +25,15 @@
 #   test_photo_then_confirm_callback - photo routed + explicit confirm resolve
 #   test_pdf_document_end_to_end - PDF → pypdf extract → classifier → runner
 #   test_routable_text_runs_router_in_inbox_wiki - routable text → Stage-1a router in Inbox-WIKI/
+#   test_routable_text_routes_and_ingests - routable text → Stage-1a router → Stage-1b ingest in <Domain>-WIKI/
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.2.0 - aisw-dsg (Inbox-WIKI Phase-A): add scenario 5 —
+#   LAST_CHANGE: v0.3.0 - aisw-zd9 (Inbox-WIKI Phase-B): add scenario 6 —
+#                routable text → real Stage-1a router → (if ROUTE/CREATE_WIKI)
+#                real Stage-1b librarian ingest into <wiki>/<tid>/<Name>-WIKI/;
+#                tolerant of the router deciding CLARIFY/REJECT.
+#   PREVIOUS:    v0.2.0 - aisw-dsg (Inbox-WIKI Phase-A): add scenario 5 —
 #                routable text goes through the Inbox-WIKI Stage-1a router
 #                (_RouterAdapter), Claude runs inside <wiki>/<tid>/Inbox-WIKI/,
 #                bot replies with RouterDecision.notes, legacy runner untouched.
@@ -267,3 +273,40 @@ async def test_routable_text_runs_router_in_inbox_wiki(
     assert list((inbox_dir / "raw").glob("*_text.md")), "raw payload sidecar missing"
     # A transcript landed under Inbox-WIKI/runs/<run_id>/ — proves wiki_path/cwd.
     assert list((inbox_dir / "runs").glob("*/transcript.jsonl")), "router transcript missing"
+
+
+# ---------- Scenario 6: routable text → Domain-WIKI + Stage-1b ingest ----------
+
+
+async def test_routable_text_routes_and_ingests(
+    pipeline_full_routing, fake_bot, fake_output, wiki_root_e2e
+) -> None:
+    """A routable user message goes through the Stage-1a router and, if it
+    decides ROUTE/CREATE_WIKI, the Stage-1b librarian resolves/creates the
+    target <Domain>-WIKI and ingests the content there (aisw-zd9). Tolerant of
+    the router deciding CLARIFY/REJECT (then only Inbox-WIKI/ exists)."""
+    await pipeline_full_routing.on_text(
+        telegram_id=42,
+        chat_id=10,
+        update_id=1006,
+        text="вот мой авиабилет SVO→IST на 15 июня, занеси в Travel-WIKI",
+    )
+
+    user_dir = wiki_root_e2e / "42"
+    domain_dirs = [
+        d
+        for d in (user_dir.iterdir() if user_dir.exists() else [])
+        if d.is_dir() and d.name.endswith("-WIKI") and d.name != "Inbox-WIKI"
+    ]
+    if domain_dirs:
+        # ROUTE/CREATE_WIKI path: a domain WIKI exists; the librarian wrote something
+        # (a page, log.md, or at least the raw/ entry) and the reply went via deliver.
+        wiki = domain_dirs[0]
+        assert (wiki / "raw").exists()
+        assert list((wiki / "raw").iterdir())
+        fake_output.deliver.assert_awaited()
+        delivered = fake_output.deliver.await_args.kwargs["text"]
+        assert delivered  # non-empty (notes + summary)
+    else:
+        # CLARIFY/REJECT path: only Inbox-WIKI/, no domain WIKI, reply via send_message.
+        assert fake_bot.sends, "expected a clarify/reject reply"
