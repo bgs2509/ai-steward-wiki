@@ -29,7 +29,12 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.5 - aisw-w83: pipe user_input to claude stdin. `-p` (added
+#   LAST_CHANGE: v0.0.6 - aisw-kpb: add `--verbose` to argv. claude CLI rejects
+#                         `--print` (-p) + `--output-format stream-json` without
+#                         `--verbose` (rc=1 "When using --print,
+#                         --output-format=stream-json requires --verbose").
+#                         Regression from v0.0.4 which added -p but not --verbose.
+#   PREVIOUS:    v0.0.5 - aisw-w83: pipe user_input to claude stdin. `-p` (added
 #                         in v0.0.4) requires user prompt via stdin or argv; runner
 #                         previously used stdin=DEVNULL with user text smuggled
 #                         into the system-prompt overlay, causing rc=1 "Input must
@@ -272,6 +277,7 @@ def _build_argv(
         "--setting-sources",
         "",
         "--disable-slash-commands",
+        "--verbose",
         "--output-format",
         "stream-json",
         "--permission-mode",

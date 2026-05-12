@@ -94,6 +94,9 @@ async def test_run_wiki_session_happy_path(
     assert "--add-dir" in argv
     assert str(wiki) in argv
     assert "stream-json" in argv
+    # aisw-kpb: claude CLI rejects --print + --output-format stream-json without --verbose.
+    assert "--verbose" in argv
+    assert ("stream-json" not in argv) or ("--verbose" in argv)
     # FR-2: inline replace form. `--system-prompt-file` does NOT replace the default
     # Claude Code system prompt under subscription auth (verified 2026-05-12, bd aisw-adj);
     # content must be inlined via `--system-prompt`. No @-prefix on prompt path, no append.
