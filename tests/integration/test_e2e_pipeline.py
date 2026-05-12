@@ -1,18 +1,18 @@
 # FILE: tests/integration/test_e2e_pipeline.py
-# VERSION: 0.3.0
+# VERSION: 0.4.0
 # START_MODULE_CONTRACT
 #   PURPOSE: M-INTEGRATION-E2E — exercise DefaultPipeline against the real
 #            Claude CLI across representative user paths (text, voice,
 #            photo→vision, photo+caption, photo+confirm, document PDF, the
-#            Inbox-WIKI Stage-1a router, and Stage-1b route+ingest). Last safety
-#            net before production cutover.
+#            Inbox-WIKI Stage-1a router, and the Phase-C route confirm →
+#            Stage-1b ingest). Last safety net before production cutover.
 #   SCOPE: 8 scenarios gated by RUN_INTEGRATION=1 + claude-binary presence (see
 #          tests/integration/conftest.py pytest_collection_modifyitems).
 #   DEPENDS: conftest fixtures (pipeline, pipeline_with_router, pipeline_full_routing,
 #            real_router_adapter, real_librarian_adapter, wiki_root_e2e, fake_runner,
 #            fake_output, fake_bot, confirmation, sessions_sm), ai_steward_wiki.tg.pipeline,
 #            ai_steward_wiki.tg.confirm, ai_steward_wiki.__main__.{_RouterAdapter,_LibrarianAdapter}, pypdf
-#   LINKS: chunk-23, aisw-vb9, aisw-dsg, aisw-zd9, breakdown.xml chunk-23, DEC-E2E-1..3
+#   LINKS: chunk-23, aisw-vb9, aisw-dsg, aisw-zd9, aisw-e45, breakdown.xml chunk-23, DEC-E2E-1..3
 #   ROLE: TEST
 #   MAP_MODE: SUMMARY
 # END_MODULE_CONTRACT
@@ -25,11 +25,16 @@
 #   test_photo_then_confirm_callback - photo routed + explicit confirm resolve
 #   test_pdf_document_end_to_end - PDF → pypdf extract → classifier → runner
 #   test_routable_text_runs_router_in_inbox_wiki - routable text → Stage-1a router in Inbox-WIKI/
-#   test_routable_text_routes_and_ingests - routable text → Stage-1a router → Stage-1b ingest in <Domain>-WIKI/
+#   test_routable_text_confirm_then_ingests - routable text → recap → confirm → Stage-1b ingest in <Domain>-WIKI/
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.3.0 - aisw-zd9 (Inbox-WIKI Phase-B): add scenario 6 —
+#   LAST_CHANGE: v0.4.0 - aisw-e45 (Inbox-WIKI Phase-C): scenario 6 reworked —
+#                routable text now yields a route_ingest pending row + recap (no
+#                ingest yet); on_confirm_callback(confirm) then drives the real
+#                Stage-1b librarian into the target <Domain>-WIKI. Tolerant of a
+#                CLARIFY/REJECT decision (no pending row, notes reply).
+#   PREVIOUS:    v0.3.0 - aisw-zd9 (Inbox-WIKI Phase-B): add scenario 6 —
 #                routable text → real Stage-1a router → (if ROUTE/CREATE_WIKI)
 #                real Stage-1b librarian ingest into <wiki>/<tid>/<Name>-WIKI/;
 #                tolerant of the router deciding CLARIFY/REJECT.
@@ -275,16 +280,20 @@ async def test_routable_text_runs_router_in_inbox_wiki(
     assert list((inbox_dir / "runs").glob("*/transcript.jsonl")), "router transcript missing"
 
 
-# ---------- Scenario 6: routable text → Domain-WIKI + Stage-1b ingest ----------
+# ---------- Scenario 6: routable text → confirm → Domain-WIKI + Stage-1b ingest ----------
 
 
-async def test_routable_text_routes_and_ingests(
-    pipeline_full_routing, fake_bot, fake_output, wiki_root_e2e
+async def test_routable_text_confirm_then_ingests(
+    pipeline_full_routing, fake_bot, fake_output, wiki_root_e2e, sessions_sm
 ) -> None:
-    """A routable user message goes through the Stage-1a router and, if it
-    decides ROUTE/CREATE_WIKI, the Stage-1b librarian resolves/creates the
-    target <Domain>-WIKI and ingests the content there (aisw-zd9). Tolerant of
-    the router deciding CLARIFY/REJECT (then only Inbox-WIKI/ exists)."""
+    """A routable user message goes through the Stage-1a router; if it decides
+    ROUTE/CREATE_WIKI the pipeline does NOT ingest immediately (Phase-C,
+    aisw-e45) — it persists a route_ingest pending row and sends a recap. After
+    on_confirm_callback(action="confirm") the Stage-1b librarian resolves/creates
+    the target <Domain>-WIKI and ingests there. Tolerant of the router deciding
+    CLARIFY/REJECT (then no pending row, just a notes reply)."""
+    from ai_steward_wiki.tg.pipeline import ROUTE_CONFIRM_ACK_RU
+
     await pipeline_full_routing.on_text(
         telegram_id=42,
         chat_id=10,
@@ -293,20 +302,47 @@ async def test_routable_text_routes_and_ingests(
     )
 
     user_dir = wiki_root_e2e / "42"
-    domain_dirs = [
-        d
-        for d in (user_dir.iterdir() if user_dir.exists() else [])
-        if d.is_dir() and d.name.endswith("-WIKI") and d.name != "Inbox-WIKI"
-    ]
-    if domain_dirs:
-        # ROUTE/CREATE_WIKI path: a domain WIKI exists; the librarian wrote something
-        # (a page, log.md, or at least the raw/ entry) and the reply went via deliver.
-        wiki = domain_dirs[0]
-        assert (wiki / "raw").exists()
-        assert list((wiki / "raw").iterdir())
-        fake_output.deliver.assert_awaited()
-        delivered = fake_output.deliver.await_args.kwargs["text"]
-        assert delivered  # non-empty (notes + summary)
-    else:
-        # CLARIFY/REJECT path: only Inbox-WIKI/, no domain WIKI, reply via send_message.
+
+    def _domain_dirs() -> list:
+        return [
+            d
+            for d in (user_dir.iterdir() if user_dir.exists() else [])
+            if d.is_dir() and d.name.endswith("-WIKI") and d.name != "Inbox-WIKI"
+        ]
+
+    async with sessions_sm() as session:
+        pending = (
+            (
+                await session.execute(
+                    select(PendingConfirm).where(PendingConfirm.category == "route_ingest")
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    if not pending:
+        # CLARIFY/REJECT path: no pending row, no domain WIKI, reply via send_message.
+        assert _domain_dirs() == []
         assert fake_bot.sends, "expected a clarify/reject reply"
+        return
+
+    # ROUTE/CREATE_WIKI path: nothing ingested yet, only Inbox-WIKI/ + a recap.
+    assert _domain_dirs() == [], "no domain WIKI should exist before confirm"
+    fake_output.deliver.assert_not_awaited()
+    row = pending[0]
+
+    await pipeline_full_routing.on_confirm_callback(
+        telegram_id=42, chat_id=10, pending_id=row.id, action="confirm"
+    )
+
+    # After confirm: the librarian created/wrote into the target <Domain>-WIKI,
+    # the short ack was sent, and the reply went via OutputDelivery (status=ok).
+    assert any(s["text"] == ROUTE_CONFIRM_ACK_RU for s in fake_bot.sends)
+    domain_dirs = _domain_dirs()
+    assert domain_dirs, "expected a target <Domain>-WIKI after confirm"
+    wiki = domain_dirs[0]
+    assert (wiki / "raw").exists()
+    assert list((wiki / "raw").iterdir())
+    fake_output.deliver.assert_awaited()
+    assert fake_output.deliver.await_args.kwargs["text"]  # non-empty notes + summary
