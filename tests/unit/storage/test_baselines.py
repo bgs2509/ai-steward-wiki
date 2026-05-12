@@ -38,7 +38,14 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
         (
             "sessions",
             "AISW_SESSIONS_DB_URL_SYNC",
-            {"users", "pending_users", "pending_confirms", "inbox_hint_cache", "fsm"},
+            {
+                "users",
+                "pending_users",
+                "pending_confirms",
+                "inbox_hint_cache",
+                "fsm",
+                "user_digest_prefs",
+            },
         ),
     ],
 )
@@ -57,3 +64,22 @@ def test_alembic_upgrade_creates_tables(db, env_var, expected_tables, tmp_path, 
     actual = {r[0] for r in rows}
     missing = expected_tables - actual
     assert not missing, f"missing tables in {db}.db: {missing}; got {actual}"
+
+
+def test_sessions_stepwise_upgrade_creates_user_digest_prefs(tmp_path, monkeypatch):
+    """Stamp 0001 then upgrade to head → 0002 brings user_digest_prefs onto an already-baselined DB."""
+    db_path = tmp_path / "sessions.db"
+    monkeypatch.setenv("AISW_SESSIONS_DB_URL_SYNC", f"sqlite:///{db_path}")
+    cfg = Config(str(REPO_ROOT / "alembic" / "sessions" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic" / "sessions"))
+    command.upgrade(cfg, "0001_sessions_baseline")
+    command.upgrade(cfg, "head")
+
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    rows = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    conn.close()
+    assert "user_digest_prefs" in rows
