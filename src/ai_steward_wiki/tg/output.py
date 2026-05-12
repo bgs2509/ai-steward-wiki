@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/output.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: D-025 output-size hybrid policy — ≤3500 inline, ≤10000 chain-split,
 #            >10000 Haiku-summary + send_document. Always persists full text to
@@ -32,7 +32,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 10: D-025 hybrid + HTML balancer + chain split
+#   LAST_CHANGE: v0.0.2 - aisw-x92: tg_send flag (skip TG send on streaming
+#                slow-path; persist+audit stay unconditional)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -335,8 +336,14 @@ async def deliver_output(
     kind: OutputKind = "reply",
     job_id: int | None = None,
     summarizer: HaikuSummarizer | None = None,
+    tg_send: bool = True,
 ) -> DeliveryReceipt:
-    """Deliver `text` to TG using D-025 hybrid policy + always-persist to disk."""
+    """Deliver `text` to TG using D-025 hybrid policy + always-persist to disk.
+
+    ``tg_send=False`` skips the Telegram send entirely (used by the streaming
+    slow-path, which has already delivered the reply via in-place edits) while
+    still persisting the full text to disk and recording the audit row.
+    """
     started = _utcnow_naive()
     output_path, output_bytes, sha = _persist_to_disk(
         runs_dir=runs_dir,
@@ -351,24 +358,25 @@ async def deliver_output(
     document_sent = False
     n_messages = 0
 
-    if len(text) <= INLINE_THRESHOLD:
-        balancer = HtmlBalancer()
-        balanced, _ = balancer.balance_segment(text)
-        await sender.send_message(chat_id, balanced)
-        n_messages = 1
-    elif len(text) <= CHAIN_THRESHOLD:
-        parts = ChainSplitter().split(text)
-        for part in parts:
-            await sender.send_message(chat_id, part)
-        n_messages = len(parts)
-    else:
-        eff_summarizer: HaikuSummarizer = summarizer or LengthCapSummarizer()
-        summary = await eff_summarizer.summarize(text)
-        summary_chars = len(summary)
-        await sender.send_message(chat_id, summary)
-        await sender.send_document(chat_id, path=output_path, caption=f"run_id={run_id}")
-        n_messages = 1
-        document_sent = True
+    if tg_send:
+        if len(text) <= INLINE_THRESHOLD:
+            balancer = HtmlBalancer()
+            balanced, _ = balancer.balance_segment(text)
+            await sender.send_message(chat_id, balanced)
+            n_messages = 1
+        elif len(text) <= CHAIN_THRESHOLD:
+            parts = ChainSplitter().split(text)
+            for part in parts:
+                await sender.send_message(chat_id, part)
+            n_messages = len(parts)
+        else:
+            eff_summarizer: HaikuSummarizer = summarizer or LengthCapSummarizer()
+            summary = await eff_summarizer.summarize(text)
+            summary_chars = len(summary)
+            await sender.send_message(chat_id, summary)
+            await sender.send_document(chat_id, path=output_path, caption=f"run_id={run_id}")
+            n_messages = 1
+            document_sent = True
 
     finished = _utcnow_naive()
     await _record_run_output(
@@ -397,6 +405,7 @@ async def deliver_output(
         n_messages=n_messages,
         document_sent=document_sent,
         summary_chars=summary_chars,
+        tg_send=tg_send,
     )
     return DeliveryReceipt(
         run_id=run_id,

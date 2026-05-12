@@ -135,6 +135,8 @@ async def test_fast_path_no_placeholder_single_deliver() -> None:
     assert editors == []  # no editor created
     out.deliver.assert_awaited_once()
     assert out.deliver.await_args.kwargs["text"] == "готово"
+    # Fast path: deliver actually sends to TG (default tg_send=True).
+    assert out.deliver.await_args.kwargs.get("tg_send", True) is True
 
 
 @pytest.mark.asyncio
@@ -168,6 +170,8 @@ async def test_slow_path_sends_placeholder_then_streams() -> None:
     assert editors[0].finalized == 1
     out.deliver.assert_awaited_once()
     assert out.deliver.await_args.kwargs["text"] == "часть-1 часть-2"
+    # Slow path: reply already streamed via the editor — deliver() persists only.
+    assert out.deliver.await_args.kwargs["tg_send"] is False
 
 
 @pytest.mark.asyncio

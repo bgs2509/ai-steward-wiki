@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/stream_edit.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: D-026 streaming edits — edit one TG message with throttle 1.5s OR
 #            Δ≥50 chars (whichever first), chain-split at 4000 chars,
@@ -21,7 +21,9 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 10: D-026 streaming editor
+#   LAST_CHANGE: v0.0.2 - aisw-x92: finalize() no-ops when final text == last
+#                sent text (eliminates spurious tg.stream.final_flush_failed)
+#   v0.0.1 - chunk 10: D-026 streaming editor
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -94,6 +96,7 @@ class StreamEditor:
         self._clock = clock or MonotonicClock()
         self._buffer = ""
         self._last_edited_len = 0
+        self._last_sent_text: str | None = None  # exact text of the last edit/send
         self._last_edit_t = self._clock.monotonic()
         self._segment_idx = 1  # current message index in chain (1-based)
         self._total_segments = 1
@@ -150,6 +153,7 @@ class StreamEditor:
             self._total_segments = self._segment_idx
             self._buffer = tail
             self._last_edited_len = 0
+            self._last_sent_text = placeholder
             self._last_edit_t = self._clock.monotonic()
             _log.info(
                 "tg.stream.chain_split",
@@ -160,10 +164,10 @@ class StreamEditor:
 
         # Throttled in-place edit.
         if self._should_edit():
-            await self._sender.edit_message_text(
-                self._chat_id, self._current_msg_id, self._balance(self._buffer)
-            )
+            rendered = self._balance(self._buffer)
+            await self._sender.edit_message_text(self._chat_id, self._current_msg_id, rendered)
             self._last_edited_len = len(self._buffer)
+            self._last_sent_text = rendered
             self._last_edit_t = self._clock.monotonic()
             _log.debug(
                 "tg.stream.tick",
@@ -185,6 +189,19 @@ class StreamEditor:
         body = self._balance(self._buffer)
         footer = self.FINAL_FOOTER_FMT.format(i=self._segment_idx, n=self._total_segments)
         final_text = f"{body}\n{footer}" if self._total_segments > 1 else body
+        if final_text == self._last_sent_text:
+            # Last tick already rendered the canonical state — editing again would
+            # only earn a "message is not modified" 400. No-op.
+            _log.info(
+                "tg.stream.finalized",
+                chat_id=self._chat_id,
+                message_id=self._current_msg_id,
+                segment_idx=self._segment_idx,
+                total_segments=self._total_segments,
+                size=len(self._buffer),
+                skipped=True,
+            )
+            return
         try:
             await self._sender.edit_message_text(self._chat_id, self._current_msg_id, final_text)
             _log.info(

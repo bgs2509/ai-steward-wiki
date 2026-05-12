@@ -178,6 +178,32 @@ async def test_deliver_summary_plus_document_for_large(tmp_path, audit_session_m
 
 
 @pytest.mark.asyncio
+async def test_deliver_persists_without_tg_send(tmp_path, audit_session_maker) -> None:
+    """tg_send=False: skip TG send entirely, but still persist to disk + audit."""
+    sender = FakeSender()
+    receipt = await deliver_output(
+        sender=sender,
+        chat_id=100,
+        telegram_id=1001,
+        wiki_id="W",
+        run_id="r-skip",
+        text="ответ уже доставлен стримом",
+        runs_dir=tmp_path / "runs",
+        audit_session_maker=audit_session_maker,
+        tg_send=False,
+    )
+    assert len(sender.sends) == 0
+    assert len(sender.documents) == 0
+    assert receipt.n_messages == 0
+    assert receipt.document_sent is False
+    assert receipt.output_path.exists()
+    async with audit_session_maker() as s:
+        rows = (await s.execute(select(RunOutput))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].run_id == "r-skip"
+
+
+@pytest.mark.asyncio
 async def test_length_cap_summarizer_truncates_with_ellipsis() -> None:
     summ = LengthCapSummarizer()
     big = "a" * 5000

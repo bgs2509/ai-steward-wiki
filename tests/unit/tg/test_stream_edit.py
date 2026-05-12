@@ -73,6 +73,19 @@ async def test_finalize_emits_final_state_idempotent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finalize_skips_edit_when_text_unchanged() -> None:
+    """If the last tick already sent the canonical text, finalize() is a no-op
+    edit-wise (no spurious 'message is not modified' round-trip)."""
+    ed, sender, _ = _make_editor(delta_chars=10)
+    await ed.feed("hello world unchanged buffer")  # triggers one tick edit
+    n_edits = len(sender.edits)
+    assert n_edits == 1
+    await ed.finalize()
+    assert len(sender.edits) == n_edits  # no extra edit
+    assert ed._finalized is True
+
+
+@pytest.mark.asyncio
 async def test_finalize_balances_html_tags() -> None:
     ed, sender, _ = _make_editor(delta_chars=10000)
     await ed.feed("<b>unclosed bold")

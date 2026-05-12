@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.3.0
+# VERSION: 0.3.1
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -57,7 +57,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.3.0 - chunk 22: on_document mime router (DEC-L3) +
+#   LAST_CHANGE: v0.3.1 - aisw-x92: streaming slow-path deliver(tg_send=False)
+#                — reply already sent via StreamEditor, no duplicate TG message;
+#                OutputDelivery.deliver gains tg_send param.
+#                v0.3.0 - chunk 22: on_document mime router (DEC-L3) +
 #                L2 dedup on doc_sha256 + PII tier-2 filename hash in logs
 # END_CHANGE_SUMMARY
 
@@ -194,6 +197,7 @@ class OutputDelivery(Protocol):
         telegram_id: int,
         run_id: str,
         text: str,
+        tg_send: bool = True,
     ) -> None: ...
 
 
@@ -965,11 +969,14 @@ class DefaultStreamingDelivery:
                 phase="finalize",
             )
 
+        # Reply already delivered to TG via the StreamEditor placeholder edits;
+        # deliver() here only persists the full text + records the audit row.
         await output.deliver(
             chat_id=chat_id,
             telegram_id=telegram_id,
             run_id=outcome.run_id,
             text=final_text,
+            tg_send=False,
         )
         _log.info(
             "tg.pipeline.stream.final",

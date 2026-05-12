@@ -239,7 +239,15 @@ class _OutputDeliveryAdapter:
         self._runs_dir = runs_dir
         self._audit_session_maker = audit_session_maker
 
-    async def deliver(self, *, chat_id: int, telegram_id: int, run_id: str, text: str) -> None:
+    async def deliver(
+        self,
+        *,
+        chat_id: int,
+        telegram_id: int,
+        run_id: str,
+        text: str,
+        tg_send: bool = True,
+    ) -> None:
         await deliver_output(
             sender=self._sender,
             chat_id=chat_id,
@@ -249,6 +257,7 @@ class _OutputDeliveryAdapter:
             text=text,
             runs_dir=self._runs_dir,
             audit_session_maker=self._audit_session_maker,
+            tg_send=tg_send,
         )
 
 
