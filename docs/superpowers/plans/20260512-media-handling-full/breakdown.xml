@@ -3,7 +3,7 @@
   <Source>docs/superpowers/plans/20260512-media-handling-full-plan.md</Source>
   <Goal>Полное подключение обработки медиа (voice/photo/document/audio/video_note) end-to-end: от TG handler до Claude и обратно, со стейджингом/промоушеном, тестами и документацией.</Goal>
 
-  <RunState current_chunk="5" last_commit_sha="1f7b357" total_test_status="pass-after-chunk-4" updated_utc="2026-05-12" note="chunks 1-4 closed (aisw-zny, aisw-m2m, aisw-ahv, aisw-8r9). Resume: /superautocoder --resume 20260512-media-handling-full -> starts chunk 5 (aisw-nzl, last)."/>
+  <RunState current_chunk="done" last_commit_sha="66004c1" total_test_status="pass-after-chunk-5" updated_utc="2026-05-12" note="EPIC COMPLETE — all 5 chunks closed (aisw-zny, aisw-m2m, aisw-ahv, aisw-8r9, aisw-nzl), epic aisw-hcl closed. Branch feat/media-handling-full not pushed to git remote (per policy)."/>
 
   <Chunks>
     <Chunk n="1" bd_id="aisw-zny" module="M-RUNTIME-WIRING" est_window_pct="35" depends_on="">
@@ -65,5 +65,6 @@
     <Run chunk="2" ts_utc="2026-05-12" exit="0">ruff-check 0; ruff-format 0 reformat; mypy 66 files 0 errors; grace-lint governed=66 xml=3 errors=0 warnings=0; inv-lint 14/14; test-cov 424 passed coverage=90.70%. ALL PASSED.</Run>
     <Run chunk="3" ts_utc="2026-05-12" exit="0">ruff-check 0; ruff-format 0 reformat; mypy 66 files 0 errors; grace-lint governed=66 xml=3 errors=0 warnings=0; inv-lint 14/14; test-cov 428 passed coverage=90.74%. ALL PASSED.</Run>
     <Run chunk="4" ts_utc="2026-05-12" exit="0">ruff-check 0; ruff-format 0 reformat; mypy 66 files 0 errors; grace-lint governed=66 xml=3 errors=0 warnings=0; inv-lint 14/14; test-cov 432 passed coverage=90.54%. ALL PASSED.</Run>
+    <Run chunk="5" ts_utc="2026-05-12" exit="0">ruff-check 0; ruff-format 0 reformat; mypy 66 files 0 errors; grace-lint governed=66 xml=3 errors=0 warnings=0; inv-lint 14/14; test-cov 432 passed coverage=90.54%. ALL PASSED. (integration suite +2 photo scenarios, gated, skipped under CLAUDECODE=1.)</Run>
   </TotalTestLog>
 </Breakdown>

@@ -1,11 +1,11 @@
 # FILE: tests/integration/test_e2e_pipeline.py
-# VERSION: 0.1.0
+# VERSION: 0.1.1
 # START_MODULE_CONTRACT
-#   PURPOSE: Chunk-23 M-INTEGRATION-E2E — exercise DefaultPipeline against the
-#            real Claude CLI classifier across 4 representative user paths
-#            (text, voice, photo+confirm, document PDF). Last safety net before
-#            production cutover.
-#   SCOPE: 4 scenarios gated by RUN_INTEGRATION=1 + claude-binary presence (see
+#   PURPOSE: M-INTEGRATION-E2E — exercise DefaultPipeline against the real
+#            Claude CLI classifier across representative user paths (text, voice,
+#            photo→vision, photo+caption, photo+confirm, document PDF). Last
+#            safety net before production cutover.
+#   SCOPE: 6 scenarios gated by RUN_INTEGRATION=1 + claude-binary presence (see
 #          tests/integration/conftest.py pytest_collection_modifyitems).
 #   DEPENDS: conftest fixtures (pipeline, fake_runner, fake_output, fake_bot,
 #            confirmation, sessions_sm), ai_steward_wiki.tg.pipeline,
@@ -18,12 +18,17 @@
 # START_MODULE_MAP
 #   test_text_turn_end_to_end - text → real classifier → fake runner → deliver
 #   test_voice_turn_end_to_end - voice (stub STT) → real classifier → fake runner
-#   test_photo_then_confirm_callback - photo staging ack + explicit confirm resolve
+#   test_photo_routed_to_runner_with_media - photo → stage → runner(media_paths) → deliver
+#   test_photo_with_caption_carries_caption - caption appears in the runner prompt
+#   test_photo_then_confirm_callback - photo routed + explicit confirm resolve
 #   test_pdf_document_end_to_end - PDF → pypdf extract → classifier → runner
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - chunk 23 M-INTEGRATION-E2E: initial 4-scenario suite
+#   LAST_CHANGE: v0.1.1 - aisw-nzl (media chunk 5): add photo→vision scenarios
+#                (media_paths forwarded to runner; caption carried in prompt);
+#                test_photo_then_confirm_callback updated for the new photo path.
+#   PREVIOUS:    v0.1.0 - chunk 23 M-INTEGRATION-E2E: initial 4-scenario suite
 #                gated by RUN_INTEGRATION=1 + claude binary on PATH.
 # END_CHANGE_SUMMARY
 
@@ -120,11 +125,10 @@ async def test_voice_turn_end_to_end(pipeline, fake_runner, fake_output) -> None
     fake_output.deliver.assert_awaited_once()
 
 
-# ---------- Scenario 3: photo ack + explicit confirm callback ----------
+# ---------- Scenario 3: photo → Claude vision (media_paths) ----------
 
 
-async def test_photo_then_confirm_callback(pipeline, fake_bot, confirmation, sessions_sm) -> None:
-    # Photo path: stage + ack, no classifier/runner involved.
+async def test_photo_routed_to_runner_with_media(pipeline, fake_runner, fake_output) -> None:
     await pipeline.on_photo(
         telegram_id=42,
         chat_id=10,
@@ -132,7 +136,44 @@ async def test_photo_then_confirm_callback(pipeline, fake_bot, confirmation, ses
         photo_bytes=_PNG_1X1,
         mime="image/png",
     )
-    assert any("Фото получено" in s["text"] for s in fake_bot.sends)
+    fake_runner.run.assert_awaited_once()
+    media = fake_runner.run.await_args.kwargs["media_paths"]
+    assert media is not None
+    assert len(media) == 1
+    fake_output.deliver.assert_awaited_once()
+
+
+# ---------- Scenario 3b: photo with caption ----------
+
+
+async def test_photo_with_caption_carries_caption(pipeline, fake_runner) -> None:
+    await pipeline.on_photo(
+        telegram_id=42,
+        chat_id=10,
+        update_id=1031,
+        photo_bytes=_PNG_1X1,
+        mime="image/png",
+        caption="занеси в health",
+    )
+    fake_runner.run.assert_awaited_once()
+    assert "занеси в health" in fake_runner.run.await_args.kwargs["text"]
+
+
+# ---------- Scenario 3c: photo routed + explicit confirm callback ----------
+
+
+async def test_photo_then_confirm_callback(
+    pipeline, fake_runner, confirmation, sessions_sm
+) -> None:
+    # Photo path: stage → runner(media_paths) → deliver.
+    await pipeline.on_photo(
+        telegram_id=42,
+        chat_id=10,
+        update_id=1003,
+        photo_bytes=_PNG_1X1,
+        mime="image/png",
+    )
+    fake_runner.run.assert_awaited()
 
     # Seed an explicit pending row, then resolve via confirm callback.
     rec = await confirmation.request_explicit(
