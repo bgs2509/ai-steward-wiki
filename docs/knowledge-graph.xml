@@ -198,7 +198,7 @@
       </annotations>
     </M-SCHEDULER>
 
-    <M-SCHEDULER-FIRING NAME="Scheduler / job firing" TYPE="RUNTIME" STATUS="planned">
+    <M-SCHEDULER-FIRING NAME="Scheduler / job firing" TYPE="RUNTIME" STATUS="done">
       <purpose>One-shot reminder bridge (aisw-kcz, Inbox-WIKI Phase-D.a): create_reminder_job writes a jobs.Job row then registers an APScheduler DateTrigger with picklable int args; fire_job (module-level callable APScheduler invokes on fire) loads the Job by id and delivers it as a plain Telegram message — guarded on status, no Claude/WIKI; firing context (TgSender + jobs sessionmaker) is set once at startup (D-002, D-010, D-022, tech-spec §3/§6, ADR-006).</purpose>
       <path>src/ai_steward_wiki/scheduler/firing.py</path>
       <depends>M-STORAGE-JOBS, M-SCHEDULER, M-TG-TEXT</depends>
