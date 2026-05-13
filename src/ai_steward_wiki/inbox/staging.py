@@ -45,7 +45,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ai_steward_wiki.inbox.materialize import INBOX_WIKI_DIRNAME
-from ai_steward_wiki.logging_setup import get_logger
+from ai_steward_wiki.logging_events import INBOX_STAGING
+from ai_steward_wiki.logging_setup import get_logger, traced
 
 __all__ = [
     "DEFAULT_STAGING_TTL_S",
@@ -97,6 +98,7 @@ def _sanitize_ext(ext: str) -> str:
 #   SIDE_EFFECTS: creates _staging dir (parents=True); writes tmp file then os.replace.
 #   LINKS: D-022 §"_staging path"
 # END_CONTRACT: stage_media
+@traced(event_prefix=INBOX_STAGING)
 def stage_media(
     data: bytes,
     *,

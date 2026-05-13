@@ -98,6 +98,8 @@ from ai_steward_wiki.claude_cli.common import (
     system_prompt_argv,
     truncate_stderr,
 )
+from ai_steward_wiki.logging_events import WIKI_RUN
+from ai_steward_wiki.logging_setup import traced
 from ai_steward_wiki.scheduler.core import kill_with_sequence
 from ai_steward_wiki.wiki.acquire import LockAcquirer
 from ai_steward_wiki.wiki.streaming import StreamEvent, parse_stream_json
@@ -334,6 +336,7 @@ class _RunConfig:
     disallowed_tools: list[str] = field(default_factory=lambda: ["WebFetch"])
 
 
+@traced(event_prefix=WIKI_RUN)
 async def run_wiki_session(
     *,
     wiki_id: str,

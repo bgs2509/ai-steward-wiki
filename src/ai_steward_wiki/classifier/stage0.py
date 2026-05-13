@@ -40,6 +40,8 @@ from ai_steward_wiki.classifier.schema import (
     ClassifierResult,
     ClassifierSchemaError,
 )
+from ai_steward_wiki.logging_events import CLASSIFIER_STAGE0
+from ai_steward_wiki.logging_setup import traced
 from ai_steward_wiki.storage.audit.models import PromptVersion
 
 __all__ = [
@@ -112,6 +114,7 @@ async def record_prompt_version(session: AsyncSession, meta: PromptMeta) -> None
     await session.flush()
 
 
+@traced(event_prefix=CLASSIFIER_STAGE0)
 async def classify(
     text: str,
     *,

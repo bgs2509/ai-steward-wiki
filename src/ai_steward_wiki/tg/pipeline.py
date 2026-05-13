@@ -223,6 +223,8 @@ from ai_steward_wiki.inbox.idempotency import IdempotencyService
 from ai_steward_wiki.inbox.materialize import inbox_wiki_path
 from ai_steward_wiki.inbox.route import route_action_from_payload, route_action_to_payload
 from ai_steward_wiki.inbox.router import RouterDecision, RouterError, RouterIntent
+from ai_steward_wiki.logging_events import TG_PIPELINE_DISPATCH
+from ai_steward_wiki.logging_setup import traced
 from ai_steward_wiki.ops.pii import PIIRedactor
 from ai_steward_wiki.tg.bot import TgSender
 from ai_steward_wiki.tg.confirm import (
@@ -1319,6 +1321,7 @@ class DefaultPipeline:
 
     # END_BLOCK_DIGEST_INTENT
 
+    @traced(event_prefix=TG_PIPELINE_DISPATCH)
     async def on_text(
         self,
         *,
