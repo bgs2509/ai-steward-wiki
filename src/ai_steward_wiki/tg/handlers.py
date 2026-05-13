@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/handlers.py
-# VERSION: 0.2.0
+# VERSION: 0.3.0
 # START_MODULE_CONTRACT
 #   PURPOSE: aiogram Router that adapts Telegram message/callback events to
 #            the MessagePipeline Protocol (+ the bot's first slash commands).
@@ -38,7 +38,11 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.2.0 - aisw-pv8 (Inbox-WIKI Phase-D.b.2c): /digest_sections
+#   LAST_CHANGE: v0.3.0 - aisw-163 P5: register on_reminder_card on `r:`-prefixed
+#                callback_data (before confirm:/digestsec: handlers). Imports
+#                REMINDER_CALLBACK_PREFIX + on_reminder_card from tg.callbacks.
+#                New anchor tg.handlers.reminder_card (delegated).
+#   PREVIOUS:    v0.2.0 - aisw-pv8 (Inbox-WIKI Phase-D.b.2c): /digest_sections
 #                command (renders an inline keyboard of on/off toggles for the
 #                optional digest sections via firing.get_owner_digest_prefs) +
 #                digestsec: callback (firing.set_owner_digest_section, message
@@ -74,6 +78,7 @@ from ai_steward_wiki.storage.sessions.digest_prefs import (
     TOGGLEABLE_DIGEST_SECTIONS,
     DigestPrefs,
 )
+from ai_steward_wiki.tg.callbacks import REMINDER_CALLBACK_PREFIX, on_reminder_card
 from ai_steward_wiki.tg.pipeline import ConfirmKeyboardAction, MessagePipeline
 
 __all__ = [
@@ -463,6 +468,14 @@ def build_router(pipeline: MessagePipeline) -> Router:
             caption=message.caption,
         )
         # END_BLOCK_HANDLER_DOCUMENT
+
+    @router.callback_query(F.data.startswith(REMINDER_CALLBACK_PREFIX))
+    async def _on_reminder_card_cb(callback: CallbackQuery) -> None:
+        # START_BLOCK_HANDLER_REMINDER_CARD_CB
+        # aisw-163 P5: register on_reminder_card before confirm: / digestsec:
+        # callbacks. Distinct "r:" prefix keeps routing unambiguous.
+        await on_reminder_card(callback)
+        # END_BLOCK_HANDLER_REMINDER_CARD_CB
 
     @router.callback_query(F.data.startswith(CONFIRM_CALLBACK_PREFIX))
     async def _on_confirm(callback: CallbackQuery) -> None:

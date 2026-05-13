@@ -1054,3 +1054,116 @@ async def test_digest_prefs_read_failure_degrades_to_all_on(
     await fire_digest_job(job_id)
     assert "Не включай разделы" not in runner.calls[0]["planner_context"]
     assert len(sender.sent) == 1  # digest still delivered
+
+
+# --- aisw-163 P5: cards emission wiring -----------------------------------
+
+
+async def _set_cards_pref(sessions_maker, telegram_id: int, *, enabled: bool) -> None:
+    from ai_steward_wiki.storage.sessions.digest_prefs import set_cards_enabled
+
+    await _seed_sessions_user(sessions_maker, telegram_id)
+    await set_cards_enabled(sessions_maker, telegram_id, enabled=enabled)
+
+
+async def _seed_pending_reminder(session_factory, *, owner: int, when_utc) -> int:
+    async with session_factory() as s:
+        j = Job(
+            owner_telegram_id=owner,
+            chat_id=owner,
+            kind="reminder_job",
+            status="scheduled",
+            priority=int(Lane.USER_WRITE),
+            scheduled_at_utc=when_utc,
+            payload=ReminderPayload(message="принять аспирин", category="medication").model_dump(),
+            user_state="pending",
+            created_at_utc=datetime.now(UTC).replace(tzinfo=None),
+        )
+        s.add(j)
+        await s.commit()
+        return j.id
+
+
+async def test_digest_emits_cards_when_prefs_enabled(
+    session_factory, audit_session_maker, sessions_factory, wiki_dirs
+) -> None:
+    # Default cards_enabled=True ⇒ emit_reminder_cards is called after delivery.
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    job_id = await _make_digest_job(session_factory, sched)
+    # one pending reminder in the ±2h window (UTC now-ish)
+    await _seed_pending_reminder(
+        session_factory, owner=7, when_utc=datetime.now(UTC).replace(tzinfo=None)
+    )
+    sender = _DigestSender()
+    set_digest_context(
+        scheduler=sched,
+        runner=_OkRunner(),
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=sender,
+        sessions_session_maker=sessions_factory,
+    )
+    await fire_digest_job(job_id)
+    # digest body + 1 card
+    assert len(sender.sent) >= 2
+    # the card text mentions the reminder message
+    assert any("аспирин" in text for _, text in sender.sent)
+
+
+async def test_digest_skips_cards_when_prefs_disabled(
+    session_factory, audit_session_maker, sessions_factory, wiki_dirs
+) -> None:
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    job_id = await _make_digest_job(session_factory, sched)
+    await _seed_pending_reminder(
+        session_factory, owner=7, when_utc=datetime.now(UTC).replace(tzinfo=None)
+    )
+    await _set_cards_pref(sessions_factory, 7, enabled=False)
+    sender = _DigestSender()
+    set_digest_context(
+        scheduler=sched,
+        runner=_OkRunner(),
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=sender,
+        sessions_session_maker=sessions_factory,
+    )
+    await fire_digest_job(job_id)
+    # only the digest body — no cards
+    assert len(sender.sent) == 1
+    assert not any("аспирин" in text for _, text in sender.sent)
+
+
+async def test_digest_cards_failure_does_not_strike_digest(
+    session_factory, audit_session_maker, sessions_factory, wiki_dirs, monkeypatch
+) -> None:
+    health, finance = wiki_dirs
+    sched = _FakeCronScheduler()
+    job_id = await _make_digest_job(session_factory, sched)
+    sender = _DigestSender()
+    set_digest_context(
+        scheduler=sched,
+        runner=_OkRunner(),
+        resolve_owner_wikis=_make_resolve_two(health, finance),
+        jobs_session_maker=session_factory,
+        audit_session_maker=audit_session_maker,
+        sender=sender,
+        sessions_session_maker=sessions_factory,
+    )
+
+    async def _raise(**_kw):
+        raise RuntimeError("cards backend down")
+
+    monkeypatch.setattr(firing, "emit_reminder_cards", _raise)
+    await fire_digest_job(job_id)
+    # digest itself still delivered, row stays scheduled, retry_count 0.
+    assert len(sender.sent) == 1
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row.status == "scheduled"
+        assert row.retry_count == 0
+        assert row.finished_at_utc is not None

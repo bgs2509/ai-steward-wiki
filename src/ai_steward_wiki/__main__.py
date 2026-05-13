@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.5.5
+# VERSION: 0.5.6
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -32,7 +32,11 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.5 - aisw-pv8 (Inbox-WIKI Phase-D.b.2c): pass the sessions
+#   LAST_CHANGE: v0.5.6 - aisw-163 P5: install reminder-card callback context via
+#                tg.callbacks.set_callback_context(CallbackContext(scheduler,
+#                jobs_session_maker=jobs_maker)) right after set_firing_context.
+#                Enables `r:<id>:{done|snz|skp}` button taps to mutate state.
+#   PREVIOUS:    v0.5.5 - aisw-pv8 (Inbox-WIKI Phase-D.b.2c): pass the sessions
 #                sessionmaker into firing.set_digest_context(sessions_session_maker=
 #                sessions_maker) so the digest firing path can read/write
 #                user_digest_prefs (per-user digest section toggles).
@@ -976,6 +980,13 @@ async def _amain() -> None:
     # aisw-kcz: install the reminder-firing context (picklable int-arg fire_job
     # reads the bot-sender + jobs sessionmaker from here at fire time).
     firing.set_firing_context(sender=sender, jobs_session_maker=jobs_maker)
+
+    # aisw-163 P5: install the reminder-card callback context. The on_reminder_card
+    # handler (registered in tg.handlers) reads the scheduler + jobs sessionmaker
+    # from here when a `r:<id>:{done|snz|skp}` button is tapped.
+    from ai_steward_wiki.tg.callbacks import CallbackContext, set_callback_context
+
+    set_callback_context(CallbackContext(scheduler=scheduler, jobs_session_maker=jobs_maker))
 
     # START_BLOCK_TEXT_PIPELINE_WIRING (chunk 20 M-TG-PIPELINE-CLASSIFIER)
     classifier_backend = _build_classifier_backend(settings)

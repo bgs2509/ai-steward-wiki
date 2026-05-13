@@ -390,7 +390,7 @@ async def test_router_callback_handler_parses_and_dispatches() -> None:
     pipeline.on_confirm_callback = AsyncMock()
     router = build_router(pipeline)
 
-    cb_handler = router.callback_query.handlers[0].callback
+    cb_handler = router.callback_query.handlers[1].callback
 
     @dataclass
     class FakeCallback:
@@ -417,7 +417,7 @@ async def test_router_callback_handler_malformed_data_just_answers() -> None:
     pipeline = MagicMock()
     pipeline.on_confirm_callback = AsyncMock()
     router = build_router(pipeline)
-    cb_handler = router.callback_query.handlers[0].callback
+    cb_handler = router.callback_query.handlers[1].callback
 
     @dataclass
     class FakeCallback:
@@ -440,3 +440,17 @@ async def test_router_callback_handler_malformed_data_just_answers() -> None:
 def test_aiogram_imports_alive() -> None:
     assert Bot
     assert Dispatcher
+
+
+def test_build_router_registers_reminder_card_callback_first() -> None:
+    # aisw-163 P5 — the `r:` callback must be the FIRST callback_query handler
+    # so it routes before the looser confirm:/digestsec: handlers.
+    from unittest.mock import MagicMock
+
+    pipeline = MagicMock()
+    router = build_router(pipeline)
+    handlers = router.callback_query.handlers
+    assert len(handlers) >= 3
+    # The first handler's filter must accept `r:` and reject `confirm:`.
+    first = handlers[0]
+    assert first.callback.__name__ == "_on_reminder_card_cb"

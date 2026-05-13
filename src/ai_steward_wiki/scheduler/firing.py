@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/scheduler/firing.py
-# VERSION: 0.5.0
+# VERSION: 0.6.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Cron/date job firing bridge — one-shot reminder (DateTrigger → plain
 #            TG message, no Claude; aisw-kcz, Phase-D.a) and recurring digest
@@ -46,7 +46,11 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.0 - aisw-pv8 (Phase-D.b.2c): set_digest_context +sessions_
+#   LAST_CHANGE: v0.6.0 - aisw-163 P5: after deliver_output success, emit ±2h
+#                reminder cards via emit_reminder_cards when prefs.cards_enabled.
+#                Failure path degrades to skip (scheduler.digest.cards_failed);
+#                success logs scheduler.digest.cards_emitted{emitted,total}.
+#   PREVIOUS:    v0.5.0 - aisw-pv8 (Phase-D.b.2c): set_digest_context +sessions_
 #                session_maker (7-tuple _digest_ctx); get_owner_digest_prefs /
 #                set_owner_digest_section accessors over storage.sessions.digest_
 #                prefs; fire_digest_job appends the ru section-skip directive to
@@ -95,6 +99,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_steward_wiki.classifier.recurrence import Recurrence
+from ai_steward_wiki.digest.cards import emit_reminder_cards
 from ai_steward_wiki.scheduler.dlq import move_to_dlq
 from ai_steward_wiki.scheduler.queue import Lane
 from ai_steward_wiki.storage.jobs.models import Job
@@ -759,6 +764,36 @@ async def fire_digest_job(job_id: int) -> None:
             n_messages=receipt.n_messages,
             document_sent=receipt.document_sent,
         )
+
+        # START_BLOCK_DIGEST_EMIT_CARDS
+        # aisw-163 P5: after the digest body is delivered, emit ±2h reminder
+        # cards when the owner opted in (default on). Degrade-to-skip on any
+        # failure — a card-emission error must NOT strike the digest, since
+        # the digest itself already shipped successfully.
+        if prefs.cards_enabled:
+            try:
+                emitted, total = await emit_reminder_cards(
+                    sender=sender,
+                    owner_telegram_id=owner_id,
+                    chat_id=chat_id,
+                    now_utc=_now_naive_utc(),
+                    jobs_session_maker=maker,
+                )
+                _log.info(
+                    "scheduler.digest.cards_emitted",
+                    job_id=job_id,
+                    owner_telegram_id=owner_id,
+                    emitted=emitted,
+                    total=total,
+                )
+            except Exception as exc:
+                _log.warning(
+                    "scheduler.digest.cards_failed",
+                    job_id=job_id,
+                    owner_telegram_id=owner_id,
+                    error_class=type(exc).__name__,
+                )
+        # END_BLOCK_DIGEST_EMIT_CARDS
 
 
 # END_BLOCK_FIRE_DIGEST_JOB
