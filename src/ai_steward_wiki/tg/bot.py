@@ -1,13 +1,13 @@
 # FILE: src/ai_steward_wiki/tg/bot.py
-# VERSION: 0.1.0
+# VERSION: 0.1.1
 # START_MODULE_CONTRACT
-#   PURPOSE: Build aiogram 3 Bot + Dispatcher with allowlist middleware wired
-#            as outer-middleware. Production entry point for TG runtime.
+#   PURPOSE: Build aiogram 3 Bot + Dispatcher with correlation + allowlist middlewares wired as outer-middlewares. Production entry point for TG runtime.
 #   SCOPE: build_bot(token), build_dispatcher(allowlist), TgSender Protocol
 #          surface used by output/stream_edit, AiogramSender adapter.
 #   DEPENDS: aiogram (Bot, Dispatcher, types), ai_steward_wiki.auth.allowlist,
-#            ai_steward_wiki.tg.middleware_auth
-#   LINKS: D-031, D-042, M-TG-TEXT
+#            ai_steward_wiki.tg.middleware_auth,
+#            ai_steward_wiki.tg.middleware_correlation
+#   LINKS: D-031, D-042, M-TG-TEXT, M-TG-MIDDLEWARE, M-FOUNDATION-LOGGING
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -22,7 +22,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - aisw-s5i: register_bot_commands publishes 6 commands
+#   LAST_CHANGE: v0.1.1 - aisw-er6: register CorrelationMiddleware BEFORE AllowlistMiddleware so downstream events inherit correlation_id + identity bindings.
+#   PREVIOUS:    v0.1.0 - aisw-s5i: register_bot_commands publishes 6 commands
 #                (/start, /help, /manual, /digest_now, /expand, /digest_sections)
 #                via bot.set_my_commands at runtime startup.
 #   PREVIOUS:    v0.0.1 - chunk 10: initial dispatcher factory + sender adapter
@@ -35,6 +36,7 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 from ai_steward_wiki.auth.allowlist import Allowlist
 from ai_steward_wiki.tg.middleware_auth import AllowlistMiddleware
+from ai_steward_wiki.tg.middleware_correlation import CorrelationMiddleware
 
 __all__ = [
     "AiogramSender",
@@ -176,6 +178,10 @@ def build_dispatcher(
     from aiogram import Dispatcher
 
     dp = Dispatcher()
+    # CorrelationMiddleware MUST be registered first so downstream events
+    # (including AllowlistMiddleware deny events) inherit correlation_id +
+    # identity bindings via merge_contextvars.
+    dp.update.outer_middleware(CorrelationMiddleware())
     mw = AllowlistMiddleware(allowlist)
     # Outer-middleware so denial happens before any router.
     dp.update.outer_middleware(mw)
