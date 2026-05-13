@@ -1168,13 +1168,28 @@ class DefaultPipeline:
         assert self._time_parser is not None  # guarded by the caller
         user_tz = self._resolve_user_tz(telegram_id)
         now_utc = self._clock()
-        tp = await self._time_parser.parse_time(
-            text,
-            user_tz=user_tz,
-            now_utc=now_utc,
-            prefer_future=True,
-            correlation_id=correlation_id,
-        )
+        # aisw-4dr (RC-3): parse_time is best-effort — a broken Haiku-fallback,
+        # CLI timeout, or schema violation MUST NOT kill the handler silently
+        # (NFR-3, FR-1). On any failure we emit the user-facing ru fallback and
+        # a structured log anchor instead of bubbling the exception to aiogram.
+        try:
+            tp = await self._time_parser.parse_time(
+                text,
+                user_tz=user_tz,
+                now_utc=now_utc,
+                prefer_future=True,
+                correlation_id=correlation_id,
+            )
+        except Exception as exc:
+            _log.warning(
+                "tg.pipeline.reminder.parser_failed",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                error_class=type(exc).__name__,
+                error_msg=str(exc)[:200],
+            )
+            await self._sender.send_message(chat_id, REMINDER_UNPARSEABLE_RU)
+            return
         _log.info(
             "tg.pipeline.reminder.detected",
             correlation_id=correlation_id,

@@ -75,7 +75,9 @@ def test_real_templates_render() -> None:
         ),
         (
             "help.ru.md",
-            frozenset({"intro", "wiki-explainer", "scenarios", "commands", "next-steps"}),
+            frozenset(
+                {"intro", "wiki-explainer", "lazy-domains", "scenarios", "commands", "next-steps"}
+            ),
         ),
         (
             "manual.ru.md",
@@ -104,7 +106,7 @@ def test_help_template_contains_d041_paragraph() -> None:
     out = render_template(
         root / "help.ru.md",
         required_slugs=frozenset(
-            {"intro", "wiki-explainer", "scenarios", "commands", "next-steps"}
+            {"intro", "wiki-explainer", "lazy-domains", "scenarios", "commands", "next-steps"}
         ),
         bot_name="ai-steward-wiki",
     )

@@ -10,7 +10,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from ai_steward_wiki.classifier.schema import ClassifierResult, Intent, TimeParseResult
+from ai_steward_wiki.classifier.schema import (
+    ClassifierResult,
+    ClassifierSchemaError,
+    ClassifierTimeoutError,
+    Intent,
+    TimeParseResult,
+)
 from ai_steward_wiki.scheduler.queue import Lane
 from ai_steward_wiki.storage.jobs.engine import Base
 from ai_steward_wiki.storage.jobs.models import Job
@@ -264,6 +270,83 @@ async def test_no_time_parser_not_handled_here() -> None:
     confirm = _confirm()
     pipe = _pipe(sender=sender, classifier=_classifier(), confirmation=confirm, time_parser=None)
     await pipe.on_text(telegram_id=42, chat_id=42, update_id=1, text="напомни в 6")
+    confirm.request_explicit.assert_not_awaited()
+
+
+# --- parser error guard (aisw-4dr, RC-3) -----------------------------------
+
+
+class _RaisingTimeParser:
+    """TimeParser whose parse_time always raises a given exception."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+        self.calls: list[dict[str, Any]] = []
+
+    async def parse_time(
+        self, text: str, *, user_tz, now_utc, prefer_future=False, correlation_id=""
+    ) -> TimeParseResult:
+        self.calls.append({"text": text, "correlation_id": correlation_id})
+        raise self._exc
+
+
+async def test_reminder_intent_classifier_schema_error_emits_unparseable_ru(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sender = FakeSender()
+    confirm = _confirm()
+    parser = _RaisingTimeParser(
+        ClassifierSchemaError("claude CLI inner JSON parse failed: 'prose…'")
+    )
+    pipe = _pipe(
+        sender=sender,
+        classifier=_classifier(),
+        confirmation=confirm,
+        time_parser=parser,
+    )
+    # Must NOT raise — handler swallows parser exceptions per FR-1.
+    await pipe.on_text(telegram_id=42, chat_id=42, update_id=1, text="напомни через 5 минут")
+
+    assert parser.calls, "parse_time must have been invoked"
+    assert sender.sends
+    assert sender.sends[-1]["text"] == REMINDER_UNPARSEABLE_RU
+    confirm.request_explicit.assert_not_awaited()
+    # New NFR-3 log anchor for observability — structlog → stdout.
+    out = capsys.readouterr().out
+    assert "tg.pipeline.reminder.parser_failed" in out
+    assert "ClassifierSchemaError" in out
+
+
+async def test_reminder_intent_timeout_error_emits_unparseable_ru() -> None:
+    sender = FakeSender()
+    confirm = _confirm()
+    parser = _RaisingTimeParser(ClassifierTimeoutError("haiku CLI timeout after 30s"))
+    pipe = _pipe(
+        sender=sender,
+        classifier=_classifier(),
+        confirmation=confirm,
+        time_parser=parser,
+    )
+    await pipe.on_text(telegram_id=42, chat_id=42, update_id=1, text="напомни через 5 минут")
+    assert sender.sends
+    assert sender.sends[-1]["text"] == REMINDER_UNPARSEABLE_RU
+    confirm.request_explicit.assert_not_awaited()
+
+
+async def test_reminder_intent_generic_exception_emits_unparseable_ru() -> None:
+    """Any unexpected exception (e.g. RuntimeError) must also be caught — FR-1."""
+    sender = FakeSender()
+    confirm = _confirm()
+    parser = _RaisingTimeParser(RuntimeError("boom"))
+    pipe = _pipe(
+        sender=sender,
+        classifier=_classifier(),
+        confirmation=confirm,
+        time_parser=parser,
+    )
+    await pipe.on_text(telegram_id=42, chat_id=42, update_id=1, text="напомни через 5 минут")
+    assert sender.sends
+    assert sender.sends[-1]["text"] == REMINDER_UNPARSEABLE_RU
     confirm.request_explicit.assert_not_awaited()
 
 
