@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/settings.py
-# VERSION: 0.0.11
+# VERSION: 0.0.12
 # START_MODULE_CONTRACT
 #   PURPOSE: Runtime configuration loaded from environment via pydantic-settings.
 #   SCOPE: Settings BaseSettings (frozen). Initial fields cover Chunk 1 only;
@@ -20,7 +20,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.11 - aisw-12t (Phase-E.a): - media_staging_root (media staging is
+#   LAST_CHANGE: v0.0.12 - aisw-nrt (chunk 2 logging): storage_slow_query_threshold_ms.
+#   PREVIOUS:    v0.0.11 - aisw-12t (Phase-E.a): - media_staging_root (media staging is
 #                now per-user Inbox-WIKI; see inbox.materialize.inbox_wiki_path).
 #   PREVIOUS:    v0.0.10 - aisw-kcz: default_user_tz (fallback IANA TZ for NL time parsing).
 #   PREVIOUS:    v0.0.9 - aisw-zny (media chunk 1): media_staging_root,
@@ -116,6 +117,10 @@ class Settings(BaseSettings):
     # Chunk 14: M-OPS-BACKUP (tech-spec §10.2, D-037).
     snapshot_dir: Path = Path("/var/lib/ai-steward-wiki/state/snapshots")
     snapshot_retention_days: int = 7
+
+    # Chunk 2 logging: SQLAlchemy slow-query threshold. Queries whose
+    # measured wall-clock exceeds this value emit storage.slow_query at WARNING.
+    storage_slow_query_threshold_ms: int = 200
 
     # Media handling (D-022). Voice → faster-whisper STT; photo → staged for vision.
     # Staging is per-sender under <wiki_root>/<telegram_id>/Inbox-WIKI/raw/media/_staging
