@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/classifier/backend.py
-# VERSION: 0.0.6
+# VERSION: 0.0.7
 # START_MODULE_CONTRACT
 #   PURPOSE: Backend abstraction for Stage-0 classifier — Claude CLI default + optional API + Fake.
 #   SCOPE: ClassifierBackend Protocol; ClaudeCliBackend (subprocess); AnthropicApiBackend stub;
@@ -21,7 +21,9 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.6 - aisw-0mg: add -p (required for --output-format json),
+#   LAST_CHANGE: v0.0.7 - aisw-nrt (chunk 2): emit claude_cli.spawn/exit/error in
+#                         AsyncioSpawner.spawn (bytes-counts + duration only, PII-safe).
+#   PREVIOUS:    v0.0.6 - aisw-0mg: add -p (required for --output-format json),
 #                         --setting-sources "", --disable-slash-commands, --tools "".
 #                         Replaces long --disallowedTools list. Under subscription
 #                         OAuth, --system-prompt alone does NOT suppress default
@@ -47,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,6 +67,14 @@ from ai_steward_wiki.claude_cli.common import (
     system_prompt_argv,
     truncate_stderr,
 )
+from ai_steward_wiki.logging_events import (
+    CLAUDE_CLI_ERROR,
+    CLAUDE_CLI_EXIT,
+    CLAUDE_CLI_SPAWN,
+)
+from ai_steward_wiki.logging_setup import get_logger
+
+_LOG = get_logger(__name__)
 
 __all__ = [
     "AnthropicApiBackend",
@@ -113,6 +124,13 @@ class AsyncioSpawner:
         timeout_s: float,
         cwd: str | None = None,
     ) -> tuple[int, bytes, bytes]:
+        _LOG.info(
+            CLAUDE_CLI_SPAWN,
+            argv_length=len(argv),
+            env_keys_count=len(env),
+            cwd=cwd,
+        )
+        t0 = time.perf_counter_ns()
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
@@ -124,10 +142,37 @@ class AsyncioSpawner:
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(stdin), timeout=timeout_s)
         except TimeoutError as e:
+            duration_ms = (time.perf_counter_ns() - t0) // 1_000_000
+            _LOG.error(
+                CLAUDE_CLI_ERROR,
+                exit_code=None,
+                duration_ms=int(duration_ms),
+                stdout_bytes=0,
+                stderr_bytes=0,
+                reason="timeout",
+            )
             proc.kill()
             await proc.wait()
             raise ClassifierTimeoutError(f"claude CLI exceeded timeout {timeout_s}s") from e
-        return proc.returncode or 0, stdout, stderr
+        duration_ms = (time.perf_counter_ns() - t0) // 1_000_000
+        exit_code = proc.returncode or 0
+        if exit_code != 0:
+            _LOG.error(
+                CLAUDE_CLI_ERROR,
+                exit_code=exit_code,
+                duration_ms=int(duration_ms),
+                stdout_bytes=len(stdout),
+                stderr_bytes=len(stderr),
+                reason="nonzero_exit",
+            )
+        _LOG.info(
+            CLAUDE_CLI_EXIT,
+            exit_code=exit_code,
+            duration_ms=int(duration_ms),
+            stdout_bytes=len(stdout),
+            stderr_bytes=len(stderr),
+        )
+        return exit_code, stdout, stderr
 
 
 @dataclass
