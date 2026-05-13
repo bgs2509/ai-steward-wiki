@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/handlers.py
-# VERSION: 0.3.0
+# VERSION: 0.4.0
 # START_MODULE_CONTRACT
 #   PURPOSE: aiogram Router that adapts Telegram message/callback events to
 #            the MessagePipeline Protocol (+ the bot's first slash commands).
@@ -32,13 +32,22 @@
 #   CONFIRM_CALLBACK_PREFIX - "confirm:" callback_data prefix (D-023)
 #   DIGESTSEC_CALLBACK_PREFIX - "digestsec:" callback_data prefix (ADR-026)
 #   EXPAND_SECTION_KEYS - the four /expand <section> keys (mirror D-024 headers)
-#   build_router - factory wiring the slash commands + message/callback handlers to a MessagePipeline
+#   build_router - factory wiring the slash commands + message/callback handlers
+#                  to a MessagePipeline (optional templates_dir + on_start_unknown for /start)
 #   parse_confirm_callback - parse `confirm:<pending_id>:<action>` payload
 #   parse_digestsec_callback - parse `digestsec:<section>:<0|1>` -> (section, target_enabled)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.3.0 - aisw-163 P5: register on_reminder_card on `r:`-prefixed
+#   LAST_CHANGE: v0.4.0 - aisw-s5i: /start, /help, /manual handlers (template-based).
+#                build_router gains optional templates_dir + on_start_unknown kwargs.
+#                /start branches on AllowlistMiddleware's is_pending flag; known →
+#                start-known.ru.md, unknown → on_start_unknown(...) + onboarding-intro.
+#                /help renders help.ru.md (D-041 verbatim WIKI-explainer); /manual
+#                renders manual.ru.md (worked scenarios). New anchors
+#                tg.command.start(.known/.unknown/.unknown.failed), tg.command.help,
+#                tg.command.manual.
+#   PREVIOUS:    v0.3.0 - aisw-163 P5: register on_reminder_card on `r:`-prefixed
 #                callback_data (before confirm:/digestsec: handlers). Imports
 #                REMINDER_CALLBACK_PREFIX + on_reminder_card from tg.callbacks.
 #                New anchor tg.handlers.reminder_card (delegated).
@@ -68,16 +77,20 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import structlog
 
+from ai_steward_wiki.auth.onboarding import format_intro_message
 from ai_steward_wiki.scheduler import firing
 from ai_steward_wiki.storage.sessions.digest_prefs import (
     SECTION_DISPLAY_NAME,
     TOGGLEABLE_DIGEST_SECTIONS,
     DigestPrefs,
 )
+from ai_steward_wiki.templates import render_template
 from ai_steward_wiki.tg.callbacks import REMINDER_CALLBACK_PREFIX, on_reminder_card
 from ai_steward_wiki.tg.pipeline import ConfirmKeyboardAction, MessagePipeline
 
@@ -119,6 +132,31 @@ _GENERIC_ERR_RU = "Что-то пошло не так. Попробуй ещё �
 _DIGEST_SECTIONS_HEADER_RU = "Разделы твоей сводки — нажми, чтобы включить/выключить:"
 _DIGESTSEC_DONE_RU = "Готово"
 _DIGESTSEC_BAD_RU = "Не понял кнопку."  # noqa: RUF001
+
+# /start, /help, /manual (aisw-s5i Phase C.2). Wording lives in templates/*.ru.md;
+# we only hold the slug allowlists here so a typo in a template fails fast at render.
+_BOT_NAME = "ai-steward-wiki"
+_START_KNOWN_SLUGS: frozenset[str] = frozenset(
+    {"greeting", "how-to-start", "commands-hint", "pointers"}
+)
+_HELP_SLUGS: frozenset[str] = frozenset(
+    {"intro", "wiki-explainer", "scenarios", "commands", "next-steps"}
+)
+_MANUAL_SLUGS: frozenset[str] = frozenset(
+    {
+        "intro",
+        "scenario-note",
+        "scenario-wiki",
+        "scenario-reminder",
+        "scenario-digest",
+        "scenario-expand-toggle",
+        "voice-photo",
+        "privacy-note",
+    }
+)
+# Default templates dir for tests and standalone build_router callers; production
+# wiring (__main__.py) passes Settings.wiki_template_dir explicitly.
+_DEFAULT_TEMPLATES_DIR: Path = Path(__file__).resolve().parents[3] / "templates"
 
 # Map common audio MIME types to a staging-file extension (D-022). Unknown →
 # fall back to the file_name suffix, else "mp3".
@@ -214,12 +252,30 @@ async def _download_bytes(bot: object, file_id: str) -> bytes:
     return buf.getvalue()
 
 
-def build_router(pipeline: MessagePipeline) -> Router:
-    """Construct an aiogram Router wired to ``pipeline``."""
+def build_router(
+    pipeline: MessagePipeline,
+    *,
+    templates_dir: Path | None = None,
+    on_start_unknown: Callable[..., Awaitable[None]] | None = None,
+) -> Router:
+    """Construct an aiogram Router wired to ``pipeline``.
+
+    ``templates_dir`` — directory holding ``start-known.ru.md`` / ``help.ru.md`` /
+    ``manual.ru.md`` / ``onboarding-intro.ru.md`` (aisw-s5i). Defaults to the
+    repo-level ``templates/`` for tests; production passes
+    ``Settings.wiki_template_dir`` from ``__main__.py``.
+
+    ``on_start_unknown`` — optional async callable invoked on ``/start`` from
+    an unknown telegram_id (when ``is_pending=True`` reaches the handler via
+    AllowlistMiddleware). Signature: ``(telegram_id: int, username: str | None) -> None``.
+    If ``None`` the handler still answers with the intro template — useful for
+    tests and graceful degradation.
+    """
     from aiogram import F, Router
     from aiogram.filters import Command
     from aiogram.types import CallbackQuery, Message
 
+    _templates_dir: Path = templates_dir if templates_dir is not None else _DEFAULT_TEMPLATES_DIR
     router = Router(name="m-tg-handlers-wiring")
 
     @router.message(F.text & ~F.text.startswith("/"))
@@ -235,6 +291,88 @@ def build_router(pipeline: MessagePipeline) -> Router:
             text=message.text,
         )
         # END_BLOCK_HANDLER_TEXT
+
+    @router.message(Command("start"))
+    async def _on_start(message: Message, **data: object) -> None:
+        # START_BLOCK_HANDLER_START
+        # aisw-s5i: /start branches on AllowlistMiddleware's `is_pending` flag.
+        # Known user → render templates/start-known.ru.md.
+        # Unknown user → optionally call on_start_unknown (records pending row,
+        # D-030) + render existing onboarding-intro.ru.md via format_intro_message.
+        if message.from_user is None or message.chat is None:
+            _log.debug("tg.handlers.start.skip_missing_fields")
+            return
+        owner = message.from_user.id
+        is_pending = bool(data.get("is_pending", False))
+        if not is_pending:
+            text = render_template(
+                _templates_dir / "start-known.ru.md",
+                required_slugs=_START_KNOWN_SLUGS,
+                bot_name=_BOT_NAME,
+            )
+            _log.info("tg.command.start.known", owner_telegram_id=owner)
+            await message.answer(text)
+            return
+        # Unknown id reached us via the public-command bypass.
+        if on_start_unknown is not None:
+            try:
+                await on_start_unknown(
+                    telegram_id=owner,
+                    username=message.from_user.username,
+                )
+            except Exception as exc:  # defensive: never crash the handler
+                _log.warning(
+                    "tg.command.start.unknown.failed",
+                    owner_telegram_id=owner,
+                    error_class=type(exc).__name__,
+                )
+        text = format_intro_message(
+            _templates_dir / "onboarding-intro.ru.md",
+            bot_name=_BOT_NAME,
+        )
+        _log.info("tg.command.start.unknown", owner_telegram_id=owner)
+        await message.answer(text)
+        # END_BLOCK_HANDLER_START
+
+    @router.message(Command("help"))
+    async def _on_help(message: Message, **data: object) -> None:
+        # START_BLOCK_HANDLER_HELP
+        # aisw-s5i: static help — D-041 mandatory WIKI-explainer + command cheat-sheet.
+        if message.from_user is None or message.chat is None:
+            _log.debug("tg.handlers.help.skip_missing_fields")
+            return
+        text = render_template(
+            _templates_dir / "help.ru.md",
+            required_slugs=_HELP_SLUGS,
+            bot_name=_BOT_NAME,
+        )
+        _log.info(
+            "tg.command.help",
+            owner_telegram_id=message.from_user.id,
+            is_allowed=not bool(data.get("is_pending", False)),
+        )
+        await message.answer(text)
+        # END_BLOCK_HANDLER_HELP
+
+    @router.message(Command("manual"))
+    async def _on_manual(message: Message, **data: object) -> None:
+        # START_BLOCK_HANDLER_MANUAL
+        # aisw-s5i: extended scenarios — worked examples for primary NL usage.
+        if message.from_user is None or message.chat is None:
+            _log.debug("tg.handlers.manual.skip_missing_fields")
+            return
+        text = render_template(
+            _templates_dir / "manual.ru.md",
+            required_slugs=_MANUAL_SLUGS,
+            bot_name=_BOT_NAME,
+        )
+        _log.info(
+            "tg.command.manual",
+            owner_telegram_id=message.from_user.id,
+            is_allowed=not bool(data.get("is_pending", False)),
+        )
+        await message.answer(text)
+        # END_BLOCK_HANDLER_MANUAL
 
     @router.message(Command("digest_now"))
     async def _on_digest_now(message: Message) -> None:

@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/bot.py
-# VERSION: 0.0.1
+# VERSION: 0.1.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Build aiogram 3 Bot + Dispatcher with allowlist middleware wired
 #            as outer-middleware. Production entry point for TG runtime.
@@ -18,10 +18,14 @@
 #   AiogramSender - thin adapter wrapping aiogram.Bot to satisfy TgSender
 #   build_bot - construct aiogram.Bot with HTML default parse_mode
 #   build_dispatcher - construct Dispatcher and register AllowlistMiddleware
+#   register_bot_commands - publish native TG ≡ menu (set_my_commands)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 10: initial dispatcher factory + sender adapter
+#   LAST_CHANGE: v0.1.0 - aisw-s5i: register_bot_commands publishes 6 commands
+#                (/start, /help, /manual, /digest_now, /expand, /digest_sections)
+#                via bot.set_my_commands at runtime startup.
+#   PREVIOUS:    v0.0.1 - chunk 10: initial dispatcher factory + sender adapter
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -38,7 +42,12 @@ __all__ = [
     "TgSender",
     "build_bot",
     "build_dispatcher",
+    "register_bot_commands",
 ]
+
+import structlog
+
+_log = structlog.get_logger("tg.bot")
 
 if TYPE_CHECKING:
     from aiogram import Bot, Dispatcher
@@ -151,12 +160,19 @@ def build_dispatcher(
     allowlist: Allowlist,
     *,
     pipeline: object | None = None,
+    templates_dir: Path | None = None,
+    on_start_unknown: object | None = None,
 ) -> Dispatcher:
     """Build Dispatcher with allowlist middleware and (optional) handlers router.
 
     ``pipeline`` is a :class:`ai_steward_wiki.tg.pipeline.MessagePipeline`
     (typed loosely with ``object | None`` to avoid an import cycle).
+    ``templates_dir`` + ``on_start_unknown`` (aisw-s5i) are forwarded into
+    ``build_router`` so /start, /help, /manual handlers can find their
+    templates and (for unknown ids) record a pending_users row.
     """
+    from collections.abc import Awaitable, Callable
+
     from aiogram import Dispatcher
 
     dp = Dispatcher()
@@ -168,5 +184,36 @@ def build_dispatcher(
         from ai_steward_wiki.tg.handlers import build_router
         from ai_steward_wiki.tg.pipeline import MessagePipeline
 
-        dp.include_router(build_router(cast("MessagePipeline", pipeline)))
+        dp.include_router(
+            build_router(
+                cast("MessagePipeline", pipeline),
+                templates_dir=templates_dir,
+                on_start_unknown=cast("Callable[..., Awaitable[None]] | None", on_start_unknown),
+            )
+        )
     return dp
+
+
+# START_CONTRACT: register_bot_commands
+#   PURPOSE: Publish the bot's command list so Telegram clients show the
+#            native `≡` menu next to the message input (aisw-s5i Phase D).
+#   INPUTS: { bot: aiogram.Bot - the running Bot instance }
+#   OUTPUTS: { None }
+#   SIDE_EFFECTS: bot.set_my_commands call (Telegram API write).
+#   LINKS: D-032 (ru-only), M-TG-HANDLERS (the 6 commands)
+# END_CONTRACT: register_bot_commands
+async def register_bot_commands(bot: Bot) -> None:
+    # START_BLOCK_REGISTER_BOT_COMMANDS
+    from aiogram.types import BotCommand
+
+    commands = [
+        BotCommand(command="start", description="Знакомство и приветствие"),
+        BotCommand(command="help", description="Что умеет бот и список команд"),
+        BotCommand(command="manual", description="Расширенные сценарии и примеры"),
+        BotCommand(command="digest_now", description="Сделать сводку сейчас"),
+        BotCommand(command="expand", description="Развернуть раздел сводки"),
+        BotCommand(command="digest_sections", description="Настроить разделы сводки"),
+    ]
+    _log.info("runtime.bot.commands.registered", n_commands=len(commands))
+    await bot.set_my_commands(commands)
+    # END_BLOCK_REGISTER_BOT_COMMANDS

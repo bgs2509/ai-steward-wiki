@@ -163,7 +163,13 @@ from ai_steward_wiki.scheduler.maintenance import register_all_retention_jobs
 from ai_steward_wiki.settings import Settings, get_settings
 from ai_steward_wiki.storage.audit.engine import build_engine, build_sessionmaker
 from ai_steward_wiki.storage.sessions.users import resolve_user_id
-from ai_steward_wiki.tg.bot import AiogramSender, TgSender, build_bot, build_dispatcher
+from ai_steward_wiki.tg.bot import (
+    AiogramSender,
+    TgSender,
+    build_bot,
+    build_dispatcher,
+    register_bot_commands,
+)
 from ai_steward_wiki.tg.confirm import ConfirmationService
 from ai_steward_wiki.tg.output import deliver_output
 from ai_steward_wiki.tg.photo import PhotoIngestor
@@ -1154,8 +1160,31 @@ async def _amain() -> None:
         default_user_tz=settings.default_user_tz,
         wiki_root=settings.wiki_root,
     )
-    dp = build_dispatcher(allowlist, pipeline=pipeline)
+    # aisw-s5i: wire /start unknown-id callback (records pending_users row).
+    from ai_steward_wiki.auth.onboarding import PendingUserRepo, start_unknown_user
+
+    _pending_repo = PendingUserRepo(sessions_maker)
+
+    async def _on_start_unknown_cb(*, telegram_id: int, username: str | None) -> None:
+        await start_unknown_user(_pending_repo, telegram_id, username=username)
+
+    dp = build_dispatcher(
+        allowlist,
+        pipeline=pipeline,
+        templates_dir=settings.wiki_template_dir,
+        on_start_unknown=_on_start_unknown_cb,
+    )
     logger.info("runtime.handlers.registered")
+
+    # aisw-s5i: publish the bot's command list so Telegram clients show
+    # the native `≡` menu next to the message input.
+    try:
+        await register_bot_commands(bot)
+    except Exception as exc:  # non-fatal: bot can run without the native menu
+        logger.warning(
+            "runtime.bot.commands.register_failed",
+            error_class=type(exc).__name__,
+        )
 
     loop = asyncio.get_running_loop()
     stop_event = _STOP_EVENT_FOR_TESTS if _STOP_EVENT_FOR_TESTS is not None else asyncio.Event()

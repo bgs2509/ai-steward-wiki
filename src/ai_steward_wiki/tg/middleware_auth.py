@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/middleware_auth.py
-# VERSION: 0.0.1
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: aiogram 3 outer-middleware enforcing in-memory allowlist (D-031).
 #            Rejects updates from unknown telegram_id with a Russian one-liner
@@ -19,7 +19,7 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - chunk 12: allow `/start` from unknown ids to reach onboarding handler
+#   LAST_CHANGE: v0.0.3 - aisw-s5i: generalise /start exemption to /start, /help, /manual
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -42,20 +42,24 @@ _log = structlog.get_logger("tg.auth")
 
 DENY_TEXT_RU = "Извини, доступ к этому боту ограничен."
 
-_START_COMMAND_PREFIX = "/start"
+# Public commands an unknown telegram_id is allowed to invoke:
+#  - /start  → enters the onboarding pending flow (D-030, chunk 12)
+#  - /help   → static help text (aisw-s5i)
+#  - /manual → extended scenarios (aisw-s5i)
+# Everything else stays gated for non-allowlisted ids.
+_PUBLIC_COMMAND_PREFIXES: frozenset[str] = frozenset({"/start", "/help", "/manual"})
 
 
-def _is_start_command(event: TelegramObject) -> bool:
-    """True if the (Message inside an) event is `/start` (with optional payload)."""
-    # Drill into Update→message if needed.
+def _public_command_head(event: TelegramObject) -> str | None:
+    """Return the bare command head (e.g. ``/help``) if the event is one of the
+    public commands, else None. Strips ``@botname`` suffix and any payload."""
     msg = event if hasattr(event, "text") else getattr(event, "message", None)
     text = getattr(msg, "text", None)
     if not isinstance(text, str):
-        return False
+        return None
     head = text.strip().split(maxsplit=1)[0]
-    # Strip @bot_name suffix if Telegram added it.
     head = head.split("@", maxsplit=1)[0]
-    return head == _START_COMMAND_PREFIX
+    return head if head in _PUBLIC_COMMAND_PREFIXES else None
 
 
 def _extract_telegram_user(event: TelegramObject) -> tuple[int | None, int | None]:
@@ -97,14 +101,17 @@ class AllowlistMiddleware(BaseMiddleware):
 
         record = self._allowlist.get_user(telegram_id)
         if record is None:
-            # /start is the onboarding entry point — let it through so the
-            # handler can record a pending_users row. All other commands
-            # remain gated. (Chunk 12 / M-ONBOARD-ADMIN.)
-            if _is_start_command(event):
+            # /start, /help, /manual reach handlers even for unknown ids:
+            # /start enters the onboarding pending flow (chunk 12 / D-030);
+            # /help and /manual show static info text (aisw-s5i Phase C).
+            # All other commands remain gated.
+            public_head = _public_command_head(event)
+            if public_head is not None:
                 _log.info(
-                    "auth.deny.bypass_start",
+                    "auth.deny.bypass_public",
                     telegram_id=telegram_id,
                     chat_id=chat_id,
+                    command=public_head,
                 )
                 data["telegram_id"] = telegram_id
                 data["user_record"] = None

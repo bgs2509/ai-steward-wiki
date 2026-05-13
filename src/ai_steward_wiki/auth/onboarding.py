@@ -29,7 +29,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -63,8 +62,6 @@ REQUIRED_SLUGS: tuple[str, ...] = (
     "next-steps",
     "contact",
 )
-
-_SLUG_RE = re.compile(r"<!--\s*slug:([a-z][a-z0-9_-]*)\s*-->")
 
 
 class OnboardingTemplateError(Exception):
@@ -237,14 +234,27 @@ def format_intro_message(
     bot_name: str = "ai-steward-wiki",
     locale: str = "ru",
 ) -> str:
+    # Back-compat adapter over ai_steward_wiki.templates.render_template
+    # (aisw-s5i Phase A: shared loader for onboarding + /start + /help + /manual).
     if locale != "ru":
         raise OnboardingTemplateError(f"unsupported locale {locale!r} (D-032: ru-only MVP)")
+    from ai_steward_wiki.templates import TemplateError, render_template
+
     try:
-        text = template_path.read_text(encoding="utf-8")
-    except OSError as exc:
+        return render_template(
+            template_path,
+            required_slugs=frozenset(REQUIRED_SLUGS),
+            bot_name=bot_name,
+        )
+    except FileNotFoundError as exc:
         raise OnboardingTemplateError(f"cannot read template {template_path}: {exc}") from exc
-    found = {m.group(1) for m in _SLUG_RE.finditer(text)}
-    missing = [s for s in REQUIRED_SLUGS if s not in found]
-    if missing:
-        raise OnboardingTemplateError(f"missing required slugs: {missing}")
-    return text.format(bot_name=bot_name)
+    except TemplateError as exc:
+        # Preserve the original "missing required slugs" wording for tests that
+        # match on it; otherwise expose the upstream message.
+        msg = str(exc)
+        if "missing=" in msg:
+            # Extract sorted list for the legacy assertion shape.
+            raise OnboardingTemplateError(
+                f"missing required slugs in {template_path}: {msg}"
+            ) from exc
+        raise OnboardingTemplateError(msg) from exc

@@ -98,6 +98,46 @@ async def test_known_id_pass_through() -> None:
     assert await mw(handler, msg, {}) == 42
 
 
+@pytest.mark.parametrize("cmd", ["/help", "/manual"])
+@pytest.mark.asyncio
+async def test_public_commands_bypass_for_unknown_id(cmd: str) -> None:
+    # aisw-s5i Phase C.1: /help and /manual must reach handler for unknown ids.
+    mw = AllowlistMiddleware(_allowlist_only([1]))
+    seen: dict[str, object] = {}
+
+    async def handler(event, data):
+        seen["is_pending"] = data.get("is_pending")
+        return "OK"
+
+    msg = FakeMessage(
+        text=cmd,
+        from_user=FakeUser(id=999),
+        chat=FakeChat(id=999),
+        answers=[],
+    )
+    assert await mw(handler, msg, {}) == "OK"
+    assert seen["is_pending"] is True
+    assert msg.answers == []
+
+
+@pytest.mark.asyncio
+async def test_digest_command_still_blocked_for_unknown_id() -> None:
+    # aisw-s5i Phase C.1 regression: /digest_now stays blocked for unknown ids.
+    mw = AllowlistMiddleware(_allowlist_only([1]))
+
+    async def handler(event, data):
+        return "should not run"
+
+    msg = FakeMessage(
+        text="/digest_now",
+        from_user=FakeUser(id=999),
+        chat=FakeChat(id=999),
+        answers=[],
+    )
+    assert await mw(handler, msg, {}) is None
+    assert msg.answers == [DENY_TEXT_RU]
+
+
 @pytest.mark.asyncio
 async def test_start_with_bot_suffix_bypasses() -> None:
     mw = AllowlistMiddleware(_allowlist_only([]))
