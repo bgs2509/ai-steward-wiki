@@ -1,11 +1,11 @@
 # FILE: src/ai_steward_wiki/logging_setup.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
-#   PURPOSE: structlog JSON-lines logging with correlation_id contextvar propagation.
+#   PURPOSE: structlog JSON-lines logging with correlation_id contextvar propagation and a boundary @traced decorator.
 #   SCOPE: configure_logging(level), bind_correlation_id(value),
-#          get_correlation_id(), get_logger(name).
+#          get_correlation_id(), get_logger(name), traced(event_prefix, bind).
 #   DEPENDS: structlog
-#   LINKS: M-FOUNDATION-SETTINGS (reads log_level)
+#   LINKS: M-FOUNDATION-SETTINGS (reads log_level), M-FOUNDATION-LOGGING
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -16,18 +16,22 @@
 #   reset_correlation_id - reset via Token returned from bind_correlation_id
 #   get_correlation_id - read current correlation_id (None if unset)
 #   get_logger - structlog.get_logger thin wrapper for typing
+#   traced - PII-safe boundary decorator (sync+async); emits .start/.done/.error w/ duration_ms
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - initial structlog JSON setup with correlation_id contextvar
+#   LAST_CHANGE: v0.0.2 - add @traced PII-safe boundary decorator (sync+async)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
-from collections.abc import MutableMapping
+import time
+from collections.abc import Callable, Mapping, MutableMapping
 from contextvars import ContextVar, Token
-from typing import Any
+from typing import Any, ParamSpec, TypeVar, cast
 
 import structlog
 
@@ -37,6 +41,7 @@ __all__ = [
     "get_correlation_id",
     "get_logger",
     "reset_correlation_id",
+    "traced",
 ]
 
 _correlation_id: ContextVar[str | None] = ContextVar("aisw_correlation_id", default=None)
@@ -90,3 +95,70 @@ def configure_logging(level: str = "INFO", *, pii_processor: Any = None) -> None
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
     return structlog.get_logger(name)  # type: ignore[no-any-return]
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def traced(
+    *,
+    event_prefix: str | None = None,
+    bind: Mapping[str, Any] | None = None,
+) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
+    """Boundary-observability decorator (PII-safe).
+
+    Emits ``f"{prefix}.start"`` (INFO) on entry, ``f"{prefix}.done"`` (INFO,
+    ``duration_ms: int``) on success, and ``f"{prefix}.error"`` (ERROR,
+    ``duration_ms`` + ``exc_info``) on exception; the exception is re-raised.
+
+    Does NOT introspect args, kwargs, or return values — never logs them.
+    Callers may pass ``bind={...}`` for non-PII contextual fields; bind values
+    are merged into ``structlog.contextvars`` for the call's lifetime so that
+    inner logs inherit them.
+
+    Default prefix is ``f"{func.__module__}.{func.__qualname__}"``.
+    """
+    bind_dict: dict[str, Any] = dict(bind) if bind else {}
+
+    def decorator(func: Callable[_P, _R]) -> Callable[_P, _R]:
+        prefix = event_prefix or f"{func.__module__}.{func.__qualname__}"
+        log = structlog.get_logger(func.__module__)
+
+        if inspect.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+                t0 = time.perf_counter_ns()
+                with structlog.contextvars.bound_contextvars(**bind_dict):
+                    log.info(f"{prefix}.start")
+                    try:
+                        result = await cast(Any, func)(*args, **kwargs)
+                    except BaseException:
+                        dur = (time.perf_counter_ns() - t0) // 1_000_000
+                        log.error(f"{prefix}.error", duration_ms=int(dur), exc_info=True)
+                        raise
+                    dur = (time.perf_counter_ns() - t0) // 1_000_000
+                    log.info(f"{prefix}.done", duration_ms=int(dur))
+                    return cast(_R, result)
+
+            return cast(Callable[_P, _R], async_wrapper)
+
+        @functools.wraps(func)
+        def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            t0 = time.perf_counter_ns()
+            with structlog.contextvars.bound_contextvars(**bind_dict):
+                log.info(f"{prefix}.start")
+                try:
+                    result = func(*args, **kwargs)
+                except BaseException:
+                    dur = (time.perf_counter_ns() - t0) // 1_000_000
+                    log.error(f"{prefix}.error", duration_ms=int(dur), exc_info=True)
+                    raise
+                dur = (time.perf_counter_ns() - t0) // 1_000_000
+                log.info(f"{prefix}.done", duration_ms=int(dur))
+                return result
+
+        return sync_wrapper
+
+    return decorator
