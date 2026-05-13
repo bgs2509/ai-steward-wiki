@@ -76,13 +76,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import structlog
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.utils.chat_action import ChatActionSender
 
 from ai_steward_wiki.auth.onboarding import format_intro_message
@@ -113,6 +114,51 @@ async def _typing_or_noop(bot: _Bot | None, chat_id: int):  # type: ignore[no-un
         return
     async with ChatActionSender.typing(bot=bot, chat_id=chat_id):
         yield
+
+
+# Universal slow-work placeholder: kicks off a background task that, after
+# PLACEHOLDER_DELAY_S, sends "⏳ Думаю…" as a real Telegram message. Whatever
+# branch of pipeline.on_* eventually answers, we delete the placeholder in the
+# `finally` block. This covers ALL slow branches (reminder, route, clarify,
+# answer-runner) that the in-pipeline DefaultStreamingDelivery does NOT cover —
+# DefaultStreamingDelivery only fires in the answer-runner branch (pipeline.py:1064).
+PLACEHOLDER_DELAY_S: float = 1.0
+PLACEHOLDER_TEXT_RU: str = "⏳ Думаю…"
+
+
+@asynccontextmanager
+async def _slow_work_placeholder(bot: _Bot | None, chat_id: int):  # type: ignore[no-untyped-def]
+    if bot is None:
+        yield
+        return
+    bot_ref = bot  # local non-None alias for closure (mypy narrowing)
+    state: dict[str, int | None] = {"message_id": None}
+
+    async def _show() -> None:
+        try:
+            await asyncio.sleep(PLACEHOLDER_DELAY_S)
+            msg = await bot_ref.send_message(chat_id, PLACEHOLDER_TEXT_RU)
+            state["message_id"] = msg.message_id
+        except asyncio.CancelledError:
+            raise
+        except TelegramAPIError as exc:
+            _log.debug("tg.handlers.placeholder.send_failed", error=str(exc))
+
+    from contextlib import suppress
+
+    task = asyncio.create_task(_show())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+        mid = state["message_id"]
+        if mid is not None:
+            try:
+                await bot_ref.delete_message(chat_id, mid)
+            except TelegramAPIError as exc:
+                _log.debug("tg.handlers.placeholder.delete_failed", error=str(exc))
 
 
 __all__ = [
@@ -161,7 +207,7 @@ _START_KNOWN_SLUGS: frozenset[str] = frozenset(
     {"greeting", "how-to-start", "commands-hint", "pointers"}
 )
 _HELP_SLUGS: frozenset[str] = frozenset(
-    {"intro", "wiki-explainer", "scenarios", "commands", "next-steps"}
+    {"intro", "wiki-explainer", "lazy-domains", "scenarios", "commands", "next-steps"}
 )
 _MANUAL_SLUGS: frozenset[str] = frozenset(
     {
@@ -309,7 +355,11 @@ def build_router(
         # (Stage-0 + router + answer); aiogram re-sends sendChatAction ~every 5s.
         # message.bot may be None in unit-test fixtures — fall through without the
         # indicator in that case.
-        async with _typing_or_noop(getattr(message, "bot", None), message.chat.id):
+        _bot = getattr(message, "bot", None)
+        async with (
+            _typing_or_noop(_bot, message.chat.id),
+            _slow_work_placeholder(_bot, message.chat.id),
+        ):
             await pipeline.on_text(
                 telegram_id=message.from_user.id,
                 chat_id=message.chat.id,
@@ -560,7 +610,10 @@ def build_router(
             _log.debug("tg.handlers.voice.skip_missing_fields")
             return
         audio = await _download_bytes(message.bot, message.voice.file_id)
-        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+        async with (
+            ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id),
+            _slow_work_placeholder(message.bot, message.chat.id),
+        ):
             await pipeline.on_voice(
                 telegram_id=message.from_user.id,
                 chat_id=message.chat.id,
@@ -583,7 +636,10 @@ def build_router(
         # Telegram delivers photo as a list of sizes — take the largest (last).
         photo = message.photo[-1]
         data = await _download_bytes(message.bot, photo.file_id)
-        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+        async with (
+            ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id),
+            _slow_work_placeholder(message.bot, message.chat.id),
+        ):
             await pipeline.on_photo(
                 telegram_id=message.from_user.id,
                 chat_id=message.chat.id,
@@ -608,7 +664,10 @@ def build_router(
             return
         data = await _download_bytes(message.bot, message.audio.file_id)
         audio_mime = message.audio.mime_type or "audio/mpeg"
-        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+        async with (
+            ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id),
+            _slow_work_placeholder(message.bot, message.chat.id),
+        ):
             await pipeline.on_voice(
                 telegram_id=message.from_user.id,
                 chat_id=message.chat.id,
@@ -634,7 +693,10 @@ def build_router(
             _log.debug("tg.handlers.video_note.skip_missing_fields")
             return
         data = await _download_bytes(message.bot, message.video_note.file_id)
-        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+        async with (
+            ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id),
+            _slow_work_placeholder(message.bot, message.chat.id),
+        ):
             await pipeline.on_voice(
                 telegram_id=message.from_user.id,
                 chat_id=message.chat.id,
@@ -658,7 +720,10 @@ def build_router(
             return
         doc = message.document
         data = await _download_bytes(message.bot, doc.file_id)
-        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+        async with (
+            ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id),
+            _slow_work_placeholder(message.bot, message.chat.id),
+        ):
             await pipeline.on_document(
                 telegram_id=message.from_user.id,
                 chat_id=message.chat.id,
