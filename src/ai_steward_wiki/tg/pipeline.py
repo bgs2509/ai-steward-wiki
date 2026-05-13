@@ -1168,13 +1168,31 @@ class DefaultPipeline:
         assert self._time_parser is not None  # guarded by the caller
         user_tz = self._resolve_user_tz(telegram_id)
         now_utc = self._clock()
+        # aisw-2mg (RC-2): Stage-0 classifier is asked to distil the time
+        # expression into distilled_payload["time_expr"] (e.g. "через 5 минут")
+        # because dateparser.parse on a full sentence ("напомни мне пойти
+        # гулять через 5 минут") returns None for any non-trivial phrasing.
+        # Backward-compat (NFR-2): a missing/blank time_expr falls back to the
+        # raw user text, matching the legacy behaviour.
+        time_expr_raw = distilled_payload.get("time_expr")
+        time_expr = (
+            time_expr_raw.strip()
+            if isinstance(time_expr_raw, str) and time_expr_raw.strip()
+            else text
+        )
+        _log.info(
+            "tg.pipeline.reminder.distill_used",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            time_expr_present=time_expr is not text,
+        )
         # aisw-4dr (RC-3): parse_time is best-effort — a broken Haiku-fallback,
         # CLI timeout, or schema violation MUST NOT kill the handler silently
         # (NFR-3, FR-1). On any failure we emit the user-facing ru fallback and
         # a structured log anchor instead of bubbling the exception to aiogram.
         try:
             tp = await self._time_parser.parse_time(
-                text,
+                time_expr,
                 user_tz=user_tz,
                 now_utc=now_utc,
                 prefer_future=True,

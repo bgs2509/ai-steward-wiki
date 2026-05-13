@@ -1,5 +1,5 @@
 ---
-semver: 1.0.0
+semver: 1.1.0
 purpose: Stage-0 classifier system prompt (backend-independent, D-015)
 ---
 
@@ -29,6 +29,21 @@ Return JSON with exactly these keys:
 5. `digest` — user requests a periodic / on-demand summary across one or more WIKIs.
 6. `admin` — administrative action (allowlist, elevation, quota, runbook).
 7. `unknown` — none of the above with sufficient confidence.
+
+## Per-intent `distilled_payload` contract
+
+For `intent="reminder"`, `distilled_payload` MUST include the following keys
+(aisw-2mg, prompt semver 1.1.0):
+
+- `time_expr` (string) — the natural-language time fragment **verbatim** as it
+  appeared in the user message, e.g. `"через 5 минут"`, `"в 18:00 завтра"`,
+  `"в субботу в 9"`. NEVER include action words ("напомни", "пойти", etc.).
+  NEVER resolve to ISO 8601 — that is the next stage's job.
+- `reminder_text` (string) — the action without the time, e.g. `"пойти гулять"`,
+  `"позвонить маме"`. May be empty if the entire message is just a time hint.
+
+If neither field can be extracted with confidence, set the field to the empty
+string `""`; never invent content.
 
 ## Rules
 

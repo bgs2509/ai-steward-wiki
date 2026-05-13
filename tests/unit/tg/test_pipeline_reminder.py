@@ -273,6 +273,65 @@ async def test_no_time_parser_not_handled_here() -> None:
     confirm.request_explicit.assert_not_awaited()
 
 
+# --- time_expr distillation (aisw-2mg, RC-2) -------------------------------
+
+
+async def test_reminder_intent_passes_distilled_time_expr_to_parser() -> None:
+    """When Stage-0 distils time_expr, parser receives the clean expression."""
+    sender = FakeSender()
+    confirm = _confirm()
+    tp = _FakeTimeParser(_tpr(when_utc=FUTURE))
+    pipe = _pipe(
+        sender=sender,
+        classifier=_classifier(
+            distilled={"time_expr": "через 5 минут", "reminder_text": "пойти гулять"}
+        ),
+        confirmation=confirm,
+        time_parser=tp,
+    )
+    await pipe.on_text(
+        telegram_id=42,
+        chat_id=42,
+        update_id=1,
+        text="напомни мне пойти гулять через 5 минут",
+    )
+    # Parser receives the distilled clean expression, NOT the raw sentence.
+    assert tp.calls
+    assert tp.calls[0]["text"] == "через 5 минут"
+
+
+async def test_reminder_intent_falls_back_to_raw_text_when_time_expr_missing() -> None:
+    """NFR-2: missing time_expr → fallback to raw text, no crash."""
+    sender = FakeSender()
+    confirm = _confirm()
+    tp = _FakeTimeParser(_tpr(when_utc=FUTURE))
+    pipe = _pipe(
+        sender=sender,
+        classifier=_classifier(distilled={"reminder_text": "позвонить"}),
+        confirmation=confirm,
+        time_parser=tp,
+    )
+    await pipe.on_text(telegram_id=42, chat_id=42, update_id=1, text="напомни завтра в 6 позвонить")
+    assert tp.calls
+    assert tp.calls[0]["text"] == "напомни завтра в 6 позвонить"
+
+
+async def test_reminder_intent_blank_time_expr_falls_back_to_raw_text() -> None:
+    """Whitespace-only time_expr is treated as missing (defensive)."""
+    sender = FakeSender()
+    confirm = _confirm()
+    tp = _FakeTimeParser(_tpr(when_utc=FUTURE))
+    pipe = _pipe(
+        sender=sender,
+        classifier=_classifier(distilled={"time_expr": "   "}),
+        confirmation=confirm,
+        time_parser=tp,
+    )
+    await pipe.on_text(telegram_id=42, chat_id=42, update_id=1, text="напомни в 6")
+    assert tp.calls
+    assert tp.calls[0]["text"] == "напомни в 6"
+
+
 # --- parser error guard (aisw-4dr, RC-3) -----------------------------------
 
 
