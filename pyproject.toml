@@ -23,6 +23,7 @@ dependencies = [
     "pypdf==5.1.0",
     # voice STT (D-022) — core dep: voice is a primary MVP feature. See ADR-002.
     "faster-whisper==1.1.0",
+    "tomli-w==1.2.0",
 ]
 
 [dependency-groups]
