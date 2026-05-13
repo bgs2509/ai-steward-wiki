@@ -107,9 +107,22 @@ async def parse_time(
             when_utc=None, source="escalate", escalate=True, raw=text, user_tz=str(user_tz)
         )
 
+    # aisw-ct9 (RC-1): the Haiku-fallback CLI is invoked with prompt-file as
+    # --append-system-prompt + stdin=text, with NO other channel to inject
+    # context. Without now_utc + user_tz Haiku-4-5 correctly refuses with prose
+    # ("мне нужно знать текущее время и часовой пояс") → JSONDecodeError →
+    # ClassifierSchemaError (epic aisw-5q5). Pre-pend a small header block
+    # separated by `---`; prompts/time-parse.md (semver 1.1.0) documents the
+    # contract and forces JSON-only output.
+    payload = (
+        f"NOW_ISO: {now_utc.astimezone(UTC).isoformat()}\n"
+        f"USER_TZ: {user_tz}\n"
+        f"---\n"
+        f"{text}"
+    )
     started_h = time.monotonic()
     raw = await haiku_backend.call(
-        text=text, prompt_path=haiku_prompt_path, correlation_id=correlation_id
+        text=payload, prompt_path=haiku_prompt_path, correlation_id=correlation_id
     )
     haiku_ms = int((time.monotonic() - started_h) * 1000)
 

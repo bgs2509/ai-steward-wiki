@@ -80,3 +80,44 @@ async def test_parse_haiku_ambiguous_escalates(tmp_path: Path) -> None:
     )
     assert res.escalate is True
     assert res.source == "escalate"
+
+
+# --- NOW_ISO / USER_TZ header injection (aisw-ct9, RC-1) -------------------
+
+
+async def test_haiku_fallback_prepends_now_iso_and_user_tz_header(tmp_path: Path) -> None:
+    """The Haiku-fallback CLI MUST receive a header block carrying now_utc + user_tz.
+
+    Without this header Haiku-4-5 cannot resolve relative expressions and (correctly)
+    refuses with prose, which crashes _unwrap_cli_envelope. See epic aisw-5q5.
+    """
+    runner = FakeClaudeRunner(responses=[{"when_iso": "2026-05-10T15:05:00+03:00"}])
+    prompt = tmp_path / "time.md"
+    prompt.write_text("---\nsemver: 1.1.0\n---\n", encoding="utf-8")
+    await parse_time(
+        "через две черепахи",  # dateparser will miss → triggers fallback
+        user_tz=MSK,
+        now_utc=NOW,  # 2026-05-10T12:00:00 UTC
+        haiku_backend=runner,
+        haiku_prompt_path=prompt,
+    )
+    assert runner.calls, "Haiku-fallback must have been invoked"
+    payload = runner.calls[0]["text"]
+    # Header MUST appear before the separator, NOW_ISO in UTC, USER_TZ IANA.
+    assert payload.startswith("NOW_ISO: 2026-05-10T12:00:00+00:00\nUSER_TZ: Europe/Moscow\n---\n")
+
+
+async def test_haiku_fallback_passes_raw_expression_after_separator(tmp_path: Path) -> None:
+    """The user expression follows the `---` separator verbatim."""
+    runner = FakeClaudeRunner(responses=[{"when_iso": "2026-05-10T15:05:00+03:00"}])
+    prompt = tmp_path / "time.md"
+    prompt.write_text("---\nsemver: 1.1.0\n---\n", encoding="utf-8")
+    await parse_time(
+        "через две черепахи",
+        user_tz=MSK,
+        now_utc=NOW,
+        haiku_backend=runner,
+        haiku_prompt_path=prompt,
+    )
+    payload = runner.calls[0]["text"]
+    assert payload.endswith("\n---\nчерез две черепахи")
