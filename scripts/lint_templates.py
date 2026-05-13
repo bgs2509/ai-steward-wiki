@@ -43,16 +43,13 @@ __all__ = [
 
 REQUIRED_TEMPLATES: tuple[str, ...] = (
     "_default",
-    "health",
-    "health-lite",
+    "medical",
     "investment",
     "budget",
     "family",
     "study",
     "career",
-    "home",
-    "hobby",
-    "recipes",
+    "cooking",
 )
 
 REQUIRED_HINT_KEYS: tuple[str, ...] = ("intents", "keywords", "priority")

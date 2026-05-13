@@ -81,8 +81,8 @@ def test_lint_main_fails_on_missing_with_flag(tmp_path: Path) -> None:
 
 
 def test_load_template_returns_sha256() -> None:
-    managed, digest = load_template("health", TEMPLATES_DIR)
-    assert "Health WIKI" in managed
+    managed, digest = load_template("medical", TEMPLATES_DIR)
+    assert "Medical WIKI" in managed
     assert len(digest) == 64
     assert all(c in "0123456789abcdef" for c in digest)
 

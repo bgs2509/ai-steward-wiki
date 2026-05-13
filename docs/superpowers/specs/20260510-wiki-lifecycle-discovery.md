@@ -33,7 +33,7 @@ once Stage-1a Claude has classified the user's intent. This chunk delivers:
    appended. Empty / invalid input → `WikiNameError`.
 2. **FR-2 Lookup.** `lookup(owner, name_or_hyphenated)` resolves either the
    primary form (e.g. `HealthLite-WIKI`) or the hyphenated lookup form
-   (`health-lite`) used for template fallback.
+   (`multi-word`) used for template fallback.
 3. **FR-3 Anti-spam cap.** On create, if owner already has ≥20 active WIKIs
    (not counting `_trash/`), raise `AntiSpamCapError`. Cap configurable via
    `Settings.wiki_max_per_user`.

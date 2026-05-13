@@ -370,7 +370,7 @@ async def test_router_photo_handler_forwards_caption() -> None:
         chat=FakeChat(id=10),
         from_user=FakeUser(id=5),
         photo=[FakePhotoSize(file_id="PID")],
-        caption="занеси в health",
+        caption="занеси в medical",
         bot=_fake_bot_returning(b"JPG"),
     )
     await handler(msg)
@@ -380,7 +380,7 @@ async def test_router_photo_handler_forwards_caption() -> None:
         update_id=602,
         photo_bytes=b"JPG",
         mime="image/jpeg",
-        caption="занеси в health",
+        caption="занеси в medical",
     )
 
 

@@ -67,13 +67,13 @@ async def test_run_wiki_session_happy_path(
     fake_acquirer: FakeAcquirer,
 ) -> None:
     spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
-    wiki = tmp_path / "Health-WIKI"
+    wiki = tmp_path / "Medical-WIKI"
     runtime = tmp_path / "runtime"
     cfg_dir = tmp_path / "claude-config"
     cfg_dir.mkdir()
 
     result = await run_wiki_session(
-        wiki_id="Health-WIKI",
+        wiki_id="Medical-WIKI",
         wiki_path=wiki,
         base_prompt_path=prompts_dir / "wiki.md",
         overlay_prompt_path=prompts_dir / "domain-default.md",
@@ -117,7 +117,7 @@ async def test_run_wiki_session_happy_path(
     assert isinstance(env, dict)
     assert env["CLAUDE_CONFIG_DIR"] == str(cfg_dir)
     assert env["PATH"] == "/usr/bin:/bin"
-    assert fake_acquirer.calls == [("Health-WIKI", wiki)]
+    assert fake_acquirer.calls == [("Medical-WIKI", wiki)]
     # aisw-w83: when user_input is empty, stdin_data is None (DEVNULL on the
     # real spawner path); the runner does not synthesize input.
     assert spawner.calls[0]["stdin_data"] is None
@@ -129,7 +129,7 @@ async def test_run_wiki_session_grants_media_dirs_via_add_dir(
     fake_acquirer: FakeAcquirer,
 ) -> None:
     spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
-    wiki = tmp_path / "Health-WIKI"
+    wiki = tmp_path / "Medical-WIKI"
     media_dir = tmp_path / "_staging"
     media_dir.mkdir()
     img = media_dir / "run-img_abcd1234.jpg"
@@ -138,7 +138,7 @@ async def test_run_wiki_session_grants_media_dirs_via_add_dir(
     cfg_dir.mkdir()
 
     await run_wiki_session(
-        wiki_id="Health-WIKI",
+        wiki_id="Medical-WIKI",
         wiki_path=wiki,
         base_prompt_path=prompts_dir / "wiki.md",
         overlay_prompt_path=prompts_dir / "domain-default.md",
@@ -165,11 +165,11 @@ async def test_run_wiki_session_no_media_argv_unchanged(
     fake_acquirer: FakeAcquirer,
 ) -> None:
     spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
-    wiki = tmp_path / "Health-WIKI"
+    wiki = tmp_path / "Medical-WIKI"
     cfg_dir = tmp_path / "claude-config"
     cfg_dir.mkdir()
     await run_wiki_session(
-        wiki_id="Health-WIKI",
+        wiki_id="Medical-WIKI",
         wiki_path=wiki,
         base_prompt_path=prompts_dir / "wiki.md",
         overlay_prompt_path=prompts_dir / "domain-default.md",
@@ -194,13 +194,13 @@ async def test_run_wiki_session_pipes_user_input_to_stdin(
 ) -> None:
     """aisw-w83: user_input is delivered to claude via stdin, not the system prompt."""
     spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
-    wiki = tmp_path / "Health-WIKI"
+    wiki = tmp_path / "Medical-WIKI"
     runtime = tmp_path / "runtime"
     cfg_dir = tmp_path / "claude-config"
     cfg_dir.mkdir()
 
     await run_wiki_session(
-        wiki_id="Health-WIKI",
+        wiki_id="Medical-WIKI",
         wiki_path=wiki,
         base_prompt_path=prompts_dir / "wiki.md",
         overlay_prompt_path=prompts_dir / "domain-default.md",
@@ -313,7 +313,7 @@ async def test_run_wiki_session_nonzero_exit_raises_with_stderr(
 
 def test_assemble_prompt_folds_per_wiki_claude_md(prompts_dir: Path, tmp_path: Path) -> None:
     """FR-3 derivative: per-WIKI CLAUDE.md is appended to assembled prompt."""
-    wiki = tmp_path / "Health-WIKI"
+    wiki = tmp_path / "Medical-WIKI"
     wiki.mkdir()
     (wiki / "CLAUDE.md").write_text("# Per-WIKI overlay text\n", encoding="utf-8")
 
@@ -354,13 +354,13 @@ async def test_run_wiki_session_extra_add_dirs_after_primary(
 ) -> None:
     """aisw-oqq: extra_add_dirs appear after the primary --add-dir, before media dirs."""
     spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
-    wiki = tmp_path / "Health-WIKI"
+    wiki = tmp_path / "Medical-WIKI"
     finance = tmp_path / "Finance-WIKI"
-    home = tmp_path / "Home-WIKI"
+    cooking = tmp_path / "Cooking-WIKI"
     cfg_dir = tmp_path / "claude-config"
     cfg_dir.mkdir()
     await run_wiki_session(
-        wiki_id="Health-WIKI",
+        wiki_id="Medical-WIKI",
         wiki_path=wiki,
         base_prompt_path=prompts_dir / "wiki.md",
         overlay_prompt_path=prompts_dir / "domain-default.md",
@@ -370,11 +370,11 @@ async def test_run_wiki_session_extra_add_dirs_after_primary(
         acquirer=fake_acquirer,
         spawner=spawner,
         config=_cfg(cfg_dir),
-        extra_add_dirs=[finance, home],
+        extra_add_dirs=[finance, cooking],
     )
     argv = spawner.calls[0]["argv"]
     add_idx = argv.index("--add-dir")
     assert argv[add_idx + 1] == str(wiki)
     assert str(finance) in argv
-    assert str(home) in argv
+    assert str(cooking) in argv
     assert argv.index(str(finance)) > add_idx + 1

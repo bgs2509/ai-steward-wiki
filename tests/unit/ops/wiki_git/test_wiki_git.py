@@ -42,9 +42,9 @@ def test_init_wiki_git_rejects_missing_dir(tmp_path: Path) -> None:
 
 
 def test_format_commit_message_canonical() -> None:
-    msg = format_commit_message(job_id="job-abc", category="health", title="Add glucose log")
-    assert msg == COMMIT_FMT.format(job_id="job-abc", category="health", title="Add glucose log")
-    assert msg == "job-abc(health): Add glucose log"
+    msg = format_commit_message(job_id="job-abc", category="medical", title="Add glucose log")
+    assert msg == COMMIT_FMT.format(job_id="job-abc", category="medical", title="Add glucose log")
+    assert msg == "job-abc(medical): Add glucose log"
 
 
 def test_auto_commit_creates_commit_with_canonical_message(tmp_path: Path) -> None:

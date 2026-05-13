@@ -23,7 +23,7 @@ src/ai_steward_wiki/wiki/
 ```python
 class WikiName(BaseModel):                       # frozen
     primary: str                                 # e.g. "HealthLite-WIKI"
-    hyphenated_lookup: str                       # e.g. "health-lite"
+    hyphenated_lookup: str                       # e.g. "multi-word"
     slug: str                                    # e.g. "healthlite"
 
 class Frontmatter(BaseModel):                    # frozen
@@ -67,7 +67,7 @@ Validation regex: `^[A-Z][A-Za-z0-9]*-WIKI$`. Empty / pure-punctuation input
 raises `WikiNameError`.
 
 `hyphenated_lookup` = lower-case slug with single hyphen between camel
-boundaries: `HealthLite-WIKI → health-lite`. `slug` = lower-case primary
+boundaries: `MultiWord-WIKI → multi-word`. `slug` = lower-case primary
 without `-WIKI` and without hyphens (`healthlite`).
 
 ## Levenshtein (`lifecycle.py`)

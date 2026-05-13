@@ -17,7 +17,7 @@ from ai_steward_wiki.storage.audit.models import AuditEvent
 async def test_trash_sweep_redacts_before_rmtree(tmp_path: Path, audit_maker) -> None:
     trash = tmp_path / "_trash"
     trash.mkdir()
-    entry = trash / "health-20260101"
+    entry = trash / "medical-20260101"
     entry.mkdir()
     note = entry / "run.md"
     note.write_text("PAN 4111 1111 1111 1111 done", encoding="utf-8")

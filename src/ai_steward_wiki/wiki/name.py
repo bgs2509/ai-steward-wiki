@@ -110,7 +110,7 @@ def _pascal_case(parts: list[str]) -> str:
 
 
 def _camel_to_hyphen(name: str) -> str:
-    """`HealthLite` → `health-lite`. Inserts hyphen at lower→Upper boundaries."""
+    """`MultiWord` → `multi-word`. Inserts hyphen at lower→Upper boundaries."""
     return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", name).lower()
 
 
@@ -121,7 +121,7 @@ def normalize_wiki_name(raw: str) -> WikiName:
 
     transliterated = _transliterate(raw.strip())
     # Split first on non-alphanumeric, then further on camel boundaries so
-    # input like "HealthLite" yields ["Health", "Lite"] for proper hyphen
+    # input like "MultiWord" yields ["Multi", "Word"] for proper hyphen
     # reconstruction in hyphenated_lookup.
     raw_parts = [p for p in re.split(r"[^A-Za-z0-9]+", transliterated) if p]
     parts: list[str] = []

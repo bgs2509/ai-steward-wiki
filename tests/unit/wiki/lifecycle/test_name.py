@@ -6,17 +6,17 @@ from ai_steward_wiki.wiki.name import WikiNameError, normalize_wiki_name
 
 
 def test_pascal_case_english() -> None:
-    n = normalize_wiki_name("health lite")
-    assert n.primary == "HealthLite-WIKI"
-    assert n.hyphenated_lookup == "health-lite"
-    assert n.slug == "healthlite"
+    n = normalize_wiki_name("multi word")
+    assert n.primary == "MultiWord-WIKI"
+    assert n.hyphenated_lookup == "multi-word"
+    assert n.slug == "multiword"
 
 
 def test_already_pascal() -> None:
-    n = normalize_wiki_name("Health")
-    assert n.primary == "Health-WIKI"
-    assert n.hyphenated_lookup == "health"
-    assert n.slug == "health"
+    n = normalize_wiki_name("Medical")
+    assert n.primary == "Medical-WIKI"
+    assert n.hyphenated_lookup == "medical"
+    assert n.slug == "medical"
 
 
 def test_cyrillic_basic() -> None:
@@ -54,8 +54,8 @@ def test_only_wiki_suffix_rejected() -> None:
 
 
 def test_hyphenated_lookup_camel_boundary() -> None:
-    n = normalize_wiki_name("HealthLite")
-    assert n.hyphenated_lookup == "health-lite"
+    n = normalize_wiki_name("MultiWord")
+    assert n.hyphenated_lookup == "multi-word"
 
 
 def test_digits_preserved() -> None:

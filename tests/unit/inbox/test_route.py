@@ -164,9 +164,9 @@ def test_stage_missing_media_is_skipped(tmp_path: Path) -> None:
 def test_pick_domain_overlay_known(tmp_path: Path) -> None:
     pdir = tmp_path / "prompts"
     pdir.mkdir()
-    (pdir / "domain-health.md").write_text("x", encoding="utf-8")
+    (pdir / "domain-medical.md").write_text("x", encoding="utf-8")
     (pdir / "domain-default.md").write_text("x", encoding="utf-8")
-    assert pick_domain_overlay(pdir, "health") == pdir / "domain-health.md"
+    assert pick_domain_overlay(pdir, "medical") == pdir / "domain-medical.md"
 
 
 def test_pick_domain_overlay_falls_back(tmp_path: Path) -> None:

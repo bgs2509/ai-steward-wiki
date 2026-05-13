@@ -296,7 +296,7 @@ class _DigestSender:
 
 async def _resolve_two(owner_id: int):
     # Fake paths — only for tests that return before deliver_output touches them.
-    return [("health", Path("/w/u/Health-WIKI")), ("finance", Path("/w/u/Finance-WIKI"))]
+    return [("medical", Path("/w/u/Medical-WIKI")), ("finance", Path("/w/u/Finance-WIKI"))]
 
 
 async def _resolve_none(owner_id: int):
@@ -305,16 +305,16 @@ async def _resolve_none(owner_id: int):
 
 @pytest.fixture
 def wiki_dirs(tmp_path):
-    health = tmp_path / "Health-WIKI"
+    medical = tmp_path / "Medical-WIKI"
     finance = tmp_path / "Finance-WIKI"
-    health.mkdir()
+    medical.mkdir()
     finance.mkdir()
-    return health, finance
+    return medical, finance
 
 
-def _make_resolve_two(health: Path, finance: Path):
+def _make_resolve_two(medical: Path, finance: Path):
     async def _resolve(owner_id: int):
-        return [("health", health), ("finance", finance)]
+        return [("medical", medical), ("finance", finance)]
 
     return _resolve
 
@@ -403,7 +403,7 @@ async def test_list_owner_digest_job_ids(
     session_factory, audit_session_maker, wiki_dirs, sessions_factory
 ) -> None:
     # aisw-269 — only the owner's enabled (status=='scheduled') digest_job ids.
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         a = await create_digest_job(
@@ -443,7 +443,7 @@ async def test_list_owner_digest_job_ids(
     set_digest_context(
         scheduler=sched,
         runner=_OkRunner(),
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
@@ -459,7 +459,7 @@ async def test_run_section_expand(
     session_factory, audit_session_maker, wiki_dirs, sessions_factory
 ) -> None:
     # aisw-269 — re-run Claude scoped to one section over the owner's WIKI set.
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     runner = _OkRunner()
     from ai_steward_wiki.scheduler.firing import run_section_expand
@@ -467,7 +467,7 @@ async def test_run_section_expand(
     set_digest_context(
         scheduler=sched,
         runner=runner,
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
@@ -475,7 +475,7 @@ async def test_run_section_expand(
     )
     out = await run_section_expand(7, "trackers")
     assert isinstance(out, str)
-    assert runner.calls[0]["wiki_id"] == "health"
+    assert runner.calls[0]["wiki_id"] == "medical"
     assert runner.calls[0]["extra_add_dirs"] == [finance]
     assert runner.calls[0]["section"] == "trackers"
 
@@ -497,7 +497,7 @@ async def test_run_section_expand(
 async def test_fire_digest_job_runs_and_delivers(
     session_factory, audit_session_maker, wiki_dirs, sessions_factory
 ) -> None:
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -512,7 +512,7 @@ async def test_fire_digest_job_runs_and_delivers(
     set_digest_context(
         scheduler=sched,
         runner=runner,
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,
@@ -522,7 +522,7 @@ async def test_fire_digest_job_runs_and_delivers(
     assert len(sender.sent) == 1
     assert "TL;DR" in sender.sent[0][1]
     # primary WIKI is the first; the rest are extra_add_dirs
-    assert runner.calls[0]["wiki_id"] == "health"
+    assert runner.calls[0]["wiki_id"] == "medical"
     assert runner.calls[0]["extra_add_dirs"] == [finance]
     async with session_factory() as s:
         row = await s.get(Job, job_id)
@@ -534,8 +534,8 @@ async def test_fire_digest_job_runs_and_delivers(
 async def test_fire_digest_job_scope_filter_keeps_named_subset(
     session_factory, audit_session_maker, wiki_dirs, sessions_factory
 ) -> None:
-    # aisw-269 — a digest job scoped to ['health'] runs only that WIKI.
-    health, finance = wiki_dirs
+    # aisw-269 — a digest job scoped to ['medical'] runs only that WIKI.
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -544,21 +544,21 @@ async def test_fire_digest_job_scope_filter_keeps_named_subset(
             owner_telegram_id=7,
             chat_id=7,
             recurrence=Recurrence(kind="daily", time_hhmm="09:00", tz="UTC"),
-            wiki_scope=["health"],
+            wiki_scope=["medical"],
         )
     runner = _OkRunner()
     sender = _DigestSender()
     set_digest_context(
         scheduler=sched,
         runner=runner,
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,
         sessions_session_maker=sessions_factory,
     )
     await fire_digest_job(job_id)
-    assert runner.calls[0]["wiki_id"] == "health"
+    assert runner.calls[0]["wiki_id"] == "medical"
     assert runner.calls[0]["extra_add_dirs"] == []
     async with session_factory() as s:
         row = await s.get(Job, job_id)
@@ -570,7 +570,7 @@ async def test_fire_digest_job_scope_all_vanished_notice_no_strike(
     session_factory, audit_session_maker, wiki_dirs, sessions_factory
 ) -> None:
     # aisw-269 — scoped to a WIKI that no longer exists → ru notice, no run, no strike.
-    health, _finance = wiki_dirs
+    medical, _finance = wiki_dirs
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -585,7 +585,7 @@ async def test_fire_digest_job_scope_all_vanished_notice_no_strike(
     sender = _DigestSender()
 
     async def _resolve_one(owner_id: int):
-        return [("health", health)]
+        return [("medical", medical)]
 
     set_digest_context(
         scheduler=sched,
@@ -612,7 +612,7 @@ async def test_fire_digest_job_delivers_via_deliver_output(
 ) -> None:
     from ai_steward_wiki.storage.audit.models import RunOutput
 
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -626,14 +626,14 @@ async def test_fire_digest_job_delivers_via_deliver_output(
     set_digest_context(
         scheduler=sched,
         runner=_OkRunner(),
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,
         sessions_session_maker=sessions_factory,
     )
     await fire_digest_job(job_id)
-    runs_root = health / "data" / "runs"
+    runs_root = medical / "data" / "runs"
     assert runs_root.is_dir()
     md_files = list(runs_root.rglob("*.md"))
     assert len(md_files) == 1
@@ -650,7 +650,7 @@ async def test_fire_digest_job_delivers_via_deliver_output(
 async def test_fire_digest_job_deliver_failure_strikes(
     session_factory, audit_session_maker, wiki_dirs, sessions_factory
 ) -> None:
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     async with session_factory() as s:
         job_id = await create_digest_job(
@@ -663,7 +663,7 @@ async def test_fire_digest_job_deliver_failure_strikes(
     set_digest_context(
         scheduler=sched,
         runner=_OkRunner(),
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(fail=True),
@@ -952,14 +952,14 @@ async def _make_digest_job(session_factory, sched) -> int:
 async def test_digest_no_prefs_planner_context_has_no_directive(
     session_factory, audit_session_maker, sessions_factory, wiki_dirs
 ) -> None:
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     job_id = await _make_digest_job(session_factory, sched)
     runner = _OkRunner()
     set_digest_context(
         scheduler=sched,
         runner=runner,
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
@@ -976,7 +976,7 @@ async def test_digest_trackers_disabled_appends_directive(
 
     from ai_steward_wiki.storage.sessions.digest_prefs import set_digest_section
 
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     job_id = await _make_digest_job(session_factory, sched)
     await _seed_sessions_user(sessions_factory, 7)
@@ -985,7 +985,7 @@ async def test_digest_trackers_disabled_appends_directive(
     set_digest_context(
         scheduler=sched,
         runner=runner,
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
@@ -1005,7 +1005,7 @@ async def test_digest_both_disabled_lists_both(
 ) -> None:
     from ai_steward_wiki.storage.sessions.digest_prefs import set_digest_section
 
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     job_id = await _make_digest_job(session_factory, sched)
     await _seed_sessions_user(sessions_factory, 7)
@@ -1015,7 +1015,7 @@ async def test_digest_both_disabled_lists_both(
     set_digest_context(
         scheduler=sched,
         runner=runner,
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=_DigestSender(),
@@ -1032,7 +1032,7 @@ async def test_digest_both_disabled_lists_both(
 async def test_digest_prefs_read_failure_degrades_to_all_on(
     session_factory, audit_session_maker, sessions_factory, wiki_dirs, monkeypatch
 ) -> None:
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     job_id = await _make_digest_job(session_factory, sched)
     runner = _OkRunner()
@@ -1040,7 +1040,7 @@ async def test_digest_prefs_read_failure_degrades_to_all_on(
     set_digest_context(
         scheduler=sched,
         runner=runner,
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,
@@ -1088,7 +1088,7 @@ async def test_digest_emits_cards_when_prefs_enabled(
     session_factory, audit_session_maker, sessions_factory, wiki_dirs
 ) -> None:
     # Default cards_enabled=True ⇒ emit_reminder_cards is called after delivery.
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     job_id = await _make_digest_job(session_factory, sched)
     # one pending reminder in the ±2h window (UTC now-ish)
@@ -1099,7 +1099,7 @@ async def test_digest_emits_cards_when_prefs_enabled(
     set_digest_context(
         scheduler=sched,
         runner=_OkRunner(),
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,
@@ -1115,7 +1115,7 @@ async def test_digest_emits_cards_when_prefs_enabled(
 async def test_digest_skips_cards_when_prefs_disabled(
     session_factory, audit_session_maker, sessions_factory, wiki_dirs
 ) -> None:
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     job_id = await _make_digest_job(session_factory, sched)
     await _seed_pending_reminder(
@@ -1126,7 +1126,7 @@ async def test_digest_skips_cards_when_prefs_disabled(
     set_digest_context(
         scheduler=sched,
         runner=_OkRunner(),
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,
@@ -1141,14 +1141,14 @@ async def test_digest_skips_cards_when_prefs_disabled(
 async def test_digest_cards_failure_does_not_strike_digest(
     session_factory, audit_session_maker, sessions_factory, wiki_dirs, monkeypatch
 ) -> None:
-    health, finance = wiki_dirs
+    medical, finance = wiki_dirs
     sched = _FakeCronScheduler()
     job_id = await _make_digest_job(session_factory, sched)
     sender = _DigestSender()
     set_digest_context(
         scheduler=sched,
         runner=_OkRunner(),
-        resolve_owner_wikis=_make_resolve_two(health, finance),
+        resolve_owner_wikis=_make_resolve_two(medical, finance),
         jobs_session_maker=session_factory,
         audit_session_maker=audit_session_maker,
         sender=sender,

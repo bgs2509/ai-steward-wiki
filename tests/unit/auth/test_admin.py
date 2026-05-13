@@ -233,10 +233,10 @@ def test_failure_event_accepts_metadata_only() -> None:
     ev = FailureEvent(
         correlation_id="cid-1",
         failure_kind="cli_timeout",
-        wiki_id="health",
+        wiki_id="medical",
         extra={"exit_code": "137"},
     )
-    assert ev.wiki_id == "health"
+    assert ev.wiki_id == "medical"
     assert ev.extra["exit_code"] == "137"
 
 

@@ -49,8 +49,8 @@ async def test_digest_adapter_full_digest_uses_digest_prompt(
 ) -> None:
     adapter = _adapter(tmp_path)
     out = await adapter(
-        wiki_id="health",
-        wiki_path=tmp_path / "Health-WIKI",
+        wiki_id="medical",
+        wiki_path=tmp_path / "Medical-WIKI",
         extra_add_dirs=[],
         planner_context="PLAN",
         correlation_id="c",
@@ -66,8 +66,8 @@ async def test_digest_adapter_section_uses_expand_prompt(
 ) -> None:
     adapter = _adapter(tmp_path)
     out = await adapter(
-        wiki_id="health",
-        wiki_path=tmp_path / "Health-WIKI",
+        wiki_id="medical",
+        wiki_path=tmp_path / "Medical-WIKI",
         extra_add_dirs=[],
         planner_context="",
         correlation_id="c",
