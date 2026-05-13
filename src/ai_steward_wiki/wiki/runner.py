@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.9
+# VERSION: 0.0.10
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -29,7 +29,11 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.9 - aisw-oqq: run_wiki_session/_build_argv accept extra_add_dirs
+#   LAST_CHANGE: v0.0.10 - aisw-nrt (chunk 2): claude_cli.spawn at boundary +
+#                claude_cli.exit/error adjacent to wiki.run.finish/error. stdout_bytes
+#                is 0 in the wiki path because stdout is streamed into events, not
+#                retained as a byte buffer (intentional asymmetry vs classifier path).
+#   PREVIOUS:    v0.0.9 - aisw-oqq: run_wiki_session/_build_argv accept extra_add_dirs
 #                — additional read-only --add-dir targets, placed before media_dirs
 #                (digest job reads several Domain-WIKIs in one run).
 #   PREVIOUS:    v0.0.8 - aisw-t0n: run_wiki_session accepts an optional
@@ -98,7 +102,12 @@ from ai_steward_wiki.claude_cli.common import (
     system_prompt_argv,
     truncate_stderr,
 )
-from ai_steward_wiki.logging_events import WIKI_RUN
+from ai_steward_wiki.logging_events import (
+    CLAUDE_CLI_ERROR,
+    CLAUDE_CLI_EXIT,
+    CLAUDE_CLI_SPAWN,
+    WIKI_RUN,
+)
 from ai_steward_wiki.logging_setup import traced
 from ai_steward_wiki.scheduler.core import kill_with_sequence
 from ai_steward_wiki.wiki.acquire import LockAcquirer
@@ -166,6 +175,12 @@ class AsyncioSpawner:
         cwd: Path,
         stdin_data: bytes | None = None,
     ) -> SpawnedProcess:
+        _log.info(
+            CLAUDE_CLI_SPAWN,
+            argv_length=len(argv),
+            env_keys_count=len(env),
+            cwd=str(cwd),
+        )
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=(
@@ -464,6 +479,7 @@ async def run_wiki_session(
         except TimeoutError as e:
             with contextlib.suppress(ProcessLookupError):
                 await kill_with_sequence(proc, grace_seconds=cfg.term_grace_s)
+            latency_ms = int((time.monotonic() - started) * 1000)
             _log.warning(
                 "wiki.run.finish",
                 correlation_id=correlation_id,
@@ -471,8 +487,16 @@ async def run_wiki_session(
                 run_id=run_id,
                 exit_code=-1,
                 n_events=len(events),
-                latency_ms=int((time.monotonic() - started) * 1000),
+                latency_ms=latency_ms,
                 timeout=True,
+            )
+            _log.error(
+                CLAUDE_CLI_ERROR,
+                exit_code=None,
+                duration_ms=latency_ms,
+                stdout_bytes=0,
+                stderr_bytes=0,
+                reason="timeout",
             )
             _persist_transcript(events, transcript_path)
             raise WikiRunnerTimeoutError(f"wiki run exceeded timeout {effective_timeout_s}s") from e
@@ -480,6 +504,7 @@ async def run_wiki_session(
     stderr_text = await _drain_stderr(proc)
     _persist_transcript(events, transcript_path)
     latency_ms = int((time.monotonic() - started) * 1000)
+    stderr_bytes = len(stderr_text.encode("utf-8"))
     if exit_code != 0:
         _log.error(
             "wiki.run.error",
@@ -491,6 +516,14 @@ async def run_wiki_session(
             latency_ms=latency_ms,
             stderr=stderr_text,
         )
+        _log.error(
+            CLAUDE_CLI_ERROR,
+            exit_code=exit_code,
+            duration_ms=latency_ms,
+            stdout_bytes=0,
+            stderr_bytes=stderr_bytes,
+            reason="nonzero_exit",
+        )
         raise WikiRunnerError(f"claude CLI exited rc={exit_code}; stderr={stderr_text}")
     _log.info(
         "wiki.run.finish",
@@ -500,6 +533,13 @@ async def run_wiki_session(
         exit_code=exit_code,
         n_events=len(events),
         latency_ms=latency_ms,
+    )
+    _log.info(
+        CLAUDE_CLI_EXIT,
+        exit_code=exit_code,
+        duration_ms=latency_ms,
+        stdout_bytes=0,
+        stderr_bytes=stderr_bytes,
     )
     return WikiRunResult(
         run_id=run_id,
