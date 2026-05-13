@@ -64,5 +64,11 @@ def render_template(
         if extra:
             parts.append(f"extra={sorted(extra)}")
         raise TemplateError(f"slug mismatch in {path}: {'; '.join(parts)}")
-    return text.format(**format_vars)
+    # Strip slug-разметка lines before formatting — they are structural anchors
+    # for slug validation, not user-facing content, and Telegram's HTML parse_mode
+    # rejects `<!-- ... -->` as an unsupported tag.
+    body = _SLUG_RE.sub("", text)
+    # Collapse runs of blank lines left by the stripped slug lines (≥3 newlines → 2).
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return body.format(**format_vars)
     # END_BLOCK_TEMPLATES_RENDER
