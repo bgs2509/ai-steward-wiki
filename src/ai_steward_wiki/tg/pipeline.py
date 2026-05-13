@@ -298,7 +298,7 @@ __all__ = [
 ]
 
 STREAMING_PLACEHOLDER_RU = "\u23f3 Думаю\u2026"
-STREAMING_TIMEOUT_S = 5.0
+STREAMING_TIMEOUT_S = 1.0
 
 _log = structlog.get_logger("tg.pipeline")
 
