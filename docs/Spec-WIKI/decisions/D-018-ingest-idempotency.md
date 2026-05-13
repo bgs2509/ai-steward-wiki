@@ -66,6 +66,17 @@
 3. GDPR hard-delete ([D-034](D-034-pii-redactor.md)) — `seen_files` теперь под общей `audit.db`-purge (через `/admin gdpr_purge`).
 4. Миграция: для уже стоящих инсталляций — Alembic-step `move_seen_files_to_audit` в `alembic/audit/` (CREATE + copy + DROP в `alembic/jobs/`); MVP-инсталляций ещё нет, поэтому миграция пишется превентивно, но в первый release не запускается.
 
+## Уточнение 2026-05-13 (per-kind TTL, owner-scope PK)
+
+Реализационная редакция L2-дедупа (см. [ADR-028](../../adr/ADR-028-l2-dedup-per-kind-ttl.md), bd_id `aisw-5hy`):
+
+1. **PK `seen_files`** становится составным `(owner_telegram_id, content_sha256)` — кросс-owner коллизий больше нет; "первый замочил всех" из исходной редакции D-018 устранено.
+2. **TTL per kind** (вместо единого 30d): `text/voice = 60s` (AISW_L2_TTL_TEXT_SECONDS), `photo/file = 30d` (AISW_L2_TTL_BINARY_SECONDS). Защита от retry-storm для текста + сохранение долгой идентификации артефактов.
+3. **Поведение при истечении TTL:** строка в `seen_files` рассматривается как "не виденная", `first_seen_at_utc` обновляется. Лог-событие `inbox.idempotency.l2_refreshed`.
+4. **`SeenFileMatch.within_ttl: bool`** добавлен в API сервиса для будущих UX-веток (soft-confirm — отложено).
+5. **Миграция** `0007_seen_files_owner_pk_ttl`: DROP+CREATE, исторические forensic-rows удаляются (audit-only данные, retention 30d, business-loss нет).
+
 ## Перенос в ADR
 
+- [x] частично перенесено в [ADR-028](../../adr/ADR-028-l2-dedup-per-kind-ttl.md) (per-kind TTL + owner-scope PK)
 - [ ] перенесено в `docs/adr/ADR-018-ingest-idempotency.md` (когда финализируется)
