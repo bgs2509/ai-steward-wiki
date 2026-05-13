@@ -82,6 +82,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import structlog
+from aiogram.exceptions import TelegramBadRequest
 
 from ai_steward_wiki.auth.onboarding import format_intro_message
 from ai_steward_wiki.scheduler import firing
@@ -311,7 +312,15 @@ def build_router(
                 bot_name=_BOT_NAME,
             )
             _log.info("tg.command.start.known", owner_telegram_id=owner)
-            await message.answer(text)
+            try:
+                await message.answer(text)
+            except TelegramBadRequest as exc:
+                _log.warning(
+                    "tg.command.start.send_failed",
+                    owner_telegram_id=owner,
+                    chat_id=message.chat.id,
+                    error=str(exc),
+                )
             return
         # Unknown id reached us via the public-command bypass.
         if on_start_unknown is not None:
@@ -331,7 +340,15 @@ def build_router(
             bot_name=_BOT_NAME,
         )
         _log.info("tg.command.start.unknown", owner_telegram_id=owner)
-        await message.answer(text)
+        try:
+            await message.answer(text)
+        except TelegramBadRequest as exc:
+            _log.warning(
+                "tg.command.start.send_failed",
+                owner_telegram_id=owner,
+                chat_id=message.chat.id,
+                error=str(exc),
+            )
         # END_BLOCK_HANDLER_START
 
     @router.message(Command("help"))
@@ -351,7 +368,15 @@ def build_router(
             owner_telegram_id=message.from_user.id,
             is_allowed=not bool(data.get("is_pending", False)),
         )
-        await message.answer(text)
+        try:
+            await message.answer(text)
+        except TelegramBadRequest as exc:
+            _log.warning(
+                "tg.command.help.send_failed",
+                owner_telegram_id=message.from_user.id,
+                chat_id=message.chat.id,
+                error=str(exc),
+            )
         # END_BLOCK_HANDLER_HELP
 
     @router.message(Command("manual"))
@@ -371,7 +396,15 @@ def build_router(
             owner_telegram_id=message.from_user.id,
             is_allowed=not bool(data.get("is_pending", False)),
         )
-        await message.answer(text)
+        try:
+            await message.answer(text)
+        except TelegramBadRequest as exc:
+            _log.warning(
+                "tg.command.manual.send_failed",
+                owner_telegram_id=message.from_user.id,
+                chat_id=message.chat.id,
+                error=str(exc),
+            )
         # END_BLOCK_HANDLER_MANUAL
 
     @router.message(Command("digest_now"))
