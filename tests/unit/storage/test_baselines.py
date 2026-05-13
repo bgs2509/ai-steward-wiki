@@ -66,6 +66,54 @@ def test_alembic_upgrade_creates_tables(db, env_var, expected_tables, tmp_path, 
     assert not missing, f"missing tables in {db}.db: {missing}; got {actual}"
 
 
+def test_jobs_baseline_has_user_state_columns(tmp_path, monkeypatch):
+    """aisw-163: a fresh baseline (`create_all`) must include user_state + snooze_count."""
+    db_path = tmp_path / "jobs.db"
+    monkeypatch.setenv("AISW_JOBS_DB_URL_SYNC", f"sqlite:///{db_path}")
+    cfg = Config(str(REPO_ROOT / "alembic" / "jobs" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic" / "jobs"))
+    command.upgrade(cfg, "head")
+
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    conn.close()
+    assert "user_state" in cols, f"missing user_state in jobs; got {cols}"
+    assert "snooze_count" in cols, f"missing snooze_count in jobs; got {cols}"
+
+
+def test_jobs_stepwise_upgrade_adds_user_state(tmp_path, monkeypatch):
+    """aisw-163: stamping 0001 then upgrading to head → 0002 ALTERs the existing baseline."""
+    db_path = tmp_path / "jobs.db"
+    monkeypatch.setenv("AISW_JOBS_DB_URL_SYNC", f"sqlite:///{db_path}")
+    cfg = Config(str(REPO_ROOT / "alembic" / "jobs" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic" / "jobs"))
+    # Simulate an old baseline by stamping it (no metadata create) — but the
+    # baseline IS create_all of LIVE metadata, so even at 0001 the columns
+    # exist. We instead drop them after baseline to simulate a pre-feature DB.
+    command.upgrade(cfg, "0001_jobs_baseline")
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    # Drop the two columns + the partial index that references one of them to
+    # simulate an older schema. SQLite supports DROP COLUMN as of 3.35.
+    cur.execute("DROP INDEX IF EXISTS ix_jobs_reminder_pending_window")
+    cur.execute("ALTER TABLE jobs DROP COLUMN user_state")
+    cur.execute("ALTER TABLE jobs DROP COLUMN snooze_count")
+    conn.commit()
+    conn.close()
+
+    command.upgrade(cfg, "head")
+
+    conn = sqlite3.connect(db_path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    conn.close()
+    assert "user_state" in cols
+    assert "snooze_count" in cols
+
+
 def test_sessions_stepwise_upgrade_creates_user_digest_prefs(tmp_path, monkeypatch):
     """Stamp 0001 then upgrade to head → 0002 brings user_digest_prefs onto an already-baselined DB."""
     db_path = tmp_path / "sessions.db"

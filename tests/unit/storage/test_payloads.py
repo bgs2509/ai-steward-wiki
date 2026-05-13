@@ -100,6 +100,35 @@ def test_reminder_round_trip():
     assert again == p
 
 
+# aisw-163: category lets the digest cards module pick per-category buttons.
+def test_reminder_category_default_generic():
+    p = parse_job_payload({"kind": "reminder_job", "message": "x"})
+    assert isinstance(p, ReminderPayload)
+    assert p.category == "generic"
+
+
+def test_reminder_category_explicit_round_trip():
+    for cat in ("medication", "event", "generic"):
+        p = parse_job_payload({"kind": "reminder_job", "message": "x", "category": cat})
+        assert isinstance(p, ReminderPayload)
+        assert p.category == cat
+        again = parse_job_payload(p.model_dump(mode="json"))
+        assert again == p
+
+
+def test_reminder_category_invalid_rejected():
+    with pytest.raises(ValidationError):
+        parse_job_payload({"kind": "reminder_job", "message": "x", "category": "gibberish"})
+
+
+def test_reminder_legacy_payload_still_parses():
+    # aisw-163: a row persisted before the category field exists must keep validating.
+    legacy = {"kind": "reminder_job", "message": "x", "lead_time_min": 5}
+    p = parse_job_payload(legacy)
+    assert isinstance(p, ReminderPayload)
+    assert p.category == "generic"
+
+
 def test_reminder_lead_time():
     p = parse_job_payload({"kind": "reminder_job", "message": "x", "lead_time_min": 30})
     assert isinstance(p, ReminderPayload)

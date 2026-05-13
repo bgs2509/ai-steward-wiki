@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/storage/jobs/models.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: ORM models for jobs.db — operational hot store (D-002, D-014, D-019).
 #   SCOPE: jobs (flat + JSON payload), tracker_answers, jobs_dlq.
@@ -17,7 +17,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - initial jobs.db ORM models
+#   LAST_CHANGE: v0.0.3 - aisw-163: jobs.user_state + jobs.snooze_count for digest cards (alembic/jobs/0002)
+#   PREVIOUS:    v0.0.2 - initial jobs.db ORM models
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -52,6 +53,18 @@ class Job(Base):
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at_utc: Mapped[datetime] = mapped_column(nullable=False)
+    # aisw-163: user-resolution state for reminder_job cards in the digest.
+    # Distinct from lifecycle `status` ('scheduled'/'finished'/...) — this
+    # tracks whether the *user* has resolved the surfaced card. For non-
+    # reminder kinds it stays 'pending' forever (never read). Partial index on
+    # (user_state, kind, scheduled_at_utc) where kind='reminder_job' makes the
+    # digest's ±2h window query O(log n).
+    user_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending", index=False
+    )
+    snooze_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
 
 class TrackerAnswer(Base):
@@ -71,6 +84,16 @@ Index(
     TrackerAnswer.owner_telegram_id,
     TrackerAnswer.question_key,
     TrackerAnswer.created_at_utc,
+)
+
+
+# aisw-163: partial index — only reminder_jobs participate. Keeps the digest's
+# ±2h window query O(log n) without bloating digest/cron/purge rows.
+Index(
+    "ix_jobs_reminder_pending_window",
+    Job.user_state,
+    Job.scheduled_at_utc,
+    sqlite_where=Job.kind == "reminder_job",
 )
 
 

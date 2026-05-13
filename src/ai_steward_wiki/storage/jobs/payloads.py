@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/storage/jobs/payloads.py
-# VERSION: 0.0.5
+# VERSION: 0.0.6
 # START_MODULE_CONTRACT
 #   PURPOSE: Pydantic v2 discriminated union for jobs.payload (D-002).
 #   SCOPE: Closed list of job kinds known at MVP. New kinds added in subsequent chunks.
@@ -14,13 +14,14 @@
 #   DigestPayload - recurring digest job: wiki_scope ('all'|list[str]), recurrence, window_hours, prompt_hint (aisw-oqq; list shape aisw-269)
 #   CronUserPayload - user-defined cron (NL-scheduled)
 #   PurgePayload - retention purge job (D-034 / §10.4)
-#   ReminderPayload - one-shot reminder job: message + optional lead_time_min (aisw-kcz)
+#   ReminderPayload - one-shot reminder job: message + optional lead_time_min + category (aisw-kcz; category aisw-163)
 #   JobPayload - Annotated discriminated union over the five above
 #   parse_job_payload - validate a dict into the union, returning the concrete model
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.5 - aisw-269: widen DigestPayload.wiki_scope to 'all'|list[str] (named-subset digest; no jobs.db migration)
+#   LAST_CHANGE: v0.0.6 - aisw-163: add ReminderPayload.category (medication|event|generic; default 'generic'; legacy rows keep validating)
+#   PREVIOUS:    v0.0.5 - aisw-269: widen DigestPayload.wiki_scope to 'all'|list[str] (named-subset digest; no jobs.db migration)
 #   PREVIOUS:    v0.0.4 - aisw-oqq: widen DigestPayload (wiki_scope/recurrence/window_hours/prompt_hint)
 #   PREVIOUS:    v0.0.3 - aisw-kcz: add ReminderPayload (kind='reminder_job') to the union
 #   PREVIOUS:    v0.0.2 - initial discriminated union for job payloads (D-002)
@@ -83,6 +84,10 @@ class ReminderPayload(_PayloadBase):
     kind: Literal["reminder_job"] = "reminder_job"
     message: str
     lead_time_min: int = Field(default=0, ge=0)
+    # aisw-163: lets the digest cards module render category-specific button
+    # sets. Legacy rows (persisted before this field existed) default to
+    # 'generic' on parse — no jobs.db migration needed for the payload itself.
+    category: Literal["medication", "event", "generic"] = "generic"
 
 
 JobPayload = Annotated[
