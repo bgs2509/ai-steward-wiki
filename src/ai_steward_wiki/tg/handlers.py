@@ -83,6 +83,7 @@ from typing import TYPE_CHECKING, cast
 
 import structlog
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.utils.chat_action import ChatActionSender
 
 from ai_steward_wiki.auth.onboarding import format_intro_message
 from ai_steward_wiki.scheduler import firing
@@ -94,6 +95,25 @@ from ai_steward_wiki.storage.sessions.digest_prefs import (
 from ai_steward_wiki.templates import render_template
 from ai_steward_wiki.tg.callbacks import REMINDER_CALLBACK_PREFIX, on_reminder_card
 from ai_steward_wiki.tg.pipeline import ConfirmKeyboardAction, MessagePipeline
+
+if TYPE_CHECKING:
+    from aiogram import Bot as _Bot
+
+
+# Tiny helper: yield a real ChatActionSender.typing context if bot is available,
+# else an inert async-noop. Lets unit tests stay decoupled from aiogram.Bot mocks
+# and lets the prod path show the "typing…" indicator throughout the pipeline.
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _typing_or_noop(bot: _Bot | None, chat_id: int):  # type: ignore[no-untyped-def]
+    if bot is None:
+        yield
+        return
+    async with ChatActionSender.typing(bot=bot, chat_id=chat_id):
+        yield
+
 
 __all__ = [
     "CONFIRM_CALLBACK_PREFIX",
@@ -285,12 +305,17 @@ def build_router(
         if message.from_user is None or message.text is None or message.chat is None:
             _log.debug("tg.handlers.text.skip_missing_fields")
             return
-        await pipeline.on_text(
-            telegram_id=message.from_user.id,
-            chat_id=message.chat.id,
-            update_id=message.message_id,
-            text=message.text,
-        )
+        # Keep Telegram's "typing…" indicator alive for the whole pipeline
+        # (Stage-0 + router + answer); aiogram re-sends sendChatAction ~every 5s.
+        # message.bot may be None in unit-test fixtures — fall through without the
+        # indicator in that case.
+        async with _typing_or_noop(getattr(message, "bot", None), message.chat.id):
+            await pipeline.on_text(
+                telegram_id=message.from_user.id,
+                chat_id=message.chat.id,
+                update_id=message.message_id,
+                text=message.text,
+            )
         # END_BLOCK_HANDLER_TEXT
 
     @router.message(Command("start"))
@@ -535,12 +560,13 @@ def build_router(
             _log.debug("tg.handlers.voice.skip_missing_fields")
             return
         audio = await _download_bytes(message.bot, message.voice.file_id)
-        await pipeline.on_voice(
-            telegram_id=message.from_user.id,
-            chat_id=message.chat.id,
-            update_id=message.message_id,
-            audio_bytes=audio,
-        )
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            await pipeline.on_voice(
+                telegram_id=message.from_user.id,
+                chat_id=message.chat.id,
+                update_id=message.message_id,
+                audio_bytes=audio,
+            )
         # END_BLOCK_HANDLER_VOICE
 
     @router.message(F.photo)
@@ -557,14 +583,15 @@ def build_router(
         # Telegram delivers photo as a list of sizes — take the largest (last).
         photo = message.photo[-1]
         data = await _download_bytes(message.bot, photo.file_id)
-        await pipeline.on_photo(
-            telegram_id=message.from_user.id,
-            chat_id=message.chat.id,
-            update_id=message.message_id,
-            photo_bytes=data,
-            mime="image/jpeg",  # TG re-encodes photos to JPEG (D-022)
-            caption=message.caption,
-        )
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            await pipeline.on_photo(
+                telegram_id=message.from_user.id,
+                chat_id=message.chat.id,
+                update_id=message.message_id,
+                photo_bytes=data,
+                mime="image/jpeg",  # TG re-encodes photos to JPEG (D-022)
+                caption=message.caption,
+            )
         # END_BLOCK_HANDLER_PHOTO
 
     @router.message(F.audio)
@@ -581,15 +608,16 @@ def build_router(
             return
         data = await _download_bytes(message.bot, message.audio.file_id)
         audio_mime = message.audio.mime_type or "audio/mpeg"
-        await pipeline.on_voice(
-            telegram_id=message.from_user.id,
-            chat_id=message.chat.id,
-            update_id=message.message_id,
-            audio_bytes=data,
-            caption=message.caption,
-            ext=_audio_ext_for(message.audio.mime_type, message.audio.file_name),
-            mime=audio_mime,
-        )
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            await pipeline.on_voice(
+                telegram_id=message.from_user.id,
+                chat_id=message.chat.id,
+                update_id=message.message_id,
+                audio_bytes=data,
+                caption=message.caption,
+                ext=_audio_ext_for(message.audio.mime_type, message.audio.file_name),
+                mime=audio_mime,
+            )
         # END_BLOCK_HANDLER_AUDIO
 
     @router.message(F.video_note)
@@ -606,14 +634,15 @@ def build_router(
             _log.debug("tg.handlers.video_note.skip_missing_fields")
             return
         data = await _download_bytes(message.bot, message.video_note.file_id)
-        await pipeline.on_voice(
-            telegram_id=message.from_user.id,
-            chat_id=message.chat.id,
-            update_id=message.message_id,
-            audio_bytes=data,
-            ext="mp4",
-            mime="video/mp4",
-        )
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            await pipeline.on_voice(
+                telegram_id=message.from_user.id,
+                chat_id=message.chat.id,
+                update_id=message.message_id,
+                audio_bytes=data,
+                ext="mp4",
+                mime="video/mp4",
+            )
         # END_BLOCK_HANDLER_VIDEO_NOTE
 
     @router.message(F.document)
@@ -629,15 +658,16 @@ def build_router(
             return
         doc = message.document
         data = await _download_bytes(message.bot, doc.file_id)
-        await pipeline.on_document(
-            telegram_id=message.from_user.id,
-            chat_id=message.chat.id,
-            update_id=message.message_id,
-            doc_bytes=data,
-            mime=doc.mime_type or "application/octet-stream",
-            filename=doc.file_name or "unnamed",
-            caption=message.caption,
-        )
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            await pipeline.on_document(
+                telegram_id=message.from_user.id,
+                chat_id=message.chat.id,
+                update_id=message.message_id,
+                doc_bytes=data,
+                mime=doc.mime_type or "application/octet-stream",
+                filename=doc.file_name or "unnamed",
+                caption=message.caption,
+            )
         # END_BLOCK_HANDLER_DOCUMENT
 
     @router.callback_query(F.data.startswith(REMINDER_CALLBACK_PREFIX))
