@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/scheduler/maintenance.py
-# VERSION: 0.0.4
+# VERSION: 0.0.5
 # START_MODULE_CONTRACT
 #   PURPOSE: Register periodic maintenance jobs on the APScheduler bootstrap.
 #   SCOPE: register_purge_expired_pending_job, register_media_staging_sweep_job,
@@ -22,7 +22,11 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.4 - aisw-12t (Phase-E.a): media sweep iterates per-user
+#   LAST_CHANGE: v0.0.5 - aisw-6mi: register maintenance jobs in the "memory"
+#                jobstore (MAINTENANCE_JOBSTORE_ALIAS) instead of the default
+#                SQLAlchemyJobStore — args carry async_sessionmaker which is
+#                not picklable (create_engine.<locals>.connect closure).
+#   PREVIOUS:    v0.0.4 - aisw-12t (Phase-E.a): media sweep iterates per-user
 #                Inbox-WIKI/raw/media/_staging (was a single shared dir);
 #                register_media_staging_sweep_job(staging_root→wiki_root),
 #                register_all_retention_jobs(media_staging_root→wiki_root_for_media_sweep).
@@ -45,6 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_steward_wiki.auth.onboarding import PENDING_USER_TTL_DAYS, purge_expired_pending
 from ai_steward_wiki.inbox.staging import DEFAULT_STAGING_TTL_S, sweep_all_user_staging
+from ai_steward_wiki.scheduler.core import MAINTENANCE_JOBSTORE_ALIAS
 
 __all__ = [
     "MEDIA_STAGING_SWEEP_JOB_ID",
@@ -147,6 +152,7 @@ def register_purge_expired_pending_job(
         id=PURGE_PENDING_JOB_ID,
         replace_existing=True,
         args=[session_maker, ttl_days],
+        jobstore=MAINTENANCE_JOBSTORE_ALIAS,
     )
 
 
@@ -170,4 +176,5 @@ def register_media_staging_sweep_job(
         id=MEDIA_STAGING_SWEEP_JOB_ID,
         replace_existing=True,
         args=[wiki_root, ttl_s],
+        jobstore=MAINTENANCE_JOBSTORE_ALIAS,
     )

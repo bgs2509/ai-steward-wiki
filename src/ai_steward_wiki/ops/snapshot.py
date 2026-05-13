@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/ops/snapshot.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Daily db_snapshot maintenance job — VACUUM INTO state/snapshots/<UTC>/
 #            for jobs.db / audit.db / sessions.db with 7d rolling retention.
@@ -23,7 +23,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 14: M-OPS-BACKUP initial implementation
+#   LAST_CHANGE: v0.0.2 - aisw-6mi: register_db_snapshot_job targets the "memory"
+#                jobstore — keeps all infra cron in a single, non-persistent
+#                jobstore alongside maintenance/retention.
+#   PREVIOUS:    v0.0.1 - chunk 14: M-OPS-BACKUP initial implementation
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -38,6 +41,8 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, ConfigDict
+
+from ai_steward_wiki.scheduler.core import MAINTENANCE_JOBSTORE_ALIAS
 
 __all__ = [
     "DB_SNAPSHOT_JOB_ID",
@@ -202,4 +207,5 @@ def register_db_snapshot_job(
         id=DB_SNAPSHOT_JOB_ID,
         replace_existing=True,
         args=[snapshot_root, db_urls, retention_days],
+        jobstore=MAINTENANCE_JOBSTORE_ALIAS,
     )

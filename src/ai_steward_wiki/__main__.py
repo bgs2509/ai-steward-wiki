@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.5.6
+# VERSION: 0.5.7
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -32,7 +32,13 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.6 - aisw-163 P5: install reminder-card callback context via
+#   LAST_CHANGE: v0.5.7 - aisw-6mi: boot-time _purge_legacy_maintenance_jobs runs
+#                after scheduler.start() and before register_all_retention_jobs to
+#                drop pre-fix maintenance rows from jobs.db (legacy ids land in
+#                the new "memory" jobstore instead). Eliminates the
+#                AttributeError: Can't get local object 'create_engine.<locals>.connect'
+#                crash on boot.
+#   PREVIOUS:    v0.5.6 - aisw-163 P5: install reminder-card callback context via
 #                tg.callbacks.set_callback_context(CallbackContext(scheduler,
 #                jobs_session_maker=jobs_maker)) right after set_firing_context.
 #                Enables `r:<id>:{done|snz|skp}` button taps to mutate state.
@@ -125,6 +131,7 @@ import structlog
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from apscheduler.events import EVENT_JOB_MISSED
+from apscheduler.jobstores.base import JobLookupError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_steward_wiki.auth.allowlist import replace_global, sync_to_sessions_db
@@ -159,7 +166,11 @@ from ai_steward_wiki.ops.pii import PIIRedactor
 from ai_steward_wiki.scheduler import firing
 from ai_steward_wiki.scheduler.core import build_scheduler
 from ai_steward_wiki.scheduler.locks import WikiLockManager
-from ai_steward_wiki.scheduler.maintenance import register_all_retention_jobs
+from ai_steward_wiki.scheduler.maintenance import (
+    MEDIA_STAGING_SWEEP_JOB_ID,
+    PURGE_PENDING_JOB_ID,
+    register_all_retention_jobs,
+)
 from ai_steward_wiki.settings import Settings, get_settings
 from ai_steward_wiki.storage.audit.engine import build_engine, build_sessionmaker
 from ai_steward_wiki.storage.sessions.users import resolve_user_id
@@ -301,6 +312,41 @@ class _TimeParserAdapter:
 def _on_job_missed(event: object) -> None:
     """APScheduler EVENT_JOB_MISSED listener — log a missed reminder fire (aisw-kcz)."""
     logger.warning("scheduler.reminder.misfired", job_id=getattr(event, "job_id", None))
+
+
+# START_BLOCK_PURGE_LEGACY_MAINTENANCE
+def _purge_legacy_maintenance_jobs(scheduler: object) -> int:
+    """Drop maintenance/retention/snapshot jobs leftover in the default jobstore.
+
+    Before aisw-6mi maintenance cron was (attempted to be) registered in the
+    SQLAlchemyJobStore (``default``). Once we move them to the in-memory
+    jobstore (``memory``), any pre-existing rows in ``jobs.db`` would shadow
+    the new registrations by id. This one-time cleanup runs after
+    ``scheduler.start()`` and before re-registration, removing the legacy ids
+    from ``default`` only. User reminder jobs (any id not in the allowlist or
+    matching the ``retention.`` prefix) remain untouched.
+    """
+    legacy_ids: frozenset[str] = frozenset(
+        {PURGE_PENDING_JOB_ID, MEDIA_STAGING_SWEEP_JOB_ID, "ops.db_snapshot"}
+    )
+    removed = 0
+    # mypy-friendly duck-typing — APScheduler exposes get_jobs/remove_job.
+    get_jobs = getattr(scheduler, "get_jobs")  # noqa: B009
+    remove_job = getattr(scheduler, "remove_job")  # noqa: B009
+    for job in list(get_jobs(jobstore="default")):
+        job_id = getattr(job, "id", "")
+        if job_id in legacy_ids or job_id.startswith("retention."):
+            try:
+                remove_job(job_id, jobstore="default")
+                removed += 1
+            except JobLookupError:
+                continue
+    if removed:
+        logger.info("scheduler.bootstrap.legacy_maintenance_purged", removed=removed)
+    return removed
+
+
+# END_BLOCK_PURGE_LEGACY_MAINTENANCE
 
 
 class _WikiRunnerAdapter:
@@ -959,6 +1005,7 @@ async def _amain() -> None:
     scheduler = build_scheduler(_sync_url_for_jobstore(settings.jobs_db_url))
     scheduler.start()
     scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
+    _purge_legacy_maintenance_jobs(scheduler)
     retention_jobs = register_all_retention_jobs(
         scheduler,
         audit_maker=audit_maker,

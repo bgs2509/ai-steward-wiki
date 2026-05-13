@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/ops/retention.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: APScheduler maintenance jobs implementing §10.4 retention table.
 #   SCOPE: RetentionPolicy / RETENTION_POLICIES / run_purge / register_retention_jobs /
@@ -24,7 +24,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 13: §10.4 retention purge jobs
+#   LAST_CHANGE: v0.0.2 - aisw-6mi: register_retention_jobs targets the "memory"
+#                jobstore — kwargs include async_sessionmaker which is not
+#                picklable for SQLAlchemyJobStore.
+#   PREVIOUS:    v0.0.1 - chunk 13: §10.4 retention purge jobs
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_steward_wiki.ops.pii import PIIRedactor
+from ai_steward_wiki.scheduler.core import MAINTENANCE_JOBSTORE_ALIAS
 from ai_steward_wiki.storage.audit.models import AuditEvent
 
 __all__ = [
@@ -282,6 +286,7 @@ def register_retention_jobs(
             max_instances=1,
             misfire_grace_time=600,
             jitter=30,
+            jobstore=MAINTENANCE_JOBSTORE_ALIAS,
         )
         jobs.append(job)
     return jobs
