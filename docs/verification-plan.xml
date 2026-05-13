@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.8">
+<VerificationPlan VERSION="0.0.9">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -28,12 +28,32 @@
     <V-M-FOUNDATION-LOGGING MODULE="M-FOUNDATION-LOGGING">
       <tests>
         <test path="tests/unit/test_logging_setup.py"/>
+        <test path="tests/unit/test_logging_traced.py"/>
+        <test path="tests/unit/test_logging_events_catalog.py"/>
+        <test path="tests/unit/test_logging_events_chunk2.py"/>
+        <test path="tests/unit/tg/test_middleware_correlation.py"/>
+        <test path="tests/unit/tg/test_correlation_id_flow.py"/>
+        <test path="tests/unit/ops/pii/test_chunk2_fields.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/test_logging_setup.py -q</cmd>
+        <cmd>uv run pytest tests/unit/test_logging_setup.py tests/unit/test_logging_traced.py tests/unit/test_logging_events_catalog.py tests/unit/test_logging_events_chunk2.py -q</cmd>
       </commands>
-      <log-markers/>
-      <evidence>structlog JSON renderer, ISO UTC timestamps, correlation_id contextvar bound/reset.</evidence>
+      <log-markers>
+        <marker>tg.update.received</marker>
+        <marker>tg.pipeline.dispatch.start</marker>
+        <marker>tg.pipeline.dispatch.done</marker>
+        <marker>tg.pipeline.dispatch.error</marker>
+        <marker>classifier.stage0.start</marker>
+        <marker>classifier.stage0.done</marker>
+        <marker>classifier.stage0.error</marker>
+        <marker>wiki.run.start</marker>
+        <marker>wiki.run.done</marker>
+        <marker>wiki.run.error</marker>
+        <marker>inbox.staging.start</marker>
+        <marker>inbox.staging.done</marker>
+        <marker>inbox.staging.error</marker>
+      </log-markers>
+      <evidence>structlog JSON renderer, ISO UTC timestamps, correlation_id contextvar bound/reset (chunk-1). @traced decorator emits &lt;prefix&gt;.{start,done,error} with duration_ms; never inspects args/kwargs/return (PII-safe). logging_events.py SSoT catalog of snake_case dotted event keys covers chunk-1 entrypoints and chunk-2 anchors (scheduler.job.*, storage.slow_query, claude_cli.*). CorrelationMiddleware binds correlation_id + telegram_id + chat_id + update_id into structlog.contextvars for one Update lifetime; autouse contextvars cleanup fixture between tests. PII redactor passes through chunk-2 metadata fields unchanged while still redacting free-text fields on the same record (idempotent).</evidence>
     </V-M-FOUNDATION-LOGGING>
 
     <V-M-AUTH-USERS MODULE="M-AUTH-USERS">
@@ -52,12 +72,15 @@
     <V-M-STORAGE MODULE="M-STORAGE">
       <tests>
         <test path="tests/unit/storage/test_pragmas.py"/>
+        <test path="tests/unit/storage/test_slow_query_logging.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/storage/test_pragmas.py -q</cmd>
+        <cmd>uv run pytest tests/unit/storage/test_pragmas.py tests/unit/storage/test_slow_query_logging.py -q</cmd>
       </commands>
-      <log-markers/>
-      <evidence>WAL, synchronous=NORMAL, foreign_keys=ON, busy_timeout=5000 applied per connection.</evidence>
+      <log-markers>
+        <marker>storage.slow_query</marker>
+      </log-markers>
+      <evidence>WAL, synchronous=NORMAL, foreign_keys=ON, busy_timeout=5000 applied per connection. Chunk-2 slow-query listener attached per AsyncEngine in build_engine() of jobs/audit/sessions: emits storage.slow_query (WARNING) when one cursor execute exceeds settings.storage_slow_query_threshold_ms (default 200). Fields: db_name, statement_sha8 (sha256[:8] of raw SQL string), duration_ms. NEVER logs raw SQL or parameter values.</evidence>
     </V-M-STORAGE>
 
     <V-M-STORAGE-JOBS MODULE="M-STORAGE-JOBS">
@@ -281,6 +304,7 @@
         <test path="tests/unit/scheduler/test_failure.py"/>
         <test path="tests/unit/scheduler/test_dlq.py"/>
         <test path="tests/unit/scheduler/test_maintenance.py"/>
+        <test path="tests/unit/scheduler/test_lifecycle_logging.py"/>
       </tests>
       <commands>
         <cmd>uv run pytest tests/unit/scheduler -q</cmd>
@@ -288,6 +312,10 @@
       <log-markers>
         <marker>scheduler.maintenance</marker>
         <marker>maintenance.media_sweep.done</marker>
+        <marker>scheduler.job.executed</marker>
+        <marker>scheduler.job.error</marker>
+        <marker>scheduler.job.missed</marker>
+        <marker>scheduler.job.max_instances</marker>
       </log-markers>
       <evidence>build_scheduler (AsyncIOScheduler + SQLAlchemyJobStore, D-003); PriorityJobQueue 5 lanes FIFO tiebreak; WikiLockManager 3-tier acquire/release + stale-PID recovery; classify_exception taxonomy + FailureCounter 3-strikes auto-disable (D-019); move_to_dlq writes jobs_dlq; kill_with_sequence SIGTERM→grace→SIGKILL (D-021); register_all_retention_jobs wires purge-pending + media _staging sweep + retention.</evidence>
     </V-M-SCHEDULER>
@@ -353,6 +381,7 @@
         <test path="tests/unit/classifier/test_cli_envelope.py"/>
         <test path="tests/unit/classifier/test_fake_runner.py"/>
         <test path="tests/unit/classifier/test_settings_inv6.py"/>
+        <test path="tests/unit/classifier/test_spawn_logging.py"/>
         <test path="tests/integration/classifier/test_real_cli.py"/>
       </tests>
       <commands>
@@ -362,6 +391,9 @@
       <log-markers>
         <marker>classifier.stage0.call</marker>
         <marker>classifier.time.parse</marker>
+        <marker>claude_cli.spawn</marker>
+        <marker>claude_cli.exit</marker>
+        <marker>claude_cli.error</marker>
       </log-markers>
       <evidence>classify orchestrates backend call + Pydantic validation + audit prompt_versions upsert + structlog; PromptCache semver+sha256 with reload(); Intent closed enum (D-009); parse_time dateparser→Haiku-fallback→escalate (D-010); ClaudeCliBackend resolves binary + JSON-mode envelope; AnthropicApiBackend optional; FakeClaudeRunner deterministic; INV-6 settings guard; ClassifierTimeoutError/SchemaError taxonomy.</evidence>
     </V-M-CLASSIFIER-STAGE0>
@@ -386,6 +418,7 @@
         <test path="tests/unit/wiki/test_runner_on_event.py"/>
         <test path="tests/unit/wiki/test_streaming.py"/>
         <test path="tests/unit/wiki/test_acquire.py"/>
+        <test path="tests/unit/wiki/test_spawn_logging.py"/>
         <test path="tests/integration/classifier/test_real_cli.py"/>
       </tests>
       <commands>
@@ -400,6 +433,9 @@
         <marker>wiki.lock.acquired</marker>
         <marker>wiki.stream.malformed_line</marker>
         <marker>wiki.stream.non_object</marker>
+        <marker>claude_cli.spawn</marker>
+        <marker>claude_cli.exit</marker>
+        <marker>claude_cli.error</marker>
       </log-markers>
       <evidence>run_wiki_session: assemble_prompt (base+overlay+per-WIKI CLAUDE.md atomic write), WikiLockAdapter acquire, spawn `claude --output-format stream-json`, parse_stream_json events, hard timeout + kill-sequence (WikiRunnerTimeoutError), on_event callback (per-event delivery, exception swallow); aggregate_text across stream-json shapes; classify_line pure mapping; AsyncioSpawner default.</evidence>
     </V-M-WIKI-RUNNER>
