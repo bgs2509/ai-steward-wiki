@@ -114,6 +114,47 @@ def test_jobs_stepwise_upgrade_adds_user_state(tmp_path, monkeypatch):
     assert "snooze_count" in cols
 
 
+def test_sessions_baseline_has_cards_enabled_column(tmp_path, monkeypatch):
+    """aisw-163 P2: fresh baseline (`create_all`) must include user_digest_prefs.cards_enabled."""
+    db_path = tmp_path / "sessions.db"
+    monkeypatch.setenv("AISW_SESSIONS_DB_URL_SYNC", f"sqlite:///{db_path}")
+    cfg = Config(str(REPO_ROOT / "alembic" / "sessions" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic" / "sessions"))
+    command.upgrade(cfg, "head")
+
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(user_digest_prefs)").fetchall()}
+    conn.close()
+    assert "cards_enabled" in cols, f"missing cards_enabled; got {cols}"
+
+
+def test_sessions_stepwise_upgrade_adds_cards_enabled(tmp_path, monkeypatch):
+    """aisw-163 P2: stamping 0002 then upgrading to head → 0003 ALTERs the table."""
+    db_path = tmp_path / "sessions.db"
+    monkeypatch.setenv("AISW_SESSIONS_DB_URL_SYNC", f"sqlite:///{db_path}")
+    cfg = Config(str(REPO_ROOT / "alembic" / "sessions" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic" / "sessions"))
+    command.upgrade(cfg, "0002_user_digest_prefs")
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cols = {r[1] for r in cur.execute("PRAGMA table_info(user_digest_prefs)").fetchall()}
+    if "cards_enabled" in cols:
+        cur.execute("ALTER TABLE user_digest_prefs DROP COLUMN cards_enabled")
+        conn.commit()
+    conn.close()
+
+    command.upgrade(cfg, "head")
+
+    conn = sqlite3.connect(db_path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(user_digest_prefs)").fetchall()}
+    conn.close()
+    assert "cards_enabled" in cols
+
+
 def test_sessions_stepwise_upgrade_creates_user_digest_prefs(tmp_path, monkeypatch):
     """Stamp 0001 then upgrade to head → 0002 brings user_digest_prefs onto an already-baselined DB."""
     db_path = tmp_path / "sessions.db"

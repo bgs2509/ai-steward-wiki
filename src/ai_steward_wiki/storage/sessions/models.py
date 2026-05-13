@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/storage/sessions/models.py
-# VERSION: 0.0.3
+# VERSION: 0.0.4
 # START_MODULE_CONTRACT
 #   PURPOSE: ORM models for sessions.db — runtime TG state and hot-path caches.
 #   SCOPE: users, pending_users, pending_confirms, inbox_hint_cache, fsm, user_digest_prefs.
@@ -19,7 +19,7 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - aisw-pv8: UserDigestPrefs (per-user digest section toggles)
+#   LAST_CHANGE: v0.0.4 - aisw-163 P2: UserDigestPrefs.cards_enabled (digest cards opt-out)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -126,6 +126,7 @@ class UserDigestPrefs(Base):
         Boolean, nullable=False, server_default=text("1")
     )
     wiki_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("1"))
+    cards_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("1"))
     updated_at_utc: Mapped[datetime] = mapped_column(nullable=False)
 
 

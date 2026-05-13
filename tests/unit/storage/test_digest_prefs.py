@@ -12,6 +12,7 @@ from ai_steward_wiki.storage.sessions.digest_prefs import (
     TOGGLEABLE_DIGEST_SECTIONS,
     DigestPrefs,
     get_digest_prefs,
+    set_cards_enabled,
     set_digest_section,
 )
 from ai_steward_wiki.storage.sessions.engine import Base
@@ -85,6 +86,47 @@ async def test_set_unknown_section_raises(session_maker):
 async def test_set_for_unknown_user_is_noop(session_maker):
     after = await set_digest_section(session_maker, 4040, section="wiki", enabled=False)
     assert after == DigestPrefs(trackers_enabled=True, wiki_enabled=True)
+    async with session_maker() as s:
+        from sqlalchemy import select
+
+        rows = (await s.execute(select(UserDigestPrefs))).scalars().all()
+    assert rows == []
+
+
+async def test_cards_enabled_default_true(session_maker):
+    """aisw-163 P2: absent row ⇒ cards_enabled=True."""
+    await _add_user(session_maker, 666)
+    prefs = await get_digest_prefs(session_maker, 666)
+    assert prefs.cards_enabled is True
+
+
+async def test_cards_enabled_default_when_no_user(session_maker):
+    prefs = await get_digest_prefs(session_maker, 6661)
+    assert prefs.cards_enabled is True
+
+
+async def test_set_cards_enabled_round_trip(session_maker):
+    """aisw-163 P2: toggle off then on preserves other section toggles."""
+    await _add_user(session_maker, 777)
+    # toggle a section first to ensure the row exists with non-defaults
+    await set_digest_section(session_maker, 777, section="wiki", enabled=False)
+    after = await set_cards_enabled(session_maker, 777, enabled=False)
+    assert after == DigestPrefs(trackers_enabled=True, wiki_enabled=False, cards_enabled=False)
+    assert await get_digest_prefs(session_maker, 777) == after
+    back = await set_cards_enabled(session_maker, 777, enabled=True)
+    assert back == DigestPrefs(trackers_enabled=True, wiki_enabled=False, cards_enabled=True)
+
+
+async def test_set_cards_enabled_creates_row(session_maker):
+    """aisw-163 P2: first toggle (no prior row) upserts with default sections + new cards value."""
+    await _add_user(session_maker, 888)
+    after = await set_cards_enabled(session_maker, 888, enabled=False)
+    assert after == DigestPrefs(trackers_enabled=True, wiki_enabled=True, cards_enabled=False)
+
+
+async def test_set_cards_enabled_unknown_user_noop(session_maker):
+    after = await set_cards_enabled(session_maker, 9090, enabled=False)
+    assert after == DigestPrefs(trackers_enabled=True, wiki_enabled=True, cards_enabled=True)
     async with session_maker() as s:
         from sqlalchemy import select
 

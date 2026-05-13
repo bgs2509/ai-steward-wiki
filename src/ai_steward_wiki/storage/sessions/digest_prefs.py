@@ -1,8 +1,9 @@
 # FILE: src/ai_steward_wiki/storage/sessions/digest_prefs.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
-#   PURPOSE: Read/write a digest-job owner's per-section toggles (user_digest_prefs).
-#   SCOPE: get_digest_prefs (read, defaults when absent), set_digest_section (upsert one section).
+#   PURPOSE: Read/write a digest-job owner's per-section toggles + cards opt-out (user_digest_prefs).
+#   SCOPE: get_digest_prefs (read, defaults when absent), set_digest_section (upsert one section),
+#          set_cards_enabled (upsert the cards-feature on/off, aisw-163).
 #   DEPENDS: SQLAlchemy.asyncio, ai_steward_wiki.storage.sessions.models.{User,UserDigestPrefs},
 #            ai_steward_wiki.storage.sessions.users.resolve_user_id
 #   LINKS: M-STORAGE-SESSIONS, ADR-025, ADR-026, D-024, aisw-pv8
@@ -16,10 +17,11 @@
 #   DigestPrefs - frozen view of one owner's toggles (+ disabled_keys)
 #   get_digest_prefs - telegram_id -> DigestPrefs (both True when no row / no user)
 #   set_digest_section - upsert one section's bool for telegram_id; no-op (returns defaults) if no users row
+#   set_cards_enabled - upsert cards_enabled for telegram_id; no-op (returns defaults) if no users row
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - aisw-pv8: initial per-user digest section toggles repo
+#   LAST_CHANGE: v0.0.2 - aisw-163 P2: DigestPrefs.cards_enabled + set_cards_enabled
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ __all__ = [
     "TOGGLEABLE_DIGEST_SECTIONS",
     "DigestPrefs",
     "get_digest_prefs",
+    "set_cards_enabled",
     "set_digest_section",
 ]
 
@@ -57,6 +60,7 @@ _SECTION_COLUMN: dict[str, str] = {"trackers": "trackers_enabled", "wiki": "wiki
 class DigestPrefs:
     trackers_enabled: bool = True
     wiki_enabled: bool = True
+    cards_enabled: bool = True
 
     @property
     def disabled_keys(self) -> tuple[str, ...]:
@@ -67,7 +71,9 @@ def _from_row(row: UserDigestPrefs | None) -> DigestPrefs:
     if row is None:
         return DigestPrefs()
     return DigestPrefs(
-        trackers_enabled=bool(row.trackers_enabled), wiki_enabled=bool(row.wiki_enabled)
+        trackers_enabled=bool(row.trackers_enabled),
+        wiki_enabled=bool(row.wiki_enabled),
+        cards_enabled=bool(row.cards_enabled),
     )
 
 
@@ -115,11 +121,40 @@ async def set_digest_section(
     async with session_maker() as session:
         row = await session.get(UserDigestPrefs, user_id)
         if row is None:
-            row = UserDigestPrefs(user_id=user_id, trackers_enabled=True, wiki_enabled=True)
+            row = UserDigestPrefs(
+                user_id=user_id, trackers_enabled=True, wiki_enabled=True, cards_enabled=True
+            )
             session.add(row)
         setattr(row, _SECTION_COLUMN[section], enabled)
         row.updated_at_utc = _now()
         await session.commit()
-        return DigestPrefs(
-            trackers_enabled=bool(row.trackers_enabled), wiki_enabled=bool(row.wiki_enabled)
-        )
+        return _from_row(row)
+
+
+# START_CONTRACT: set_cards_enabled
+#   PURPOSE: Set cards_enabled (digest actionable-cards opt-out) for a telegram_id.
+#   INPUTS: { session_maker, telegram_id: int, enabled: bool }
+#   OUTPUTS: { DigestPrefs - the new state; defaults (no write) if telegram_id has no users row }
+#   SIDE_EFFECTS: one read-write DB transaction (upsert)
+#   LINKS: M-STORAGE-SESSIONS, ADR-026, aisw-163
+# END_CONTRACT: set_cards_enabled
+async def set_cards_enabled(
+    session_maker: async_sessionmaker[AsyncSession],
+    telegram_id: int,
+    *,
+    enabled: bool,
+) -> DigestPrefs:
+    user_id = await resolve_user_id(session_maker, telegram_id)
+    if user_id is None:
+        return DigestPrefs()
+    async with session_maker() as session:
+        row = await session.get(UserDigestPrefs, user_id)
+        if row is None:
+            row = UserDigestPrefs(
+                user_id=user_id, trackers_enabled=True, wiki_enabled=True, cards_enabled=True
+            )
+            session.add(row)
+        row.cards_enabled = enabled
+        row.updated_at_utc = _now()
+        await session.commit()
+        return _from_row(row)
