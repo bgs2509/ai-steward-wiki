@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/storage/audit/models.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: ORM models for audit.db — append-only audit + dedup + observability.
 #   SCOPE: 10 tables per D-006 amended 2026-05-10.
@@ -23,7 +23,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - chunk 12: AdminEvent extended with target_telegram_id, outcome, reason (additive)
+#   LAST_CHANGE: v0.0.3 - aisw-5hy: SeenFile composite PK (owner_telegram_id, content_sha256) per ADR-028.
+#   PREVIOUS:    v0.0.2 - chunk 12: AdminEvent extended with target_telegram_id, outcome, reason (additive)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -105,13 +106,17 @@ class TgUpdate(Base):
 
 
 class SeenFile(Base):
-    """L2 idempotency — content-hash SHA-256 PK (D-018 amended, TTL 30d)."""
+    """L2 idempotency — composite PK (owner_telegram_id, content_sha256).
+
+    D-018 amended 2026-05-13 (ADR-028): per-owner scope (no cross-owner collisions)
+    + per-kind TTL applied in service layer (text/voice 60s, photo/file 30d).
+    """
 
     __tablename__ = "seen_files"
 
+    owner_telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     content_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)  # text|voice|photo|file
-    owner_telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     first_seen_at_utc: Mapped[datetime] = mapped_column(nullable=False, index=True)
 
 

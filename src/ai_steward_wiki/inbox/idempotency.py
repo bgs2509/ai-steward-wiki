@@ -1,11 +1,13 @@
 # FILE: src/ai_steward_wiki/inbox/idempotency.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
-#   PURPOSE: Two-layer ingest dedup (D-018): L1 TG update_id (24h) + L2 SHA-256 content hash (30d).
+#   PURPOSE: Two-layer ingest dedup (D-018 amended 2026-05-13, ADR-028):
+#            L1 TG update_id (24h) + L2 SHA-256 content hash (per-owner, per-kind TTL:
+#            text/voice=60s, photo/file=30d).
 #   SCOPE: normalize_text, compute_content_hash, IdempotencyService (L1+L2 + dedup-hit logging).
 #   DEPENDS: SQLAlchemy.async, ai_steward_wiki.storage.audit.models (TgUpdate, SeenFile, DedupHit),
 #            ai_steward_wiki.logging_setup
-#   LINKS: D-018 (amended 2026-05-10), M-INGEST-IDEM, M-STORAGE-AUDIT, INV-4
+#   LINKS: D-018 (amended 2026-05-13), ADR-028, M-INGEST-IDEM, M-STORAGE-AUDIT, INV-4
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -14,12 +16,13 @@
 #   ContentKind - Literal alias for {text, voice, photo, file}
 #   normalize_text - NFKC + strip + lower + collapse-whitespace for L2 text hashing
 #   compute_content_hash - SHA-256 hex of normalized text or raw bytes per kind
-#   SeenFileMatch - dataclass returned on L2 collision (hash + first-seen ts + owner)
-#   IdempotencyService - check_update_id (L1), check_content (L2), record_dedup_choice
+#   SeenFileMatch - dataclass returned on L2 collision (hash + first-seen ts + owner + within_ttl)
+#   IdempotencyService - check_update_id (L1), check_content (L2 per-owner+TTL), record_dedup_choice
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - L1+L2 dedup per D-018 (chunk 9)
+#   LAST_CHANGE: v0.0.2 - aisw-5hy: per-kind TTL + owner-scope; within_ttl on SeenFileMatch.
+#   PREVIOUS:    v0.0.1 - L1+L2 dedup per D-018 (chunk 9)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -28,9 +31,10 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -84,12 +88,18 @@ def compute_content_hash(kind: ContentKind, payload: str | bytes) -> str:
 
 @dataclass(frozen=True, slots=True)
 class SeenFileMatch:
-    """L2 collision result — content already seen for this owner."""
+    """L2 collision result — content already seen for this owner within TTL.
+
+    `within_ttl` is True when the existing row is fresher than the per-kind TTL —
+    i.e. the caller is hitting a genuine retry-storm / duplicate. When the row
+    was older than TTL, the service refreshes it and returns `None` (no match).
+    """
 
     content_sha256: str
     owner_telegram_id: int
     kind: ContentKind
     first_seen_at_utc: datetime
+    within_ttl: bool
 
 
 def _utc_naive() -> datetime:
@@ -105,8 +115,20 @@ class IdempotencyService:
         registers the new content and returns None. Does NOT block — caller decides UX.
     """
 
-    def __init__(self, session_maker: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_maker: async_sessionmaker[AsyncSession],
+        *,
+        ttl_text_seconds: int = 60,
+        ttl_binary_seconds: int = 30 * 24 * 3600,
+    ) -> None:
         self._sm = session_maker
+        self._ttl_text = ttl_text_seconds
+        self._ttl_binary = ttl_binary_seconds
+
+    def _ttl_for_kind(self, kind: ContentKind) -> int:
+        # text/voice → short retry-storm window; photo/file → long artifact dedup.
+        return self._ttl_text if kind in ("text", "voice") else self._ttl_binary
 
     # START_CONTRACT: check_update_id
     #   PURPOSE: L1 dedup — atomic INSERT OR IGNORE on tg_updates.update_id.
@@ -142,20 +164,31 @@ class IdempotencyService:
     ) -> tuple[str, SeenFileMatch | None]:
         sha256 = compute_content_hash(kind, payload)
         now = _utc_naive()
-        stmt = (
-            sqlite_insert(SeenFile)
-            .values(
-                content_sha256=sha256,
-                kind=kind,
-                owner_telegram_id=owner_telegram_id,
-                first_seen_at_utc=now,
-            )
-            .on_conflict_do_nothing(index_elements=[SeenFile.content_sha256])
-        )
+        ttl = self._ttl_for_kind(kind)
+        cutoff = now - timedelta(seconds=ttl)
+
         async with self._sm() as session, session.begin():
-            result = await session.execute(stmt)
-            inserted = (result.rowcount or 0) > 0
-            if inserted:
+            # START_BLOCK_LOOKUP_OWNER_SHA
+            existing = (
+                await session.execute(
+                    select(SeenFile).where(
+                        SeenFile.owner_telegram_id == owner_telegram_id,
+                        SeenFile.content_sha256 == sha256,
+                    )
+                )
+            ).scalar_one_or_none()
+            # END_BLOCK_LOOKUP_OWNER_SHA
+
+            if existing is None:
+                # START_BLOCK_INSERT_NEW
+                stmt = sqlite_insert(SeenFile).values(
+                    owner_telegram_id=owner_telegram_id,
+                    content_sha256=sha256,
+                    kind=kind,
+                    first_seen_at_utc=now,
+                )
+                await session.execute(stmt)
+                # END_BLOCK_INSERT_NEW
                 _log.info(
                     "inbox.idempotency.l2_new",
                     owner_telegram_id=owner_telegram_id,
@@ -163,26 +196,37 @@ class IdempotencyService:
                     sha256=sha256,
                 )
                 return sha256, None
-            # START_BLOCK_FETCH_EXISTING
-            from sqlalchemy import select
 
-            row = (
-                await session.execute(select(SeenFile).where(SeenFile.content_sha256 == sha256))
-            ).scalar_one()
-            # END_BLOCK_FETCH_EXISTING
-        _log.info(
-            "inbox.idempotency.l2_duplicate",
-            owner_telegram_id=owner_telegram_id,
-            kind=kind,
-            sha256=sha256,
-            first_seen_owner=row.owner_telegram_id,
-        )
-        return sha256, SeenFileMatch(
-            content_sha256=row.content_sha256,
-            owner_telegram_id=row.owner_telegram_id,
-            kind=row.kind,  # type: ignore[arg-type]
-            first_seen_at_utc=row.first_seen_at_utc,
-        )
+            if existing.first_seen_at_utc > cutoff:
+                # Within TTL → genuine duplicate.
+                match = SeenFileMatch(
+                    content_sha256=existing.content_sha256,
+                    owner_telegram_id=existing.owner_telegram_id,
+                    kind=existing.kind,  # type: ignore[arg-type]
+                    first_seen_at_utc=existing.first_seen_at_utc,
+                    within_ttl=True,
+                )
+                _log.info(
+                    "inbox.idempotency.l2_duplicate",
+                    owner_telegram_id=owner_telegram_id,
+                    kind=kind,
+                    sha256=sha256,
+                    within_ttl=True,
+                )
+                return sha256, match
+
+            # START_BLOCK_REFRESH_EXPIRED
+            existing.first_seen_at_utc = now
+            existing.kind = kind
+            # END_BLOCK_REFRESH_EXPIRED
+            _log.info(
+                "inbox.idempotency.l2_refreshed",
+                owner_telegram_id=owner_telegram_id,
+                kind=kind,
+                sha256=sha256,
+                ttl_seconds=ttl,
+            )
+            return sha256, None
 
     # START_CONTRACT: record_dedup_choice
     #   PURPOSE: Append audit row for user's inline-confirm action on an L2 collision.

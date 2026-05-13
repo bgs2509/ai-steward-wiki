@@ -126,6 +126,12 @@ class Settings(BaseSettings):
     photo_enabled: bool = True
     photo_vision_timeout_s: float = 30.0
 
+    # L2 ingest dedup TTL (D-018 amended 2026-05-13, ADR-028).
+    # Per-kind window in seconds — text/voice retry-storm protection,
+    # photo/file long artifact dedup.
+    l2_ttl_text_seconds: int = 60
+    l2_ttl_binary_seconds: int = 30 * 24 * 3600
+
     # Chunk 18: M-RUNTIME-WIRING. Path to users.toml for allowlist.
     # None or missing file → empty allowlist (frictionless local first-run).
     users_toml_path: Path | None = None

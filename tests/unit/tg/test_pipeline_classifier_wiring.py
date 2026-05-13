@@ -172,6 +172,7 @@ async def test_text_l2_dedup_hit_records_and_replies_dedup_ack() -> None:
         owner_telegram_id=42,
         kind="text",
         first_seen_at_utc=datetime(2026, 5, 11),
+        within_ttl=True,
     )
     idem = _make_idem(l2_match=match)
     cls = _make_classifier()

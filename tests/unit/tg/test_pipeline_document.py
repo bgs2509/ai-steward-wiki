@@ -401,6 +401,7 @@ async def test_l2_dedup_hit_short_circuits_before_routing() -> None:
         owner_telegram_id=1,
         kind="file",
         first_seen_at_utc=__import__("datetime").datetime(2026, 5, 11),
+        within_ttl=True,
     )
     idem = _make_idem(l2_match=match)
     runner = _make_runner()

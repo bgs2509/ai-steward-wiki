@@ -105,19 +105,25 @@ async def test_l2_first_sight_registers_and_returns_none(session_maker) -> None:
         assert row.kind == "text"
 
 
-async def test_l2_duplicate_returns_match_with_first_owner(session_maker) -> None:
+async def test_l2_cross_owner_no_collision(session_maker) -> None:
+    """ADR-028: SeenFile PK = (owner_telegram_id, content_sha256).
+
+    Same normalized text from two different owners → both succeed, two rows in DB.
+    """
     svc = IdempotencyService(session_maker)
     sha1, m1 = await svc.check_content(1001, "text", "Hello World")
     assert m1 is None
-    # Different surface form → same normalized hash → match.
     sha2, m2 = await svc.check_content(2002, "text", "  HELLO\nworld  ")
     assert sha2 == sha1
-    assert m2 is not None
-    assert m2.content_sha256 == sha1
-    # First-sight owner preserved (1001), even though current caller is 2002.
-    assert m2.owner_telegram_id == 1001
-    assert m2.kind == "text"
-    assert m2.first_seen_at_utc is not None
+    assert m2 is None  # per-owner scope: owner 2002 sees no prior row
+
+    async with session_maker() as s:
+        rows = (
+            (await s.execute(select(SeenFile).where(SeenFile.content_sha256 == sha1)))
+            .scalars()
+            .all()
+        )
+        assert {r.owner_telegram_id for r in rows} == {1001, 2002}
 
 
 async def test_l2_bytes_kinds_independent_of_text_collision(session_maker) -> None:
@@ -164,3 +170,92 @@ async def test_l2_collision_does_not_block_ingest(session_maker) -> None:
     sha, match = await svc.check_content(1001, "text", "x")
     assert match is not None
     # The service does not raise; caller is free to ingest again.
+
+
+# ---------- per-kind TTL (ADR-028 / D-018 amended 2026-05-13) ----------
+
+
+def _install_clock(monkeypatch) -> list:  # list[datetime] but kept loose to avoid import
+    """Replace idempotency._utc_naive with a controllable fake clock.
+
+    Returns a 1-element list whose [0] is the current pseudo-now (mutable).
+    """
+    from datetime import datetime as _dt
+
+    from ai_steward_wiki.inbox import idempotency as idem_mod
+
+    now: list[_dt] = [_dt(2026, 5, 13, 12, 0, 0)]
+
+    def _fake_utc_naive() -> _dt:
+        return now[0]
+
+    monkeypatch.setattr(idem_mod, "_utc_naive", _fake_utc_naive)
+    return now  # type: ignore[return-value]
+
+
+async def test_l2_text_blocks_within_ttl(session_maker, monkeypatch) -> None:
+    """Same text twice within text TTL (60s) → match with within_ttl=True."""
+    from datetime import timedelta as _td
+
+    clock = _install_clock(monkeypatch)
+    svc = IdempotencyService(session_maker, ttl_text_seconds=60, ttl_binary_seconds=2592000)
+
+    _, m1 = await svc.check_content(1001, "text", "я спал 8 часов")
+    assert m1 is None
+    clock[0] = clock[0] + _td(seconds=30)
+    _, m2 = await svc.check_content(1001, "text", "я спал 8 часов")
+    assert m2 is not None
+    assert m2.within_ttl is True
+
+
+async def test_l2_text_passes_after_ttl(session_maker, monkeypatch) -> None:
+    """After clock advances past text TTL → second send returns None (refreshed row)."""
+    from datetime import timedelta as _td
+
+    clock = _install_clock(monkeypatch)
+    svc = IdempotencyService(session_maker, ttl_text_seconds=60, ttl_binary_seconds=2592000)
+
+    _, m1 = await svc.check_content(1001, "text", "я спал 8 часов")
+    assert m1 is None
+    clock[0] = clock[0] + _td(seconds=61)
+    _, m2 = await svc.check_content(1001, "text", "я спал 8 часов")
+    assert m2 is None  # expired → refreshed, not a hit
+
+
+async def test_l2_photo_blocks_at_1h(session_maker, monkeypatch) -> None:
+    """Photo TTL = 30d → same bytes 1h apart still hits."""
+    from datetime import timedelta as _td
+
+    clock = _install_clock(monkeypatch)
+    svc = IdempotencyService(session_maker, ttl_text_seconds=60, ttl_binary_seconds=2592000)
+
+    blob = b"\x89PNG\r\n\x1a\nFOO-PHOTO-BYTES"
+    _, m1 = await svc.check_content(1001, "photo", blob)
+    assert m1 is None
+    clock[0] = clock[0] + _td(hours=1)
+    _, m2 = await svc.check_content(1001, "photo", blob)
+    assert m2 is not None
+    assert m2.within_ttl is True
+
+
+async def test_l2_refreshes_expired_row(session_maker, monkeypatch) -> None:
+    """After TTL expiry, second send refreshes existing row in place (one row total)."""
+    from datetime import timedelta as _td
+
+    clock = _install_clock(monkeypatch)
+    svc = IdempotencyService(session_maker, ttl_text_seconds=60, ttl_binary_seconds=2592000)
+
+    _, _ = await svc.check_content(1001, "text", "refresh me")
+    clock[0] = clock[0] + _td(seconds=61)
+    refreshed_at = clock[0]
+    _, m2 = await svc.check_content(1001, "text", "refresh me")
+    assert m2 is None
+
+    async with session_maker() as s:
+        rows = (
+            (await s.execute(select(SeenFile).where(SeenFile.owner_telegram_id == 1001)))
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1
+    assert rows[0].first_seen_at_utc == refreshed_at

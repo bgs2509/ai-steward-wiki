@@ -1185,7 +1185,11 @@ async def _amain() -> None:
     )
     pipeline = DefaultPipeline(
         sender=sender,
-        idempotency=IdempotencyService(audit_maker),
+        idempotency=IdempotencyService(
+            audit_maker,
+            ttl_text_seconds=settings.l2_ttl_text_seconds,
+            ttl_binary_seconds=settings.l2_ttl_binary_seconds,
+        ),
         confirmation=ConfirmationService(sender, sessions_maker),
         voice=voice_handler,
         photo=photo_ingestor,
