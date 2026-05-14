@@ -40,3 +40,6 @@ data/
 
 # total-test run artifacts
 .total-test-logs/
+
+# full-audit skill intermediate artifacts
+.full_audit_tmp/
