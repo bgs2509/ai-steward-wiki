@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.5.7
+# VERSION: 0.5.8
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -32,7 +32,20 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.7 - aisw-6mi: boot-time _purge_legacy_maintenance_jobs runs
+#   LAST_CHANGE: v0.5.8 - aisw-02v (walking skeleton): wire the cron-user vertical
+#                slice. Create one PriorityJobQueue shared between the
+#                APScheduler-fired producer callback
+#                (scheduler.cron_user.fire_cron_user_job; context installed via
+#                cron_user.set_cron_user_context(scheduler, queue, jobs_maker))
+#                and the single-task async consumer
+#                (scheduler.consumer.CronConsumer.run() spawned as
+#                'aisw.cron_consumer' next to dp.start_polling, cancelled on
+#                shutdown before scheduler.shutdown). build_dispatcher now
+#                takes get_user_tz: telegram_id → IANA tz (users.toml entry's
+#                tz with default_user_tz fallback) and forwards it into
+#                build_router → tg.cron_add.register_cron_add_handlers for the
+#                /cron_add Command handler.
+#   PREVIOUS:    v0.5.7 - aisw-6mi: boot-time _purge_legacy_maintenance_jobs runs
 #                after scheduler.start() and before register_all_retention_jobs to
 #                drop pre-fix maintenance rows from jobs.db (legacy ids land in
 #                the new "memory" jobstore instead). Eliminates the
@@ -163,7 +176,9 @@ from ai_steward_wiki.inbox.router import RouterDecision, RouterError, parse_rout
 from ai_steward_wiki.inbox.staging import promote_path_to_raw
 from ai_steward_wiki.logging_setup import configure_logging
 from ai_steward_wiki.ops.pii import PIIRedactor
+from ai_steward_wiki.scheduler import cron_user as cron_user_mod
 from ai_steward_wiki.scheduler import firing
+from ai_steward_wiki.scheduler.consumer import CronConsumer
 from ai_steward_wiki.scheduler.core import build_scheduler
 from ai_steward_wiki.scheduler.locks import WikiLockManager
 from ai_steward_wiki.scheduler.maintenance import (
@@ -171,6 +186,7 @@ from ai_steward_wiki.scheduler.maintenance import (
     PURGE_PENDING_JOB_ID,
     register_all_retention_jobs,
 )
+from ai_steward_wiki.scheduler.queue import PriorityJobQueue
 from ai_steward_wiki.settings import Settings, get_settings
 from ai_steward_wiki.storage.audit.engine import build_engine, build_sessionmaker
 from ai_steward_wiki.storage.sessions.users import resolve_user_id
@@ -1111,6 +1127,28 @@ async def _amain() -> None:
         sender=sender,
         sessions_session_maker=sessions_maker,
     )
+
+    # aisw-02v (walking skeleton): cron-user producer + queue consumer.
+    # The PriorityJobQueue is shared between the APScheduler-fired producer
+    # callback (scheduler.cron_user.fire_cron_user_job) and the single-task
+    # async consumer (scheduler.consumer.CronConsumer.run()).
+    cron_user_queue = PriorityJobQueue()
+    cron_user_mod.set_cron_user_context(scheduler, cron_user_queue, jobs_maker)
+    if settings.claude_config_dir is None:
+        raise RuntimeError(
+            "claude_config_dir is required for cron-user consumer; set "
+            "AISW_CLAUDE_CONFIG_DIR_LOCAL or AISW_CLAUDE_CONFIG_DIR_VPS"
+        )
+    cron_consumer = CronConsumer(
+        queue=cron_user_queue,
+        bot=bot,
+        claude_binary=settings.claude_cli_binary,
+        claude_config_dir=settings.claude_config_dir,
+        prompt_path=settings.cron_user_prompt_path,
+        jobs_session_maker=jobs_maker,
+        timeout_s=settings.cron_user_timeout_s,
+        slice_name=settings.cron_user_slice_name,
+    )
     router_adapter = _RouterAdapter(
         wiki_root=settings.wiki_root,
         inbox_template_path=settings.wiki_template_dir / "inbox-wiki" / "CLAUDE.md",
@@ -1219,11 +1257,18 @@ async def _amain() -> None:
     async def _on_start_unknown_cb(*, telegram_id: int, username: str | None) -> None:
         await start_unknown_user(_pending_repo, telegram_id, username=username)
 
+    # aisw-02v: user_tz resolver for /cron_add — reads users.toml entry's tz
+    # (loaded above into _users_by_id), falls back to Settings.default_user_tz.
+    async def _resolve_user_tz(telegram_id: int) -> str:
+        tz = _user_tz_lookup(telegram_id)
+        return tz if tz is not None else settings.default_user_tz
+
     dp = build_dispatcher(
         allowlist,
         pipeline=pipeline,
         templates_dir=settings.wiki_template_dir,
         on_start_unknown=_on_start_unknown_cb,
+        get_user_tz=_resolve_user_tz,
     )
     logger.info("runtime.handlers.registered")
 
@@ -1246,6 +1291,9 @@ async def _amain() -> None:
     logger.info("runtime.polling.start")
     polling_task = asyncio.create_task(dp.start_polling(bot))
     stop_task = asyncio.create_task(stop_event.wait())
+    # aisw-02v: cron-user queue consumer runs alongside polling; cancelled in
+    # the shutdown block below.
+    consumer_task = asyncio.create_task(cron_consumer.run(), name="aisw.cron_consumer")
 
     try:
         done, _pending = await asyncio.wait(
@@ -1268,6 +1316,12 @@ async def _amain() -> None:
                 await polling_task
         if not stop_task.done():
             stop_task.cancel()
+        # aisw-02v: cancel the cron-user consumer; CancelledError propagates
+        # out of CronConsumer.run() so the await below completes cleanly.
+        if not consumer_task.done():
+            consumer_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await consumer_task
         try:
             scheduler.shutdown(wait=False)
         except Exception:

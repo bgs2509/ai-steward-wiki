@@ -146,6 +146,15 @@ class Settings(BaseSettings):
     # against this zone (UTC invariant in storage; user TZ only at I/O).
     default_user_tz: str = "Europe/Moscow"
 
+    # aisw-02v (M-SCHEDULER-CONSUMER): Claude CLI binary name/path + system
+    # prompt for cron-user runs. `claude_cli_binary` is resolved via
+    # claude_cli.common.resolve_binary (shutil.which or absolute path).
+    # `cron_user_prompt_path` defaults to <prompts_dir>/cron_user.md.
+    claude_cli_binary: str = "claude"
+    cron_user_prompt_filename: str = "cron_user.md"
+    cron_user_timeout_s: float = 600.0
+    cron_user_slice_name: str = "aisw-cli.slice"
+
     @property
     def tg_bot_token(self) -> SecretStr | None:
         """Active TG bot token chosen by `env` (local|vps)."""
@@ -155,6 +164,11 @@ class Settings(BaseSettings):
     def claude_config_dir(self) -> Path | None:
         """Active CLAUDE_CONFIG_DIR chosen by `env`. None → CLI uses ~/.claude/."""
         return self.claude_config_dir_vps if self.env == "vps" else self.claude_config_dir_local
+
+    @property
+    def cron_user_prompt_path(self) -> Path:
+        """Absolute path to the cron-user CLI system prompt (aisw-02v)."""
+        return self.prompts_dir / self.cron_user_prompt_filename
 
     @model_validator(mode="after")
     def _check_tg_token_for_env(self) -> Settings:

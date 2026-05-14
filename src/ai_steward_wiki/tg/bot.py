@@ -164,6 +164,7 @@ def build_dispatcher(
     pipeline: object | None = None,
     templates_dir: Path | None = None,
     on_start_unknown: object | None = None,
+    get_user_tz: object | None = None,
 ) -> Dispatcher:
     """Build Dispatcher with allowlist middleware and (optional) handlers router.
 
@@ -195,6 +196,7 @@ def build_dispatcher(
                 cast("MessagePipeline", pipeline),
                 templates_dir=templates_dir,
                 on_start_unknown=cast("Callable[..., Awaitable[None]] | None", on_start_unknown),
+                get_user_tz=cast("Callable[[int], Awaitable[str]] | None", get_user_tz),
             )
         )
     return dp
