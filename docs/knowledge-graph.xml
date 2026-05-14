@@ -398,6 +398,106 @@
       </annotations>
     </M-OPS-BACKUP>
 
+    <M-MIGRATION NAME="Migration ETL package" TYPE="SCRIPT" STATUS="done">
+      <purpose>One-shot ETL package that migrates legacy ai-steward bot data (flat {User}/{Project}/ tree, planner.json + raw files) into ai-steward-wiki (SQLite jobs.db + per-WIKI Karpathy layout). Read-only on the source snapshot; writes target DBs and FS only with --execute (default --dry-run). Public surface = the CLI in __main__ plus the LoadReport / TargetPlan dataclasses re-exported for testability (aisw-0a5).</purpose>
+      <path>src/ai_steward_wiki/migration/__init__.py</path>
+      <depends>M-AUTH-USERS, M-STORAGE-JOBS, M-WIKI-LIFECYCLE, M-CLASSIFIER-RECURRENCE, M-MIGRATION-CONFIG, M-MIGRATION-EXTRACT, M-MIGRATION-TRANSFORM, M-MIGRATION-LOAD, M-MIGRATION-REPORT, M-MIGRATION-CLI</depends>
+      <annotations>
+        <re-export-LoadReport PURPOSE="re-export of migration.load.LoadReport for testability"/>
+        <re-export-TargetPlan PURPOSE="re-export of migration.transform.TargetPlan for testability"/>
+      </annotations>
+    </M-MIGRATION>
+
+    <M-MIGRATION-CLI NAME="Migration ETL / CLI entrypoint" TYPE="SCRIPT" STATUS="done">
+      <purpose>argparse-based CLI entrypoint for the migration ETL — parses argv, dispatches extract → transform → (dry-run report | execute + report). Fail-Fast: any unexpected exception aborts the run; pre-step jobs.db snapshot is the rollback artefact. Invocation: `uv run python -m ai_steward_wiki.migration --help` (aisw-0a5).</purpose>
+      <path>src/ai_steward_wiki/migration/__main__.py</path>
+      <depends>M-MIGRATION-CONFIG, M-MIGRATION-EXTRACT, M-MIGRATION-TRANSFORM, M-MIGRATION-LOAD, M-MIGRATION-REPORT, M-FOUNDATION-LOGGING, M-STORAGE-JOBS</depends>
+      <annotations>
+        <fn-main PURPOSE="async entrypoint (asyncio.run from __main__ block)"/>
+        <fn-_build_parser PURPOSE="argparse.ArgumentParser factory (exposed for tests)"/>
+      </annotations>
+    </M-MIGRATION-CLI>
+
+    <M-MIGRATION-CONFIG NAME="Migration ETL / mapping table" TYPE="CONFIG" STATUS="done">
+      <purpose>Hardcoded mapping table from legacy {User}/{Project}/ tree to new &lt;wiki_root&gt;/&lt;owner&gt;/&lt;Name&gt;-WIKI/ layout. Single SSoT for identity + domain mapping per Q2/Q3 discovery decisions and D-042 identity vocabulary (aisw-0a5).</purpose>
+      <path>src/ai_steward_wiki/migration/config.py</path>
+      <depends>none</depends>
+      <annotations>
+        <type-UserMapping PURPOSE="frozen dataclass: telegram_id, source_dir, display_name, role, tz, lang, projects"/>
+        <type-ProjectMapping PURPOSE="frozen dataclass: source_project (or None for root), target_wiki, template_id"/>
+        <const-USER_MAPPINGS PURPOSE="canonical tuple of 5 UserMapping entries"/>
+        <const-DROP_DIRS PURPOSE="frozenset of dir names that must never be migrated (dev/skeleton)"/>
+        <const-DROP_FILE_PATTERNS PURPOSE="file glob patterns dropped during walk"/>
+        <const-CATEGORY_MAP PURPOSE="old planner.category → new ReminderPayload.category"/>
+        <const-PRIORITY_MAP PURPOSE="old planner.priority → new Job.priority int"/>
+        <fn-find_user_mapping PURPOSE="lookup by telegram_id"/>
+        <fn-find_project_mapping PURPOSE="lookup project within a user"/>
+      </annotations>
+    </M-MIGRATION-CONFIG>
+
+    <M-MIGRATION-EXTRACT NAME="Migration ETL / Phase E (extract)" TYPE="RUNTIME" STATUS="done">
+      <purpose>Phase E of ETL: read snapshot dir (rsync of /home/bgs/ai-steward/), parse planner.json files, walk file trees, classify files. No transformation logic — only read + classify into in-memory SourceUserData. Pure side-effect-free w.r.t. target paths (aisw-0a5).</purpose>
+      <path>src/ai_steward_wiki/migration/extract.py</path>
+      <depends>M-MIGRATION-CONFIG</depends>
+      <annotations>
+        <type-FileLocation PURPOSE="Literal: 'data_root' | 'data_subfolder' | 'output' | 'user_root' | 'project_root'"/>
+        <type-FileType PURPOSE="Literal: 'csv' | 'json' | 'md' | 'pdf' | 'image' | 'text' | 'script' | 'binary' | 'other'"/>
+        <type-SourcePlannerItem PURPOSE="one parsed item from planner.json (frozen Pydantic)"/>
+        <type-SourceFile PURPOSE="one file with classified location + type"/>
+        <type-SourceUserData PURPOSE="composite per telegram_id (planner items + files)"/>
+        <fn-parse_planner_json PURPOSE="read .json → tuple[SourcePlannerItem, ...] (or empty)"/>
+        <fn-classify_file PURPOSE="Path → FileType by extension"/>
+        <fn-walk_user_files PURPOSE="walk user_dir → tuple[SourceFile, ...] (honors DROP_DIRS/PATTERNS)"/>
+        <fn-extract_user PURPOSE="compose parse + walk for one UserMapping"/>
+        <fn-extract_all PURPOSE="extract every UserMapping with logging"/>
+      </annotations>
+    </M-MIGRATION-EXTRACT>
+
+    <M-MIGRATION-TRANSFORM NAME="Migration ETL / Phase T (transform)" TYPE="RUNTIME" STATUS="done">
+      <purpose>Pure transformation layer of ETL: SourceUserData → TargetPlan. All decision-making for active-item filtering, MSK→UTC TZ conversion, category mapping, recipients fail-fast, remind_before fan-out, monthly→cron_user workaround, daily/weekly→cron_user with Recurrence, file routing to &lt;wiki&gt;/&lt;sub&gt;/ vs &lt;wiki&gt;/raw/&lt;sub&gt;/, frontmatter rendering. No FS or DB writes — only in-memory PlannedJob/PlannedFileCopy/PlannedLegacyDoc dataclasses (aisw-0a5).</purpose>
+      <path>src/ai_steward_wiki/migration/transform.py</path>
+      <depends>M-MIGRATION-CONFIG, M-MIGRATION-EXTRACT, M-CLASSIFIER-RECURRENCE</depends>
+      <annotations>
+        <type-PlannedJob PURPOSE="one row that will be INSERTed into jobs.db"/>
+        <type-PlannedFileCopy PURPOSE="one (src, dst) file copy operation"/>
+        <type-PlannedLegacyDoc PURPOSE="one rendered Markdown file (legacy CLAUDE.md or planner-history)"/>
+        <type-PlannedWiki PURPOSE="one WIKI to bootstrap (owner, raw_name, template_id)"/>
+        <type-TargetPlan PURPOSE="composite of all the above, per-user grouped"/>
+        <fn-is_planner_active PURPOSE="status filter + date/repeat filter"/>
+        <fn-msk_to_utc PURPOSE="'YYYY-MM-DD HH:MM:SS' (MSK) → aware UTC datetime"/>
+        <fn-map_category PURPOSE="old category → ReminderPayload.category enum (+ original)"/>
+        <fn-extract_chat_id PURPOSE="recipients list[int] → single int, fail-fast on len != 1"/>
+        <fn-monthly_to_cron PURPOSE="{type:monthly, day, time} → 'M H D * *' (validated via APS)"/>
+        <fn-daily_weekly_to_cron PURPOSE="{daily|weekly} → 'M H * * *' or 'M H * * &lt;days&gt;'"/>
+        <fn-build_recurrence PURPOSE="Pydantic Recurrence for daily/weekly (sanity check)"/>
+        <fn-planner_to_jobs PURPOSE="one SourcePlannerItem → 0..N PlannedJob (fan-out)"/>
+        <fn-classify_file_target PURPOSE="SourceFile → target rel path inside &lt;wiki&gt;"/>
+        <fn-render_legacy_history_md PURPOSE="inactive items → Markdown with frontmatter"/>
+        <fn-render_legacy_claude_md PURPOSE="legacy CLAUDE.md → rendered Markdown for migrated WIKI"/>
+        <fn-build_plan PURPOSE="one SourceUserData → TargetPlan (single user)"/>
+        <fn-build_plan_all PURPOSE="all users → composite TargetPlan"/>
+      </annotations>
+    </M-MIGRATION-TRANSFORM>
+
+    <M-MIGRATION-LOAD NAME="Migration ETL / Phase L (load)" TYPE="RUNTIME" STATUS="done">
+      <purpose>Side-effect layer of ETL. Takes a TargetPlan and applies it to the running system: writes users.toml, bootstraps WIKIs via WikiLifecycleManager, copies files (shutil.copy2 preserving mtime), writes generated Markdown docs, INSERTs Job rows into jobs.db in a single transaction. dry_run=True makes every op a no-op (only logs and counts). Pre-step jobs.db snapshot acts as rollback artefact (aisw-0a5).</purpose>
+      <path>src/ai_steward_wiki/migration/load.py</path>
+      <depends>M-AUTH-USERS, M-STORAGE-JOBS, M-WIKI-LIFECYCLE, M-MIGRATION-CONFIG, M-MIGRATION-TRANSFORM</depends>
+      <annotations>
+        <type-LoadReport PURPOSE="frozen dataclass with per-phase counters"/>
+        <type-MigrationLoader PURPOSE="orchestrates write_users_toml, bootstrap_wikis, copy_files, write_legacy_docs, insert_jobs, snapshot_db"/>
+      </annotations>
+    </M-MIGRATION-LOAD>
+
+    <M-MIGRATION-REPORT NAME="Migration ETL / report renderer" TYPE="RUNTIME" STATUS="done">
+      <purpose>Render a Markdown migration_report.md summarising what the ETL did (or would do, in --dry-run mode). Inputs are the TargetPlan and optional LoadReport (post-execute counters). The report is the single user-facing artefact for cutover review (aisw-0a5).</purpose>
+      <path>src/ai_steward_wiki/migration/report.py</path>
+      <depends>M-MIGRATION-CONFIG, M-MIGRATION-TRANSFORM, M-MIGRATION-LOAD</depends>
+      <annotations>
+        <fn-render_report PURPOSE="TargetPlan (+ optional LoadReport) → Markdown string"/>
+      </annotations>
+    </M-MIGRATION-REPORT>
+
     <M-TG-TEXT NAME="Telegram I/O text layer" TYPE="RUNTIME" STATUS="done">
       <purpose>aiogram 3 dispatcher + allowlist outer-middleware, graduated 3-tier confirmations (auto/implicit/explicit + 10min TTL), D-025 output-size hybrid policy (≤3500 inline / ≤10000 chain-split / &gt;10000 summary) + persistence, D-026 HTML-balanced throttled streaming edits (D-023, D-024, D-025, D-026, D-031, D-042).</purpose>
       <path>src/ai_steward_wiki/tg/__init__.py, src/ai_steward_wiki/tg/bot.py, src/ai_steward_wiki/tg/middleware_auth.py, src/ai_steward_wiki/tg/confirm.py, src/ai_steward_wiki/tg/output.py, src/ai_steward_wiki/tg/stream_edit.py</path>

@@ -262,6 +262,41 @@
       </target>
       <verification-ref>V-M-OPS-BACKUP</verification-ref>
     </M-OPS-BACKUP>
+    <M-MIGRATION bd_id="aisw-0a5">
+      <target>
+        <source>src/ai_steward_wiki/migration/__init__.py</source>
+      </target>
+    </M-MIGRATION>
+    <M-MIGRATION-CLI bd_id="aisw-0a5">
+      <target>
+        <source>src/ai_steward_wiki/migration/__main__.py</source>
+      </target>
+    </M-MIGRATION-CLI>
+    <M-MIGRATION-CONFIG bd_id="aisw-0a5">
+      <target>
+        <source>src/ai_steward_wiki/migration/config.py</source>
+      </target>
+    </M-MIGRATION-CONFIG>
+    <M-MIGRATION-EXTRACT bd_id="aisw-0a5">
+      <target>
+        <source>src/ai_steward_wiki/migration/extract.py</source>
+      </target>
+    </M-MIGRATION-EXTRACT>
+    <M-MIGRATION-TRANSFORM bd_id="aisw-0a5">
+      <target>
+        <source>src/ai_steward_wiki/migration/transform.py</source>
+      </target>
+    </M-MIGRATION-TRANSFORM>
+    <M-MIGRATION-LOAD bd_id="aisw-0a5">
+      <target>
+        <source>src/ai_steward_wiki/migration/load.py</source>
+      </target>
+    </M-MIGRATION-LOAD>
+    <M-MIGRATION-REPORT bd_id="aisw-0a5">
+      <target>
+        <source>src/ai_steward_wiki/migration/report.py</source>
+      </target>
+    </M-MIGRATION-REPORT>
     <M-TG-TEXT bd_id="aisw-187">
       <target>
         <source>src/ai_steward_wiki/tg/__init__.py</source>
