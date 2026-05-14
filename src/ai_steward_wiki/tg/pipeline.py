@@ -410,6 +410,8 @@ def humanize_recurrence(rec: Recurrence) -> str:
     """Short Russian rendering of a Recurrence for the digest recap/ack (aisw-oqq)."""
     if rec.kind == "daily":
         return f"каждый день в {rec.time_hhmm}"
+    if rec.kind == "monthly":
+        return f"{rec.day_of_month} числа каждого месяца в {rec.time_hhmm}"
     if tuple(sorted(rec.weekdays)) == (0, 1, 2, 3, 4):
         return f"по будням в {rec.time_hhmm}"
     if tuple(sorted(rec.weekdays)) == (5, 6):

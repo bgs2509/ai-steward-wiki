@@ -81,8 +81,73 @@ def test_parse_no_time_escalates() -> None:
     assert res.escalate is True
 
 
-def test_parse_monthly_escalates() -> None:
-    res = parse_recurrence("15 числа каждого месяца отчёт в 9", user_tz="UTC")
+# --- monthly (aisw-r2k) ----------------------------------------------------
+
+
+def test_monthly_to_cron() -> None:
+    r = Recurrence(kind="monthly", time_hhmm="09:00", day_of_month=15, tz="Europe/Moscow")
+    assert r.to_cron() == {"day": 15, "hour": 9, "minute": 0}
+
+
+def test_monthly_requires_day_of_month() -> None:
+    with pytest.raises(ValidationError):
+        Recurrence(kind="monthly", time_hhmm="09:00", tz="UTC")
+
+
+def test_monthly_day_of_month_out_of_range() -> None:
+    with pytest.raises(ValidationError):
+        Recurrence(kind="monthly", time_hhmm="09:00", day_of_month=0, tz="UTC")
+    with pytest.raises(ValidationError):
+        Recurrence(kind="monthly", time_hhmm="09:00", day_of_month=32, tz="UTC")
+
+
+def test_day_of_month_forbidden_for_daily_weekly() -> None:
+    with pytest.raises(ValidationError):
+        Recurrence(kind="daily", time_hhmm="09:00", day_of_month=5, tz="UTC")
+    with pytest.raises(ValidationError):
+        Recurrence(kind="weekly", time_hhmm="09:00", weekdays=(0,), day_of_month=5, tz="UTC")
+
+
+def test_monthly_forbids_weekdays() -> None:
+    with pytest.raises(ValidationError):
+        Recurrence(
+            kind="monthly",
+            time_hhmm="09:00",
+            day_of_month=1,
+            weekdays=(0,),
+            tz="UTC",
+        )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_dom", "expected_time"),
+    [
+        ("1 числа в 9 утра отчёт", 1, "09:00"),
+        ("каждого первого месяца в 10:00 сводка", 1, "10:00"),
+        ("ежемесячно 5-го в 8 утра", 5, "08:00"),
+        ("по 15 числам в 21:30 присылай дайджест", 15, "21:30"),
+        ("1-го каждого месяца в 7 утра", 1, "07:00"),
+        ("28 числа в 18:00 платёж", 28, "18:00"),
+    ],
+)
+def test_parse_monthly_variants(text: str, expected_dom: int, expected_time: str) -> None:
+    res = parse_recurrence(text, user_tz="Europe/Moscow")
+    assert res.recurrence == Recurrence(
+        kind="monthly",
+        time_hhmm=expected_time,
+        day_of_month=expected_dom,
+        tz="Europe/Moscow",
+    )
+
+
+def test_parse_monthly_no_time_escalates() -> None:
+    res = parse_recurrence("15 числа каждого месяца отчёт", user_tz="UTC")
+    assert res.recurrence is None
+    assert res.escalate is True
+
+
+def test_parse_monthly_day_out_of_range_escalates() -> None:
+    res = parse_recurrence("32 числа в 9 утра", user_tz="UTC")
     assert res.recurrence is None
     assert res.escalate is True
 
