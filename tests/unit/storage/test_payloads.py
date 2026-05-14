@@ -149,13 +149,18 @@ def test_reminder_frozen():
 
 
 def test_cron_and_purge_basic():
+    # aisw-02v: CronUserPayload widened to typed Recurrence + free-form command.
     assert isinstance(
         parse_job_payload(
             {
                 "kind": "cron_user",
+                "recurrence": {
+                    "kind": "daily",
+                    "time_hhmm": "09:00",
+                    "tz": "Europe/Moscow",
+                },
+                "command": "напомни",
                 "wiki_id": "Health-WIKI",
-                "cron_expr": "0 9 * * *",
-                "user_text": "напомни",
             }
         ),
         CronUserPayload,

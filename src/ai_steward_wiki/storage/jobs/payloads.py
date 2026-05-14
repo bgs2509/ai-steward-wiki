@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/storage/jobs/payloads.py
-# VERSION: 0.0.6
+# VERSION: 0.0.7
 # START_MODULE_CONTRACT
 #   PURPOSE: Pydantic v2 discriminated union for jobs.payload (D-002).
 #   SCOPE: Closed list of job kinds known at MVP. New kinds added in subsequent chunks.
@@ -12,7 +12,7 @@
 # START_MODULE_MAP
 #   WikiRunPayload - one-shot Stage-1a/1b run against a Domain-WIKI
 #   DigestPayload - recurring digest job: wiki_scope ('all'|list[str]), recurrence, window_hours, prompt_hint (aisw-oqq; list shape aisw-269)
-#   CronUserPayload - user-defined cron (NL-scheduled)
+#   CronUserPayload - user-defined NL-scheduled cron (recurrence:Recurrence, command, wiki_id?) — aisw-02v
 #   PurgePayload - retention purge job (D-034 / §10.4)
 #   ReminderPayload - one-shot reminder job: message + optional lead_time_min + category (aisw-kcz; category aisw-163)
 #   JobPayload - Annotated discriminated union over the five above
@@ -20,7 +20,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.6 - aisw-163: add ReminderPayload.category (medication|event|generic; default 'generic'; legacy rows keep validating)
+#   LAST_CHANGE: v0.0.7 - aisw-02v: widen CronUserPayload — typed Recurrence (was cron_expr:str) +
+#                free-form command (was user_text) + optional wiki_id (was required str); AD-05 no
+#                Alembic migration (JSON column, zero existing rows with kind='cron_user').
+#   PREVIOUS:    v0.0.6 - aisw-163: add ReminderPayload.category (medication|event|generic; default 'generic'; legacy rows keep validating)
 #   PREVIOUS:    v0.0.5 - aisw-269: widen DigestPayload.wiki_scope to 'all'|list[str] (named-subset digest; no jobs.db migration)
 #   PREVIOUS:    v0.0.4 - aisw-oqq: widen DigestPayload (wiki_scope/recurrence/window_hours/prompt_hint)
 #   PREVIOUS:    v0.0.3 - aisw-kcz: add ReminderPayload (kind='reminder_job') to the union
@@ -68,10 +71,17 @@ class DigestPayload(_PayloadBase):
 
 
 class CronUserPayload(_PayloadBase):
+    """User-defined NL-scheduled cron job payload (aisw-02v).
+
+    Widened from the pre-aisw-02v shape (wiki_id:str + cron_expr:str + user_text:str)
+    to mirror DigestPayload's typed-Recurrence convention. JSON column, no Alembic
+    migration needed (zero rows with kind='cron_user' existed prior to widening).
+    """
+
     kind: Literal["cron_user"] = "cron_user"
-    wiki_id: str
-    cron_expr: str
-    user_text: str
+    recurrence: Recurrence
+    command: str
+    wiki_id: str | None = None
 
 
 class PurgePayload(_PayloadBase):

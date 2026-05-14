@@ -626,5 +626,62 @@
       <evidence>PhotoIngestor stages photo bytes to _staging/ via inbox.staging.stage_media → MediaRef; PHOTO_MIME_TO_EXT closed mapping of allowed photo MIME types; photos (and image-documents) run Claude vision via the wiki pipeline media_paths (D-022, tech-spec §9).</evidence>
     </V-M-TG-PHOTO>
 
+    <V-M-SCHEDULER-CRON-USER MODULE="M-SCHEDULER-CRON-USER">
+      <tests>
+        <test path="tests/unit/scheduler/test_cron_user_producer.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/scheduler/test_cron_user_producer.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>scheduler.cron_user.scheduled</marker>
+        <marker>scheduler.cron_user.fire</marker>
+        <marker>scheduler.cron_user.fire.job_missing</marker>
+        <marker>scheduler.cron_user.fire.failed</marker>
+      </log-markers>
+      <evidence>create_cron_user_job INSERTs jobs.Job(kind='cron_user', status='scheduled', priority=Lane.CRON_WRITE, payload=CronUserPayload(recurrence:Recurrence, command:str, wiki_id:str|None)) and registers AsyncIOScheduler.add_job(fire_cron_user_job, CronTrigger(**recurrence.to_cron(), timezone=user_tz), args=[job_id], id=f'cron_user:{job_id}', replace_existing=True); commit-before-add_job; returns int job_id. fire_cron_user_job(job_id:int) loads Job, guards status=='scheduled' (vanished/wrong-status row → log scheduler.cron_user.fire.job_missing + return — idempotent on APScheduler replay), constructs CronUserQueueMsg(job_id, owner_telegram_id, chat_id, command, correlation_id=uuid4().hex, scheduled_at_utc=datetime.now(UTC)), pushes via queue.put(Lane.CRON_WRITE, msg), UPDATE status='queued'; raises CronUserContextNotInitialisedError when set_cron_user_context never called. Mirrors firing.py shape — module-level _ctx registry; picklable int callback for SQLAlchemyJobStore (aisw-02v; D-002; tech-spec §3 D-011).</evidence>
+    </V-M-SCHEDULER-CRON-USER>
+
+    <V-M-SCHEDULER-CONSUMER MODULE="M-SCHEDULER-CONSUMER">
+      <tests>
+        <test path="tests/unit/scheduler/test_consumer.py"/>
+        <test path="tests/unit/scheduler/test_queue_payloads.py"/>
+        <test path="tests/integration/scheduler/test_cron_add_flow.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/scheduler/test_consumer.py tests/unit/scheduler/test_queue_payloads.py -q</cmd>
+        <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/scheduler/test_cron_add_flow.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>scheduler.consumer.drained</marker>
+        <marker>scheduler.consumer.exec.started</marker>
+        <marker>scheduler.consumer.exec.done</marker>
+        <marker>scheduler.consumer.exec.timeout</marker>
+        <marker>scheduler.consumer.exec.failed</marker>
+        <marker>scheduler.consumer.delivered</marker>
+        <marker>scheduler.consumer.deliver_failed</marker>
+        <marker>scheduler.consumer.unexpected</marker>
+      </log-markers>
+      <evidence>CronConsumer.run() drains PriorityJobQueue.get() in a single async loop (NFR-1 concurrency=1, at-most-once); per item: CronUserQueueMsg.model_validate raises ValidationError → log+continue; UPDATE jobs.Job status='running' + started_at_utc=now_utc; spawn subprocess via asyncio.create_subprocess_exec(*argv, stdout=PIPE, stderr=PIPE, cwd=neutral_cwd(claude_config_dir), env=build_env(claude_config_dir)) where argv = ['systemd-run','--scope','--collect','--slice='+slice_name,'--unit=cli-'+str(job_id),'--setenv=CLAUDE_CONFIG_DIR='+str(claude_config_dir),'--', resolve_binary(claude_binary), *system_prompt_argv(prompt_path), command]; asyncio.wait_for(proc.communicate(), timeout=600); TimeoutError → kill_with_sequence(proc, grace_seconds=DEFAULT_TERM_GRACE_SECONDS) → status='failed' + reply '❌ Тайм-аут 10 минут.'; exit_code==0 → ChainSplitter().split(stdout.decode('utf-8','replace')) chunked bot.send_message * n_chunks + status='finished'; exit_code!=0 → '❌ Ошибка ({code}): '+truncate_stderr(stderr, limit=512) + status='failed'; TelegramAPIError on send → log scheduler.consumer.deliver_failed + status='failed' (no re-raise — loop survives). Cancellation: CancelledError propagates out of .run() so __main__ shutdown can await the task. CronUserQueueMsg Pydantic v2 discriminated union with discriminator='kind' (NFR-5) round-trips via model_dump_json. (aisw-02v; R-1 R-2 R-6 mitigations; D-011 §3; D-021).</evidence>
+    </V-M-SCHEDULER-CONSUMER>
+
+    <V-M-TG-CRON-ADD MODULE="M-TG-CRON-ADD">
+      <tests>
+        <test path="tests/unit/tg/test_cron_add_handler.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/tg/test_cron_add_handler.py -q</cmd>
+      </commands>
+      <log-markers>
+        <marker>tg.command.cron_add</marker>
+        <marker>tg.command.cron_add.parsed</marker>
+        <marker>tg.command.cron_add.escalate</marker>
+        <marker>tg.command.cron_add.scheduled</marker>
+        <marker>tg.command.cron_add.usage</marker>
+        <marker>tg.command.cron_add.failed</marker>
+      </log-markers>
+      <evidence>register_cron_add_handlers(router, get_user_tz) registers Command('cron_add'). Handler splits CommandObject.args on the first '|' (left=schedule_text trimmed, right=command trimmed). Cases: (a) no '|' OR empty schedule OR empty command → reply CRON_ADD_USAGE_RU + CRON_ADD_USAGE_RU_HINT, log tg.command.cron_add.usage; (b) parse_recurrence(schedule_text, user_tz=await get_user_tz(owner_telegram_id)) returns RecurrenceParseResult(escalate=True, reason=...) → reply CRON_ADD_USAGE_RU_HINT, log tg.command.cron_add.escalate reason=...; (c) parsed Recurrence → create_cron_user_job(...) → int job_id → reply '✅ Запланировано (id={job_id}): {_humanize_recurrence(rec)}. Команда: {command_preview}', log tg.command.cron_add.parsed + tg.command.cron_add.scheduled job_id=...; (d) defensive try/except around the create+answer wrapper → reply _GENERIC_ERR_RU + log tg.command.cron_add.failed error_class=... (handler never bubbles to the dispatcher). _humanize_recurrence pure: daily → 'каждый день в HH:MM ({tz})'; weekly → 'каждую {ru weekday list} в HH:MM ({tz})'; monthly → 'каждое {day_of_month}-е число в HH:MM ({tz})'. (aisw-02v; R-4 mitigation: parser-escalate becomes user-visible usage hint, no silent bad-cron).</evidence>
+    </V-M-TG-CRON-ADD>
+
   </Modules>
 </VerificationPlan>

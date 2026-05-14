@@ -232,6 +232,47 @@
       </annotations>
     </M-SCHEDULER-FIRING>
 
+    <M-SCHEDULER-CRON-USER NAME="Scheduler / cron-user firing" TYPE="RUNTIME" STATUS="planned">
+      <purpose>Cron-user job firing bridge (aisw-02v) — symmetric to M-SCHEDULER-FIRING/digest: create_cron_user_job INSERTs jobs.Job(kind='cron_user', payload=CronUserPayload(recurrence, command, wiki_id?)) and registers an AsyncIOScheduler CronTrigger(**recurrence.to_cron(), timezone=rec.tz) with id='cron_user:&lt;id&gt;'+replace_existing; on fire (picklable int callback) it loads the row, builds a CronUserQueueMsg (job_id, owner_telegram_id, chat_id, command, correlation_id, scheduled_at_utc), pushes to PriorityJobQueue(lane=Lane.CRON_WRITE), and updates status='scheduled'→'queued'. Module-level _ctx registry installed once at startup by set_cron_user_context. Does NOT execute CLI — execution is M-SCHEDULER-CONSUMER's concern.</purpose>
+      <path>src/ai_steward_wiki/scheduler/cron_user.py</path>
+      <depends>M-STORAGE-JOBS, M-SCHEDULER, M-CLASSIFIER-RECURRENCE</depends>
+      <verification-ref>V-M-SCHEDULER-CRON-USER</verification-ref>
+      <annotations>
+        <fn-set_cron_user_context PURPOSE="install the module-level (AsyncIOScheduler, PriorityJobQueue, jobs async_sessionmaker) registry for fire_cron_user_job once at startup"/>
+        <fn-create_cron_user_job PURPOSE="INSERT+commit a jobs.Job(kind='cron_user', status='scheduled', priority=Lane.CRON_WRITE, payload=CronUserPayload(recurrence, command, wiki_id)) then scheduler.add_job(fire_cron_user_job, CronTrigger(**recurrence.to_cron(), timezone=user_tz), args=[job_id], id=f'cron_user:{job_id}', replace_existing=True); commit-before-add_job; returns job_id (aisw-02v)"/>
+        <fn-fire_cron_user_job PURPOSE="APScheduler callback (picklable int arg): load Job by id, guard status=='scheduled' else skip (idempotent on replay); construct CronUserQueueMsg(job_id, owner_telegram_id, chat_id, command, correlation_id=uuid4().hex, scheduled_at_utc=now_utc); await queue.put(Lane.CRON_WRITE, msg); UPDATE status='queued'; fail-fast if context not set (aisw-02v)"/>
+        <type-CronUserContextNotInitialisedError PURPOSE="raised by fire_cron_user_job when set_cron_user_context was never called"/>
+      </annotations>
+    </M-SCHEDULER-CRON-USER>
+
+    <M-SCHEDULER-CONSUMER NAME="Scheduler / queue consumer" TYPE="RUNTIME" STATUS="planned">
+      <purpose>Single async drain loop over PriorityJobQueue (aisw-02v, formerly aisw-cig YAGNI-deferred). CronConsumer.run() awaits queue.get(), then for each item: UPDATE jobs.Job status='running' + started_at_utc; spawn `systemd-run --scope --collect --slice=aisw-cli.slice --unit=cli-&lt;job_id&gt; -- &lt;claude_binary&gt; --system-prompt &lt;content&gt; &lt;command&gt;` via asyncio.create_subprocess_exec with restricted env (CLAUDE_CONFIG_DIR) and neutral_cwd; wait_for(communicate, timeout_s=600); on TimeoutError → kill_with_sequence (D-021) + ru error message; on exit=0 → ChainSplitter chunked bot.send_message; on exit!=0 → "❌ Ошибка ({code}): {truncate_stderr}". Updates Job to terminal status ('finished'|'failed'). Single-task wired in __main__ (D-011 §3 lane=CRON_WRITE, NFR-1 concurrency=1).</purpose>
+      <path>src/ai_steward_wiki/scheduler/consumer.py</path>
+      <depends>M-SCHEDULER, M-STORAGE-JOBS, M-TG-TEXT, M-CLAUDE-CLI-COMMON</depends>
+      <verification-ref>V-M-SCHEDULER-CONSUMER</verification-ref>
+      <annotations>
+        <fn-CronConsumer.__init__ PURPOSE="constructor DI: queue, bot, claude_binary, claude_config_dir, prompt_path, jobs_session_maker, timeout_s=600, slice_name='aisw-cli.slice' (R-1 mitigation: bot is injected, not module-global)"/>
+        <fn-CronConsumer.run PURPOSE="async drain loop — `while True: item = await queue.get(); try: await self._execute_one(item); except asyncio.CancelledError: raise; except Exception: log scheduler.consumer.unexpected, continue`; one item at a time (NFR-1 at-most-once / concurrency=1)"/>
+        <fn-CronConsumer._execute_one PURPOSE="per-item executor: validate payload via CronUserQueueMsg.model_validate; UPDATE Job→'running'; build argv via claude_cli.common primitives + systemd-run wrapper; spawn + wait_for(600s); chunk stdout via ChainSplitter; bot.send_message * n; terminal status; emit log anchors at every decision point"/>
+        <type-CronConsumer PURPOSE="cron-user queue drain loop; constructor-DI for bot/queue/jobs sessionmaker; .run() is the asyncio.Task entrypoint; cancellable for shutdown"/>
+        <type-_QUEUE_GET_TIMEOUT_S PURPOSE="internal constant — None (blocking get); kept as a named symbol for future bounded-poll if shutdown semantics ever need it"/>
+      </annotations>
+    </M-SCHEDULER-CONSUMER>
+
+    <M-TG-CRON-ADD NAME="Telegram / /cron_add command" TYPE="RUNTIME" STATUS="planned">
+      <purpose>aiogram Router add-on (aisw-02v) — registers the `/cron_add &lt;NL recurrence&gt; | &lt;command&gt;` Command handler. Splits CommandObject.args on the first `|`; calls classifier.recurrence.parse_recurrence(schedule_text, user_tz=resolve_tz(owner)); on RecurrenceParseResult.escalate or empty command → reply usage hint (ru); on parsed Recurrence → scheduler.cron_user.create_cron_user_job(owner_telegram_id, chat_id, recurrence, command, user_tz, wiki_id=None) → reply "✅ Запланировано (id={job_id}): {humanized}. Команда: {preview}". No interactive confirm in walking skeleton (AD-02): parser is rule-based + reply renders parsed cron in ru for visual verification.</purpose>
+      <path>src/ai_steward_wiki/tg/cron_add.py</path>
+      <depends>M-CLASSIFIER-RECURRENCE, M-SCHEDULER-CRON-USER, M-STORAGE-SESSIONS</depends>
+      <verification-ref>V-M-TG-CRON-ADD</verification-ref>
+      <annotations>
+        <fn-register_cron_add_handlers PURPOSE="factory registering the /cron_add Command handler on a caller-owned aiogram.Router; takes a get_user_tz: Callable[[int], Awaitable[str]] for IANA tz resolution (R-4 mitigation: handler rejects parser.escalate with usage hint, no silent bad-cron)"/>
+        <fn-_handle_cron_add PURPOSE="async handler: split args on first '|'; parse_recurrence; escalate → usage; empty command → usage; parsed → create_cron_user_job → answer with humanized ru recurrence + job_id"/>
+        <fn-_humanize_recurrence PURPOSE="pure: Recurrence → ru string ('каждый день в 09:00 (Europe/Moscow)' | 'каждую среду в 14:00 (Europe/Moscow)' | 'каждое 5-е число в 10:00 (Europe/Moscow)')"/>
+        <type-CRON_ADD_USAGE_RU PURPOSE="ru usage string for parse failures / empty input"/>
+        <type-CRON_ADD_USAGE_RU_HINT PURPOSE="ru hint with examples (каждый день в 9, каждую среду в 14:00, каждого 5го в 10:00)"/>
+      </annotations>
+    </M-TG-CRON-ADD>
+
     <M-CLASSIFIER-STAGE0 NAME="Classifier / Stage-0" TYPE="RUNTIME" STATUS="done">
       <purpose>Stage-0 Haiku intent classifier — prompt cache (semver+sha256), backend abstraction (Claude CLI default / Anthropic API optional / Fake), Pydantic intent schema, NL time parser (dateparser → Haiku-fallback → escalate) (D-009, D-010, D-013, D-015).</purpose>
       <path>src/ai_steward_wiki/classifier/</path>
@@ -660,5 +701,18 @@
     <CrossLink from="M-SCHEDULER-FIRING" to="M-SCHEDULER" relation="create_digest_job registers a CronTrigger on the AsyncIOScheduler (picklable int args, replace_existing); priority=Lane.DIGEST; fire_digest_job uses FailureCounter semantics + move_to_dlq + remove_job (aisw-oqq)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-CLASSIFIER-RECURRENCE" relation="_RecurrenceParserAdapter binds parse_recurrence with the Stage-0 backend + prompts/recurrence.md (aisw-oqq)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-WIKI-LIFECYCLE" relation="binds _resolve_owner_wikis into firing.set_digest_context (aisw-oqq)"/>
+    <CrossLink from="M-SCHEDULER-CRON-USER" to="M-STORAGE-JOBS" relation="create_cron_user_job INSERTs a jobs.Job(kind='cron_user', payload=CronUserPayload(recurrence, command, wiki_id?)); fire_cron_user_job loads by id and updates status='scheduled'→'queued' (aisw-02v)"/>
+    <CrossLink from="M-SCHEDULER-CRON-USER" to="M-SCHEDULER" relation="create_cron_user_job registers a CronTrigger on the AsyncIOScheduler (picklable int args, replace_existing); priority=Lane.CRON_WRITE; fire_cron_user_job pushes CronUserQueueMsg onto PriorityJobQueue (aisw-02v)"/>
+    <CrossLink from="M-SCHEDULER-CRON-USER" to="M-CLASSIFIER-RECURRENCE" relation="create_cron_user_job consumes a Recurrence value and calls .to_cron() for CronTrigger kwargs (aisw-02v)"/>
+    <CrossLink from="M-SCHEDULER-CONSUMER" to="M-SCHEDULER" relation="awaits PriorityJobQueue.get(); uses kill_with_sequence (D-021) for systemd-run scope timeout (aisw-02v)"/>
+    <CrossLink from="M-SCHEDULER-CONSUMER" to="M-STORAGE-JOBS" relation="loads jobs.Job by id from the queue msg; updates status='queued'→'running'→'finished'|'failed' (aisw-02v)"/>
+    <CrossLink from="M-SCHEDULER-CONSUMER" to="M-TG-TEXT" relation="delivers stdout via aiogram.Bot.send_message (constructor-DI; R-1 mitigation) using tg.output.ChainSplitter standalone for chunking (AD-03: full deliver_output deferred until run-output persistence becomes relevant) — aisw-02v"/>
+    <CrossLink from="M-SCHEDULER-CONSUMER" to="M-CLAUDE-CLI-COMMON" relation="composes resolve_binary + build_env + neutral_cwd + system_prompt_argv + truncate_stderr for the systemd-run --scope --collect wrapped subprocess (aisw-02v)"/>
+    <CrossLink from="M-TG-CRON-ADD" to="M-CLASSIFIER-RECURRENCE" relation="parse_recurrence on the schedule-text portion of /cron_add args; escalate → ru usage hint (aisw-02v)"/>
+    <CrossLink from="M-TG-CRON-ADD" to="M-SCHEDULER-CRON-USER" relation="calls create_cron_user_job after parse-success; receives int job_id for the reply (aisw-02v)"/>
+    <CrossLink from="M-TG-CRON-ADD" to="M-STORAGE-SESSIONS" relation="resolves user_tz via storage.sessions.users for parse_recurrence and CronTrigger timezone (aisw-02v)"/>
+    <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-CRON-ADD" relation="build_router calls register_cron_add_handlers to install the /cron_add Command handler on its Router (aisw-02v)"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-SCHEDULER-CRON-USER" relation="cron_user.set_cron_user_context(scheduler, queue, jobs_session_maker) after scheduler.start() (aisw-02v)"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-SCHEDULER-CONSUMER" relation="constructs CronConsumer(queue, bot, claude_binary, claude_config_dir, prompt_path, jobs_session_maker) and spawns asyncio.create_task(consumer.run(), name='aisw.cron_consumer'); cancels on shutdown (aisw-02v)"/>
   </Project>
 </KnowledgeGraph>
