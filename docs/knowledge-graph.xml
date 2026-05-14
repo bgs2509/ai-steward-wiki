@@ -232,7 +232,7 @@
       </annotations>
     </M-SCHEDULER-FIRING>
 
-    <M-SCHEDULER-CRON-USER NAME="Scheduler / cron-user firing" TYPE="RUNTIME" STATUS="planned">
+    <M-SCHEDULER-CRON-USER NAME="Scheduler / cron-user firing" TYPE="RUNTIME" STATUS="done">
       <purpose>Cron-user job firing bridge (aisw-02v) — symmetric to M-SCHEDULER-FIRING/digest: create_cron_user_job INSERTs jobs.Job(kind='cron_user', payload=CronUserPayload(recurrence, command, wiki_id?)) and registers an AsyncIOScheduler CronTrigger(**recurrence.to_cron(), timezone=rec.tz) with id='cron_user:&lt;id&gt;'+replace_existing; on fire (picklable int callback) it loads the row, builds a CronUserQueueMsg (job_id, owner_telegram_id, chat_id, command, correlation_id, scheduled_at_utc), pushes to PriorityJobQueue(lane=Lane.CRON_WRITE), and updates status='scheduled'→'queued'. Module-level _ctx registry installed once at startup by set_cron_user_context. Does NOT execute CLI — execution is M-SCHEDULER-CONSUMER's concern.</purpose>
       <path>src/ai_steward_wiki/scheduler/cron_user.py</path>
       <depends>M-STORAGE-JOBS, M-SCHEDULER, M-CLASSIFIER-RECURRENCE</depends>
@@ -245,7 +245,7 @@
       </annotations>
     </M-SCHEDULER-CRON-USER>
 
-    <M-SCHEDULER-CONSUMER NAME="Scheduler / queue consumer" TYPE="RUNTIME" STATUS="planned">
+    <M-SCHEDULER-CONSUMER NAME="Scheduler / queue consumer" TYPE="RUNTIME" STATUS="done">
       <purpose>Single async drain loop over PriorityJobQueue (aisw-02v, formerly aisw-cig YAGNI-deferred). CronConsumer.run() awaits queue.get(), then for each item: UPDATE jobs.Job status='running' + started_at_utc; spawn `systemd-run --scope --collect --slice=aisw-cli.slice --unit=cli-&lt;job_id&gt; -- &lt;claude_binary&gt; --system-prompt &lt;content&gt; &lt;command&gt;` via asyncio.create_subprocess_exec with restricted env (CLAUDE_CONFIG_DIR) and neutral_cwd; wait_for(communicate, timeout_s=600); on TimeoutError → kill_with_sequence (D-021) + ru error message; on exit=0 → ChainSplitter chunked bot.send_message; on exit!=0 → "❌ Ошибка ({code}): {truncate_stderr}". Updates Job to terminal status ('finished'|'failed'). Single-task wired in __main__ (D-011 §3 lane=CRON_WRITE, NFR-1 concurrency=1).</purpose>
       <path>src/ai_steward_wiki/scheduler/consumer.py</path>
       <depends>M-SCHEDULER, M-STORAGE-JOBS, M-TG-TEXT, M-CLAUDE-CLI-COMMON</depends>
@@ -259,7 +259,7 @@
       </annotations>
     </M-SCHEDULER-CONSUMER>
 
-    <M-TG-CRON-ADD NAME="Telegram / /cron_add command" TYPE="RUNTIME" STATUS="planned">
+    <M-TG-CRON-ADD NAME="Telegram / /cron_add command" TYPE="RUNTIME" STATUS="done">
       <purpose>aiogram Router add-on (aisw-02v) — registers the `/cron_add &lt;NL recurrence&gt; | &lt;command&gt;` Command handler. Splits CommandObject.args on the first `|`; calls classifier.recurrence.parse_recurrence(schedule_text, user_tz=resolve_tz(owner)); on RecurrenceParseResult.escalate or empty command → reply usage hint (ru); on parsed Recurrence → scheduler.cron_user.create_cron_user_job(owner_telegram_id, chat_id, recurrence, command, user_tz, wiki_id=None) → reply "✅ Запланировано (id={job_id}): {humanized}. Команда: {preview}". No interactive confirm in walking skeleton (AD-02): parser is rule-based + reply renders parsed cron in ru for visual verification.</purpose>
       <path>src/ai_steward_wiki/tg/cron_add.py</path>
       <depends>M-CLASSIFIER-RECURRENCE, M-SCHEDULER-CRON-USER, M-STORAGE-SESSIONS</depends>
