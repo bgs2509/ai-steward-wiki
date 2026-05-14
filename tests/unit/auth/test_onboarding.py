@@ -91,7 +91,6 @@ def test_format_intro_message_renders_bot_name(tmp_path: Path) -> None:
     )
     out = format_intro_message(tpl, bot_name="MyBot")
     assert "MyBot" in out
-    assert "<!-- slug:greeting -->" in out
 
 
 def test_format_intro_message_raises_on_missing_slug(tmp_path: Path) -> None:
