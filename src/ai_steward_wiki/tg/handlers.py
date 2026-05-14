@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/handlers.py
-# VERSION: 0.4.0
+# VERSION: 0.5.0
 # START_MODULE_CONTRACT
 #   PURPOSE: aiogram Router that adapts Telegram message/callback events to
 #            the MessagePipeline Protocol (+ the bot's first slash commands).
@@ -39,7 +39,11 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.4.0 - aisw-s5i: /start, /help, /manual handlers (template-based).
+#   LAST_CHANGE: v0.5.0 - aisw-02v: build_router gains optional get_user_tz kwarg +
+#                registers the /cron_add Command handler via
+#                ai_steward_wiki.tg.cron_add.register_cron_add_handlers when
+#                get_user_tz is provided. New routing dependency M-TG-CRON-ADD.
+#   PREVIOUS:    v0.4.0 - aisw-s5i: /start, /help, /manual handlers (template-based).
 #                build_router gains optional templates_dir + on_start_unknown kwargs.
 #                /start branches on AllowlistMiddleware's is_pending flag; known →
 #                start-known.ru.md, unknown → on_start_unknown(...) + onboarding-intro.
@@ -324,6 +328,7 @@ def build_router(
     *,
     templates_dir: Path | None = None,
     on_start_unknown: Callable[..., Awaitable[None]] | None = None,
+    get_user_tz: Callable[[int], Awaitable[str]] | None = None,
 ) -> Router:
     """Construct an aiogram Router wired to ``pipeline``.
 
@@ -344,6 +349,11 @@ def build_router(
 
     _templates_dir: Path = templates_dir if templates_dir is not None else _DEFAULT_TEMPLATES_DIR
     router = Router(name="m-tg-handlers-wiring")
+
+    if get_user_tz is not None:
+        from ai_steward_wiki.tg.cron_add import register_cron_add_handlers
+
+        register_cron_add_handlers(router, get_user_tz=get_user_tz)
 
     @router.message(F.text & ~F.text.startswith("/"))
     async def _on_text(message: Message) -> None:
