@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/migration/__main__.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: CLI entrypoint for the migration ETL. Parses argv, dispatches
 #            extract -> transform -> (dry-run report | execute + report).
@@ -20,13 +20,16 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - aisw-0a5 P5.3: CLI entrypoint
+#   LAST_CHANGE: v0.0.2 - --profiles-dir default falls back to $AISW_PROFILES_DIR
+#                (fix deviation from aisw-0a5 plan line 263).
+#   PREVIOUS:    v0.0.1 - aisw-0a5 P5.3: CLI entrypoint
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,7 +82,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--profiles-dir",
         type=Path,
-        default=Path("/home/bgs/.local/share/ai-steward-wiki/data/profiles"),
+        default=Path(
+            os.getenv(
+                "AISW_PROFILES_DIR",
+                "/home/bgs/.local/share/ai-steward-wiki/data/profiles",
+            )
+        ),
+        help="default falls back to $AISW_PROFILES_DIR if set (plan line 263)",
     )
     p.add_argument("--report-out", type=Path, default=None)
     mode = p.add_mutually_exclusive_group()
