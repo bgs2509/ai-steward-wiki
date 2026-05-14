@@ -40,10 +40,38 @@ make lint          # ruff + ruff format + mypy --strict
 make total-test    # lint + grace + 14 invariants + unit (≥80% coverage)
 ```
 
+## Commands
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `/start` | — | Greeting for known users; onboarding intro for new ones. |
+| `/help` | — | Command cheat-sheet and WIKI explainer. |
+| `/manual` | — | Extended usage scenarios and worked examples. |
+| `/digest_now` | — | Fire all enabled digest jobs immediately. |
+| `/expand` | `<section>` | Re-run Claude scoped to one digest section. Valid sections: `today`, `meds`, `trackers`, `wiki`. |
+| `/digest_sections` | — | Inline keyboard to toggle per-section digest output. |
+| `/cron_add` | `<NL schedule> \| <command>` | Create a recurring job via natural-language schedule. See examples below. |
+
+### `/cron_add` examples
+
+```
+/cron_add каждый день в 9 | напомни выпить витамины
+/cron_add каждую среду в 14:00 | сделай сводку
+/cron_add каждого 5-го в 10:00 | сводка за месяц
+```
+
+Schedule is parsed by `M-CLASSIFIER-RECURRENCE` (rule-based NL → cron); command text
+is forwarded to Claude CLI via the cron-user consumer pipeline (`M-SCHEDULER-CONSUMER`).
+
 ## Roadmap
 
 1. **MVP** (chunks 1–17) — closed. See `docs/reports/20260511-ai-steward-wiki-mvp-report.md`.
-2. **Post-MVP done:** chunk 18 `M-RUNTIME-WIRING`, chunk 19 `M-TG-HANDLERS-WIRING`.
+2. **Post-MVP done:**
+   - Chunk 18 `M-RUNTIME-WIRING`, chunk 19 `M-TG-HANDLERS-WIRING`.
+   - aisw-02v: `/cron_add` command + cron-user producer/consumer pipeline
+     (`M-TG-CRON-ADD`, `M-SCHEDULER-CRON-USER`, `M-SCHEDULER-CONSUMER`).
+   - Command handlers: `/start`, `/help`, `/manual`, `/digest_now`, `/expand`,
+     `/digest_sections` (aisw-s5i, aisw-269, aisw-pv8).
 3. **Path to production launch** (planned, pre-Beads draft):
    `docs/superpowers/plans/20260511-ai-steward-wiki-launch/` —
    `breakdown.xml` (chunks 20–23 with scope/depends/exit-criteria),
