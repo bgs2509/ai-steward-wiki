@@ -28,8 +28,6 @@
 # START_MODULE_MAP
 #   Spawner - Protocol seam: async spawn(argv, *, cwd, env) -> _Killable + communicate
 #   CronConsumer - constructor-DI drain loop; .run() blocking; ._execute_one per-item
-#   _AsyncioSpawner - default Spawner wrapping asyncio.create_subprocess_exec
-#   _TIMEOUT_MSG_RU / _ERROR_MSG_RU - ru user-facing strings (D-032)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY

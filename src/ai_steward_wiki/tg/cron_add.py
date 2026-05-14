@@ -24,7 +24,6 @@
 #   CRON_ADD_USAGE_HINT_RU - alias kept for backward-compat with external readers
 #   register_cron_add_handlers - factory: install Command('cron_add') on a Router
 #   handle_cron_add - thin async handler (DI for get_user_tz + create-fn) — testable in isolation
-#   _humanize_recurrence - pure: Recurrence → ru ('каждый день в HH:MM (tz)' / ...)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
