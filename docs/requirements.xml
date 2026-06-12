@@ -1,5 +1,79 @@
 <?xml version="1.0" ?>
 <Requirements generated="auto" source="YAML frontmatter of markdown specs">
+  <Feature source="20260510-auth-users-discovery.md" bd_id="aisw-hnl">
+    <feature>auth-users-allowlist</feature>
+    <epic>aisw-fm0</epic>
+    <chunk>3</chunk>
+    <module_id>M-AUTH-USERS</module_id>
+    <status>stable</status>
+    <date>2026-05-10</date>
+    <fr>
+      <Item>
+        <FR-1>Load users.toml from disk; parse TOML; validate via Pydantic v2 schema</FR-1>
+      </Item>
+      <Item>
+        <FR-2>In-memory allowlist cache keyed by telegram_id (canonical, D-042)</FR-2>
+      </Item>
+      <Item>
+        <FR-3>Hot-reload via SIGHUP (primary)</FR-3>
+      </Item>
+      <Item>
+        <FR-4>Hot-reload via watchdog filesystem observer (fallback, 500ms debounce)</FR-4>
+      </Item>
+      <Item>
+        <FR-5>Validate-before-swap — invalid file keeps current cache, emits admin-alert</FR-5>
+      </Item>
+      <Item>
+        <FR-6>Sync sessions.db.users on every successful reload (upsert by telegram_id; disable removed)</FR-6>
+      </Item>
+      <Item>
+        <FR-7>Public API — is_allowed(telegram_id) -&gt; bool, get_user(telegram_id) -&gt; UserRecord | None</FR-7>
+      </Item>
+      <Item>
+        <FR-8>Admin-alert hook injectable (callable) for parse/validation failures</FR-8>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>Reload latency &lt;200ms p95 for typical (≤100 users) file</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>Watchdog debounce 500ms (D-031)</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>Atomic swap (single assignment of frozen mapping)</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4>structlog events on every load attempt with correlation_id</NFR-4>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>users.toml uses telegram_id as canonical identity (D-042); telegram_username NOT identity</Item>
+      <Item>sessions.db.users is sync target only — never authoritative (D-031)</Item>
+      <Item>No FK from jobs.db / audit.db to users (INV-10)</Item>
+    </constraints>
+    <risks>
+      <Item>
+        <parse-error_mid-flight key="parse-error mid-flight">mitigated by validate-before-swap + keep prior cache</parse-error_mid-flight>
+      </Item>
+      <Item>
+        <watchdog_double-fire key="watchdog double-fire">mitigated by 500ms debounce with per-path timer reset</watchdog_double-fire>
+      </Item>
+      <Item>
+        <SIGHUP_races_watchdog key="SIGHUP races watchdog">both feed same reload coroutine, idempotent on no-change (sha256 guard)</SIGHUP_races_watchdog>
+      </Item>
+    </risks>
+    <scope_in>
+      <Item>users_toml.py — schema + loader</Item>
+      <Item>allowlist.py — cache + sync + public API</Item>
+      <Item>sighup.py — SIGHUP handler + watchdog observer wiring</Item>
+    </scope_in>
+    <scope_out>
+      <Item>/admin elevate flow (chunk 12)</Item>
+      <Item>pending_users onboarding (chunk 12)</Item>
+      <Item>actual TG admin-alert delivery (callback stub here; real wiring in chunk 10/12)</Item>
+    </scope_out>
+  </Feature>
   <Feature source="20260510-foundation-scaffold-discovery.md" bd_id="aisw-u99">
     <title>Foundation scaffold — Discovery</title>
     <feature>foundation-scaffold</feature>
@@ -103,5 +177,1988 @@
       <Item>bind_correlation_id('xyz') propagates through async tasks (asserted in test)</Item>
       <Item>pre-commit run --all-files exits 0 (after install)</Item>
     </verification>
+  </Feature>
+  <Feature source="20260511-chunk10-tg-text-discovery.md" bd_id="aisw-187">
+    <feature>M-TG-TEXT</feature>
+    <status>stable</status>
+    <date>2026-05-11</date>
+    <chunk>10</chunk>
+    <sources>
+      <Item>docs/Spec-WIKI/research/tech-spec-draft.md §9 (TG I/O), §10.4 (retention)</Item>
+      <Item>docs/Spec-WIKI/decisions/D-023-tg-confirmations.md</Item>
+      <Item>docs/Spec-WIKI/decisions/D-025-output-size.md</Item>
+      <Item>docs/Spec-WIKI/decisions/D-026-tg-streaming.md</Item>
+      <Item>docs/Spec-WIKI/decisions/D-031-allowlist-hot-reload.md</Item>
+      <Item>docs/Spec-WIKI/decisions/D-042-identity-vocabulary.md</Item>
+    </sources>
+  </Feature>
+  <Feature source="20260511-integration-e2e-discovery.md" bd_id="aisw-vb9">
+    <feature>integration-e2e</feature>
+    <module_id>M-INTEGRATION-E2E</module_id>
+    <date>2026-05-11</date>
+    <chunk>23</chunk>
+    <ssot>docs/superpowers/plans/20260511-ai-steward-wiki-launch/breakdown.xml chunk-23</ssot>
+    <status>stable</status>
+    <fr>
+      <Item id="FR-1">
+        <text>Integration suite spins DefaultPipeline with real Claude CLI classifier and verifies on_text → classify → runner → deliver path under RUN_INTEGRATION=1 gate</text>
+      </Item>
+      <Item id="FR-2">
+        <text>Voice scenario: STT result is injected into pipeline (fake transcriber), then real classifier resolves intent, fake runner+output assert delivery</text>
+      </Item>
+      <Item id="FR-3">
+        <text>Photo+confirm scenario: fake OCR injects text, pipeline emits confirm prompt, callback resolve path completes the turn</text>
+      </Item>
+      <Item id="FR-4">
+        <text>PDF document scenario: on_document with application/pdf MIME triggers OCR fake → classify → runner → deliver</text>
+      </Item>
+      <Item id="FR-5">
+        <text>make integration target runs the suite via uv run pytest tests/integration with RUN_INTEGRATION=1</text>
+      </Item>
+      <Item id="FR-6">
+        <text>runbook/operations.md documents nightly manual invocation pattern (no CI auto-trigger)</text>
+      </Item>
+    </fr>
+    <nfr>
+      <Item id="NFR-1">
+        <text>Full suite completes ≤180s on dev VPS</text>
+      </Item>
+      <Item id="NFR-2">
+        <text>Suite is opt-in: passes silently (skipped) when RUN_INTEGRATION=1 absent or `claude` binary missing</text>
+      </Item>
+      <Item id="NFR-3">
+        <text>No real network egress to Telegram (FakeAiogramBot captures send_message/edit/send_document calls)</text>
+      </Item>
+      <Item id="NFR-4">
+        <text>Idempotency DB uses tmp_path per test; no shared state</text>
+      </Item>
+    </nfr>
+    <risks>
+      <Item id="RISK-1">
+        <text>Real Claude CLI latency spikes blow the 180s budget</text>
+        <mitigation>Cache classifier prompt; cap scenarios to 4; one classify call per scenario; fake the wiki runner to avoid second CLI round</mitigation>
+      </Item>
+      <Item id="RISK-2">
+        <text>Test pollution between runs via shared sqlite jobs/audit DBs</text>
+        <mitigation>Use tmp_path-scoped sqlite URLs in fixtures; never touch /var/lib/ai-steward-wiki</mitigation>
+      </Item>
+      <Item id="RISK-3">
+        <text>Existing test_pipeline_classifier_e2e.py uses RUN_CLAUDE_CLI_INTEGRATION gate, Makefile uses RUN_INTEGRATION — double gate makes nothing run</text>
+        <mitigation>New suite gates on RUN_INTEGRATION=1 (matches Makefile); existing chunk-20 test keeps its dual gate for backward compat OR migrate it</mitigation>
+      </Item>
+    </risks>
+    <scope>
+      <in>
+        <Item>tests/integration/test_e2e_pipeline.py — 4 scenarios</Item>
+        <Item>FakeAiogramBot stub satisfying TgSender protocol (extends existing FakeSender pattern)</Item>
+        <Item>Fakes for VoiceHandler (transcribe) and PhotoIngestor (OCR)</Item>
+        <Item>tests/integration/conftest.py with shared fixtures (tmp DB paths, prompt cache)</Item>
+        <Item>Makefile: keep make test-integration; ensure it picks up new file</Item>
+        <Item>runbook/operations.md: append §Integration testing</Item>
+      </in>
+      <out>
+        <Item>Real runner CLI invocation (Stage-2 wiki agent) — mocked to control latency</Item>
+        <Item>Real Telegram API calls — FakeAiogramBot only</Item>
+        <Item>CI auto-trigger — manual nightly per breakdown.xml</Item>
+        <Item>Cutover checklist execution — separate gate</Item>
+      </out>
+    </scope>
+    <references>
+      <Item>tests/integration/test_pipeline_classifier_e2e.py (chunk-20 era reference)</Item>
+      <Item>tests/integration/classifier/test_real_cli.py (raw CLI test)</Item>
+      <Item>src/ai_steward_wiki/tg/pipeline.py DefaultPipeline.__init__ signature</Item>
+      <Item>src/ai_steward_wiki/tg/bot.py TgSender protocol</Item>
+    </references>
+  </Feature>
+  <Feature source="20260511-runtime-wiring-discovery.md" bd_id="aisw-cq4">
+    <feature>M-RUNTIME-WIRING</feature>
+    <status>stable</status>
+    <date>2026-05-11</date>
+    <chunk>18</chunk>
+    <sources>
+      <Item>deploy/systemd/aisw-bot.service (ExecStart contract)</Item>
+      <Item>src/ai_steward_wiki/tg/bot.py (build_bot, build_dispatcher)</Item>
+      <Item>src/ai_steward_wiki/scheduler/core.py (build_scheduler)</Item>
+      <Item>src/ai_steward_wiki/storage/{jobs,audit,sessions}/engine.py</Item>
+      <Item>src/ai_steward_wiki/auth/allowlist.py (sync_to_sessions_db)</Item>
+      <Item>docs/reports/20260511-ai-steward-wiki-mvp-report.md</Item>
+    </sources>
+  </Feature>
+  <Feature source="20260511-tg-document-full-discovery.md" bd_id="aisw-wku">
+    <feature>tg-document-full</feature>
+    <module_id>M-TG-DOCUMENT-FULL</module_id>
+    <chunk>22</chunk>
+    <date>2026-05-11</date>
+    <ssot>docs/superpowers/plans/20260511-ai-steward-wiki-launch/breakdown.xml chunk-22</ssot>
+    <decisions_ref>
+      <Item>DEC-L3</Item>
+      <Item>D-022</Item>
+      <Item>D-018</Item>
+    </decisions_ref>
+    <status>approved</status>
+    <functional_requirements>
+      <Item id="FR-1">
+        <text>Replace ack-only DefaultPipeline.on_document with mime-based router per DEC-L3.</text>
+      </Item>
+      <Item id="FR-2">
+        <text>Branch application/pdf: extract text via pypdf, stage as inline text through classifier pipeline; if no extractable text → reject with hint to re-send as photo.</text>
+      </Item>
+      <Item id="FR-3">
+        <text>Branch text/*: decode bytes as UTF-8 (with BOM tolerance via utf-8-sig), route through DefaultPipeline._run_text_pipeline (existing classifier path).</text>
+      </Item>
+      <Item id="FR-4">
+        <text>Branch image/*: route bytes through existing PhotoIngestor.handle() — same path as on_photo.</text>
+      </Item>
+      <Item id="FR-5">
+        <text>Branch else (unsupported mime): reply ACK_DOC_UNSUPPORTED_RU ru-only, no audit error, log tg.pipeline.document.rejected.</text>
+      </Item>
+      <Item id="FR-6">
+        <text>L2 dedup on doc_sha256 (raw bytes) via IdempotencyService.check_content(kind="file") BEFORE mime branching; on hit emit ACK_DEDUP_RU and record_dedup_choice.</text>
+      </Item>
+      <Item id="FR-7">
+        <text>Filename PII tier-2 hash via PIIRedactor.hash_token(normalized_filename) for all log lines — never log raw filename.</text>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item id="NFR-1">
+        <text>≥8 unit tests covering 4 mime branches + L2 dedup hit + rejection + filename hashing + UTF-8 BOM decode.</text>
+      </Item>
+      <Item id="NFR-2">
+        <text>mypy --strict clean; ruff lint+format clean; grace-lint 0/0; coverage threshold preserved (≥80%).</text>
+      </Item>
+      <Item id="NFR-3">
+        <text>All ru-only user-facing strings; no English leak.</text>
+      </Item>
+      <Item id="NFR-4">
+        <text>Log markers: tg.pipeline.document.{received, dedup_hit, rejected, routed_text, routed_image, routed_pdf, pdf_no_text} with hashed_filename + mime + size + sha256_short fields.</text>
+      </Item>
+      <Item id="NFR-5">
+        <text>Datetime UTC; existing IdempotencyService TTL (30d per D-018) reused.</text>
+      </Item>
+    </non_functional_requirements>
+    <constraints>
+      <Item>Do NOT add OCR/image-conversion dependencies (no pytesseract, no pdf2image) — out of D-022 scope.</Item>
+      <Item>WikiRunner.run currently accepts text only; no Protocol change in this chunk.</Item>
+      <Item>PhotoIngestor.handle accepts only {jpeg, jpg, png, webp}; image/* mimes outside this set → reject as unsupported (NOT image branch).</Item>
+      <Item>Filename PII tier-2 hash applied in logs only; not in storage path (stage_media uses sha256 prefix, not filename).</Item>
+    </constraints>
+    <dependencies>
+      <Item>M-TG-PIPELINE-CLASSIFIER (chunk 20) — _run_text_pipeline reuse.</Item>
+      <Item>M-INBOX (idempotency.IdempotencyService.check_content + record_dedup_choice).</Item>
+      <Item>M-OPS-PII (PIIRedactor.hash_token, default singleton).</Item>
+      <Item>M-TG-MEDIA (PhotoIngestor for image/* branch).</Item>
+      <Item>pypdf library (new dependency, pure-python, MIT).</Item>
+    </dependencies>
+    <risks>
+      <Item id="R-1">
+        <text>Scanned-only PDFs have no extractable text → user confusion.</text>
+        <mitigation>Reject with explicit ru-only hint suggesting photo upload.</mitigation>
+      </Item>
+      <Item id="R-2">
+        <text>Mime mismatch (e.g. filename .pdf but mime=text/plain).</text>
+        <mitigation>Trust mime parameter (TG-side detection); filename is UX-only and hashed in logs.</mitigation>
+      </Item>
+      <Item id="R-3">
+        <text>Oversized PDF could blow memory during pypdf parse.</text>
+        <mitigation>Cap MAX_DOC_BYTES at 25 MB (configurable); reject larger as unsupported with ru-only message.</mitigation>
+      </Item>
+      <Item id="R-4">
+        <text>Corrupted/encrypted PDF causes pypdf exception.</text>
+        <mitigation>Catch pypdf.errors.PdfReadError + generic Exception in narrow try/except; log tg.pipeline.document.pdf_parse_error; ack ACK_DOC_UNSUPPORTED_RU.</mitigation>
+      </Item>
+      <Item id="R-5">
+        <text>Empty filename / no extension.</text>
+        <mitigation>Handler defaults to 'unnamed'; hash_token handles any string uniformly.</mitigation>
+      </Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/tg/pipeline.py — on_document rewrite with router + branches.</Item>
+      <Item>Pyproject pypdf&gt;=4.0 pin + uv.lock refresh.</Item>
+      <Item>MODULE_CONTRACT update for M-TG-PIPELINE (extend SCOPE: document routing).</Item>
+      <Item>MODULE_CONTRACT new for M-TG-DOCUMENT-FULL (logical sub-module documented in pipeline.py header).</Item>
+      <Item>tests/unit/tg/test_pipeline_document.py (new file, ≥8 cases).</Item>
+      <Item>knowledge-graph.xml entry for M-TG-DOCUMENT-FULL.</Item>
+      <Item>verification-plan.xml entries for new tests.</Item>
+    </scope_in>
+    <scope_out>
+      <Item>WikiRunner Protocol change to accept MediaRef (deferred — would require runner+vision rework, separate chunk).</Item>
+      <Item>Real OCR (pytesseract / Tesseract) — out of D-022 scope.</Item>
+      <Item>PDF→image rasterization (pdf2image / poppler) — out of scope.</Item>
+      <Item>OCR for scanned-only PDFs — rejected with hint (out of scope).</Item>
+      <Item>Document type detection beyond mime (magic bytes) — trust TG mime.</Item>
+      <Item>Multi-page PDF page-by-page handling — extract concatenated text or first N pages (decide in design).</Item>
+    </scope_out>
+    <scope_later>
+      <Item>WikiRunner MediaRef support → real vision-OCR for image/PDF (post-launch chunk).</Item>
+      <Item>Tier-3 PII (full content redaction) — D-019.</Item>
+    </scope_later>
+    <verification_strategy>
+      <Item>Unit tests with FakeSender, FakeIdempotencyService, FakeClassifier+FakeRunner+FakeDelivery, FakePhotoIngestor, FakePIIRedactor.</Item>
+      <Item>PDF fixture: 1-page text PDF (generated inline via reportlab in conftest or static fixture under tests/fixtures/).</Item>
+      <Item>Edge: empty PDF, encrypted PDF, oversized binary, UTF-8 BOM .txt, non-UTF-8 .txt.</Item>
+    </verification_strategy>
+    <preflight>
+      <pre_commit>configured (.pre-commit-config.yaml present, hookspath=.beads/hooks coexists)</pre_commit>
+      <lint_baseline>make lint green at HEAD 0065a76 (per project status)</lint_baseline>
+      <sentrux>not_onboarded (no .sentrux/rules.toml)</sentrux>
+    </preflight>
+  </Feature>
+  <Feature source="20260511-tg-pipeline-streaming-discovery.md" bd_id="aisw-a3z">
+    <id>20260511-tg-pipeline-streaming</id>
+    <chunk>21</chunk>
+    <module>M-TG-PIPELINE-STREAMING</module>
+    <status>approved</status>
+    <related_decisions>
+      <Item>DEC-L2</Item>
+      <Item>D-026</Item>
+    </related_decisions>
+    <depends_on_chunks>
+      <Item>20</Item>
+    </depends_on_chunks>
+    <fr>
+      <Item id="FR-1">
+        <text>Pipeline launches WikiRunner and starts a 5s timer; if runner completes in ≤5s use single deliver (fast path, no streaming).</text>
+      </Item>
+      <Item id="FR-2">
+        <text>If runner exceeds 5s, send a placeholder "⏳ Думаю…" message and begin streaming assistant chunks into it via StreamEditor (1.5s tick / Δ50 / chain-split 4000).</text>
+      </Item>
+      <Item id="FR-3">
+        <text>Final flush always emits full balanced text, even on runner exception (D-026 guarantee).</text>
+      </Item>
+      <Item id="FR-4">
+        <text>Streaming consumes assistant_chunk events from WikiRunner; chunk pipeline ends by writing the full text to deliver_output (audit log + final TG state).</text>
+      </Item>
+      <Item id="FR-5">
+        <text>Emit log markers tg.pipeline.stream.{begin,chunk,final,error}.</text>
+      </Item>
+      <Item id="FR-6">
+        <text>Back-compat — if streaming wiring is absent (None), pipeline behaves exactly as chunk-20 (single deliver, no placeholder).</text>
+      </Item>
+    </fr>
+    <nfr>
+      <Item id="NFR-1">
+        <text>Streaming path adds &lt;50 ms of overhead per assistant_chunk on fast machines (verified by unit test fake-clock).</text>
+      </Item>
+      <Item id="NFR-2">
+        <text>Fast path (≤5s) MUST send exactly one TG message (no placeholder churn).</text>
+      </Item>
+      <Item id="NFR-3">
+        <text>HTML balance preserved at every edit boundary (StreamEditor already enforces; no regression).</text>
+      </Item>
+      <Item id="NFR-4">
+        <text>ru-only user-facing strings.</text>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item id="CONS-1">
+        <text>WikiRunner.run_wiki_session currently buffers all events before return — chunk 21 MUST extend it with an on_event callback hook (additive, non-breaking).</text>
+      </Item>
+      <Item id="CONS-2">
+        <text>WikiRunner has no estimated_duration_s metadata — trigger is wall-clock 5s race, NOT pre-estimate (DEC-L2 amended; see design DEC-TPS-1).</text>
+      </Item>
+      <Item id="CONS-3">
+        <text>Pipeline must use existing StreamEditor (src/ai_steward_wiki/tg/stream_edit.py); no new editor class.</text>
+      </Item>
+      <Item id="CONS-4">
+        <text>Final TG state and audit-log delivery routes through existing OutputDelivery.deliver (DEC-TPC-5 from chunk 20).</text>
+      </Item>
+    </constraints>
+    <risks>
+      <Item id="R-1">
+        <text>Race between runner finishing and 5s timer firing — could double-send (placeholder + final). Mitigation - latch "streaming_started" flag; placeholder only sent if latch held when timer fires.</text>
+      </Item>
+      <Item id="R-2">
+        <text>on_event callback may raise and break the runner. Mitigation - try/except around callback; runner continues, marker tg.pipeline.stream.error logged.</text>
+      </Item>
+      <Item id="R-3">
+        <text>Buffered events processed faster than realtime when stream finishes after 5s — StreamEditor must accept burst-feed without losing chunks (already supported - buffer accumulates, throttle decides when to edit).</text>
+      </Item>
+      <Item id="R-4">
+        <text>Aggregated assistant text must match deliver_output text — single source of truth via aggregate_text() over the same events list.</text>
+      </Item>
+      <Item id="R-5">
+        <text>Fast path that races past 5s by 100ms still sends placeholder. Acceptable — degraded UX one-off, not a correctness issue.</text>
+      </Item>
+    </risks>
+    <scope_in>
+      <Item>Add on_event callback to run_wiki_session (additive arg, default None)</Item>
+      <Item>StreamingDelivery component in tg/pipeline that orchestrates placeholder + StreamEditor + race</Item>
+      <Item>Wire StreamingDelivery via Protocol injection into DefaultPipeline (back-compat None)</Item>
+      <Item>Unit tests for fast/slow/exception paths + chain-split + back-compat</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Voice streaming (text-only this chunk; voice still goes through normal deliver)</Item>
+      <Item>Estimated_duration_s heuristic (deferred indefinitely; race pattern subsumes need)</Item>
+      <Item>TG MessageReactionUpdated / typing-action (not part of D-026)</Item>
+    </scope_out>
+    <sentrux>
+      <applies>False</applies>
+      <reason>.sentrux/rules.toml not present in repo</reason>
+    </sentrux>
+  </Feature>
+  <Feature source="20260512-classifier-envelope-fix-discovery.md" bd_id="aisw-p5b">
+    <feature>classifier-envelope-fix</feature>
+    <date>2026-05-12</date>
+    <status>stable</status>
+    <module_ids>
+      <Item>M-CLASSIFIER-STAGE0</Item>
+    </module_ids>
+    <functional_requirements>
+      <Item id="FR-1">
+        <text>Stage-0 backend MUST return the inner classifier JSON object ({intent, confidence, distilled_payload}), not the Claude CLI envelope.</text>
+      </Item>
+      <Item id="FR-2">
+        <text>The classifier system prompt MUST actually be loaded into the CLI invocation (current literal '@/path' string is not expanded).</text>
+      </Item>
+      <Item id="FR-3">
+        <text>Backend MUST tolerate models that wrap JSON in ```json code fences (defensive parsing, even though prompt forbids them).</text>
+      </Item>
+      <Item id="FR-4">
+        <text>When CLI returns non-JSON or wrong-schema text in payload['result'], raise ClassifierSchemaError with the offending head of text (truncated) — not a 20-line pydantic dump.</text>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item id="NFR-1">
+        <text>Unit test pins the real envelope shape captured from production logs to prevent regression.</text>
+      </Item>
+      <Item id="NFR-2">
+        <text>No change to ClassifierResult schema; no change to stage0.classify orchestrator beyond what's required for the unwrap.</text>
+      </Item>
+    </non_functional_requirements>
+    <risks>
+      <Item id="R-1">
+        <text>--append-system-prompt-file flag name/availability varies by Claude CLI version. Mitigation -- verify via `claude --help`; confirmed exists (--bare help string lists '--append-system-prompt[-file]').</text>
+      </Item>
+      <Item id="R-2">
+        <text>--bare mode might change other behavior. Mitigation -- evaluate but do not require for this fix; minimum change is switch '@path' to '-file &lt;path&gt;' variant.</text>
+      </Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/classifier/backend.py (ClaudeCliBackend.call + _argv)</Item>
+      <Item>tests/unit/classifier/ (new envelope-shape regression test)</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Stage-1a/1b backends, prompt template changes, schema changes, AnthropicApiBackend wiring.</Item>
+    </scope_out>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-cron-bridge-discovery.md" bd_id="aisw-kcz">
+    <feature>inbox-wiki-cron-bridge</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-D</phase>
+    <status>draft</status>
+    <created>2026-05-12</created>
+    <requirements>
+      <functional>
+        <Item id="FR-1">
+          <text>A user message whose Stage-0 intent is REMINDER (e.g. «разбуди в 6», «напомни завтра в 9 позвонить врачу»), with confidence ≥ the configured threshold AND a successfully-parsed absolute time (classifier.time_parse → TimeParseResult.escalate == False), creates a one-shot reminder job: a row in jobs.db.jobs with kind='reminder_job', owner_telegram_id + chat_id from the TG update, scheduled_at_utc = parsed when_utc (UTC), status='pending', and a ReminderPayload (kind='reminder_job', message=&lt;reminder text&gt;, lead_time_min=&lt;int, default 0&gt;). An APScheduler one-shot trigger (DateTrigger at when_utc) is registered against the shared scheduler so the job fires at the right time.</text>
+        </Item>
+        <Item id="FR-2">
+          <text>When the reminder fires, the firing handler loads the jobs.Job row by id, dispatches by kind, and for kind='reminder_job' delivers the message text to chat_id via the Telegram bot directly — NO Claude CLI run, NO WIKI workspace (per tech-spec §3: reminder_job is the only kind with wiki_id=null and no CLI). The job row is marked status='done' (started_at_utc / finished_at_utc set). A send failure marks status accordingly and is logged; reminder_job is single-shot so there is no auto-disable concern.</text>
+        </Item>
+        <Item id="FR-3">
+          <text>Before the job is created the user gets a confirmation: an explicit-level inline-button recap «Поставлю напоминание на &lt;локальное время в TZ юзера&gt;: «&lt;текст&gt;». Подтверждаешь?» with «✅ Подтвердить» / «❌ Отмена» (the same 2-button route-confirm keyboard family from Phase-C — reuses ConfirmationService.request_explicit + build_route_confirm_keyboard). On confirm → the job is created (FR-1) and a short ack «Готово, напомню в &lt;локальное время&gt;.» is sent; on cancel → «Отменено.»; on stale/TTL-expired resolve → «Время на подтверждение истекло, пришли заново.». The pending row carries everything needed to create the job on confirm (category, telegram_id, chat_id, when_utc as ISO-UTC string, message, lead_time_min, correlation_id) in draft_json. (RESOLVED D-OQ-2: explicit confirm, not implicit-ack.)</text>
+        </Item>
+        <Item id="FR-4">
+          <text>If the time could not be parsed unambiguously (TimeParseResult.escalate == True) the bot does NOT create a job; it replies with a ru clarification «Не понял, на когда поставить напоминание — уточни время.» (re-using the existing classifier escalation copy). A BARE wall-clock time that resolves to the past (e.g. «разбуди в 6» at 21:00) is NOT rejected — parse_time is called with prefer_future=True (dateparser PREFER_DATES_FROM='future', TZ-aware/DST-safe) so it rolls forward to the next future occurrence (RESOLVED D-R-1). Only an explicitly-past ABSOLUTE date («напомни 5 мая» when it is already 12 мая) is rejected with «Эта дата уже прошла — назови будущую.» (no job created).</text>
+        </Item>
+        <Item id="FR-5">
+          <text>Recurring aggregator/digest requests («каждый день в 9 утра сводка», «каждый понедельник дайджест по здоровью») are recognised but are OUT of this phase's executable scope (see Scope/OUT and the recommended Phase-D.a / Phase-D.b split): for such a request the MVP replies with a ru 'not yet' notice «Регулярные сводки — скоро будет, пока могу только разовые напоминания.» rather than silently doing nothing. (If the Phase-D.b split is rejected and digest is kept in scope, FR-5 is replaced by full digest_job FRs in Brainstorming.)</text>
+        </Item>
+        <Item id="FR-6">
+          <text>Pydantic: storage/jobs/payloads.py gains a ReminderPayload variant (kind='reminder_job', message: str, lead_time_min: int = 0, extra='forbid', frozen) added to the JobPayload discriminated union; parse_job_payload validates it. The jobs.Job ORM row's payload column stores ReminderPayload.model_dump(mode='json'); reads validate via parse_job_payload. (Naming aligns with tech-spec §3 'reminder_job'; the bd description's free-form 'chat_id/message/lead_time' is mapped — chat_id lives on the Job row, not the payload, per the jobs.Job schema.)</text>
+        </Item>
+        <Item id="FR-7">
+          <text>Structlog anchors (all with correlation_id, telegram_id where available): classifier/pipeline — tg.pipeline.reminder.detected (intent, confidence, time_source, escalate), tg.pipeline.reminder.rejected_past, tg.pipeline.reminder.confirm_requested (pending_id, when_utc); confirm — tg.pipeline.reminder.confirm_created (pending_id, job_id, when_utc), tg.pipeline.reminder.confirm_cancelled/stale; scheduler/firing — scheduler.reminder.scheduled (job_id, when_utc), scheduler.reminder.fired (job_id, chat_id), scheduler.reminder.delivered / scheduler.reminder.deliver_failed (job_id, error_class).</text>
+        </Item>
+      </functional>
+      <non_functional>
+        <Item id="NFR-1">
+          <text>Reuses what Phase-1..4 / Phase-C already built — ConfirmationService (request_explicit / resolve / get_pending / expire_due) + the route-confirm 2-button keyboard family + the CONFIRM_CALLBACK_PREFIX handler; the existing AsyncIOScheduler from __main__ (build_scheduler) + SQLAlchemyJobStore; classifier.time_parse.parse_time; the jobs.db engine/sessionmaker; PIIRedactor for log lines. NO new SQLite table (jobs.jobs already exists), at most ONE new Alembic migration only if jobs.Job needs a column it lacks (it does not — id/owner_telegram_id/chat_id/kind/status/priority/scheduled_at_utc/started_at_utc/finished_at_utc/payload/retry_count/last_error/created_at_utc cover it). NO new third-party dependency.</text>
+        </Item>
+        <Item id="NFR-2">
+          <text>mypy --strict / ruff / ruff-format / grace lint clean; coverage stays ≥80%. All new behaviour unit-tested with fakes (FakeConfirmationService, a fake scheduler exposing add_job, a fake TgSender, a deterministic clock for now_utc) — no live Telegram / Claude / real APScheduler thread in unit tests. The firing handler is a plain async function tested by calling it directly with a fake bot + an in-memory jobs.db session.</text>
+        </Item>
+        <Item id="NFR-3">
+          <text>Ru-only (D-032). All datetimes in jobs.db and in draft_json are UTC; the user's TZ (from users.toml UserRecord.tz, default a configured fallback) is applied only when (a) parsing the NL time and (b) rendering the confirmation recap. No bypass of pre-commit hooks. The recap keyboard removal on callback is best-effort (a failed edit_reply_markup must not break job creation).</text>
+        </Item>
+        <Item id="NFR-4">
+          <text>Restart-safety: APScheduler's SQLAlchemyJobStore persists the scheduled trigger across bot restarts, so the firing function MUST be a stable importable module-level callable (e.g. ai_steward_wiki.scheduler.firing:fire_job) taking only JSON-serialisable args (the job_id). On startup the bot already calls scheduler.start(); no extra re-scan of jobs.db rows is required for reminder_job because the APScheduler row IS the trigger record (the jobs.Job row is the domain/audit record). [If a discrepancy between the two stores is a concern, a reconciliation pass is an Open Question — OQ-4.]</text>
+        </Item>
+      </non_functional>
+      <constraints>
+        <Item>The phase MUST hook into the EXISTING Stage-0 → (Stage-1a Router) → confirm pipeline, not introduce a parallel one. Two integration shapes are on the table (OQ-1): (A) a Stage-0 fast-path — when ClassifierResult.intent == REMINDER &amp; confidence ≥ threshold &amp; time parsed, _run_text_pipeline branches BEFORE the router into a reminder-confirm flow (matches tech-spec §6 'Fast-path — прямая запись в jobs без Stage-1a/1b'); (B) extend the Stage-1a Router (new RouterIntent.REMINDER + prompts/inbox.md) and a route_action variant, hooking _handle_route_confirm (matches the bd/epic note 'extended route_action payload'). Recommendation in Discovery: (A) for reminders (no router round-trip needed once Stage-0 already said 'reminder' and the time is parsed) — it is also what tech-spec §6 mandates; (B)'s router-extension is the right shape for the digest/aggregator case (which needs domain resolution) and belongs to Phase-D.b. Final call at the Brainstorming gate.</Item>
+        <Item>jobs.Job is the SSoT domain record for a scheduled job; APScheduler's jobstore is the trigger engine. Phase-D writes BOTH (a jobs.Job row + an APScheduler job whose callable is fire_job(job_id)). It does NOT invent a separate 'planner' store and does NOT reuse ai-steward's planner.json (isolation per CLAUDE.md §Изоляция).</Item>
+        <Item>No CLI, no PriorityJobQueue worker loop is touched for reminder_job (it is TG-deliver-only). The asyncio.PriorityQueue worker that drains queued jobs into Claude runs is NOT yet implemented in the repo; building it is a prerequisite for digest_job and is therefore a strong reason to keep digest in Phase-D.b.</Item>
+        <Item>Recurrence (daily/weekly/monthly) is NOT parsed in this phase — classifier.time_parse.parse_time returns a single absolute when_utc only. Recurring schedules require either an LLM-emitted structured recurrence or a rule-based recurrence parser, both deferred to Phase-D.b.</Item>
+      </constraints>
+      <risks>
+        <Item id="R-1">
+          <text>Time-in-the-past / 'разбуди в 6' when it is already 07:00 — dateparser with RELATIVE_BASE=now will resolve '6:00' to today 06:00 (past). FR-4 rejects past times; but the user probably meant tomorrow 06:00. Mitigation: in Brainstorming decide whether to (a) reject with a hint, or (b) roll forward to the next future occurrence of that wall-clock time. (b) is friendlier but needs care with DST. Discovery leans (a) for the MVP (explicit, no surprises) with (b) as a fast-follow.</text>
+        </Item>
+        <Item id="R-2">
+          <text>The reminder text to store (ReminderPayload.message) — is it the user's whole message, or a distilled 'позвонить врачу' part? The Stage-0 classifier already returns distilled_payload; if it carries a clean 'reminder_text' that is preferred, else fall back to the raw user text minus the time phrase (or just the raw text). Mitigation: prefer distilled_payload['reminder_text'] if present, else raw text; covered by a unit test. The classifier prompt may need a tiny addition to emit reminder_text (a prompt semver bump) — flag in Brainstorming.</text>
+        </Item>
+        <Item id="R-3">
+          <text>User TZ unknown (UserRecord.tz is None / user not in users.toml yet) — parse_time needs a ZoneInfo. Mitigation: a configured default TZ (settings, e.g. Europe/Moscow) used as fallback; logged when the fallback is used. The recap message states the resolved local time so the user can catch a wrong TZ.</text>
+        </Item>
+        <Item id="R-4">
+          <text>Double-confirm / re-send within the 10-min TTL — handled exactly as Phase-C: resolve() is race-safe (UPDATE … WHERE status='pending'); request_explicit is idempotent on (telegram_id, payload_hash). A second confirm tap → None → 'stale' reply, no duplicate job. Verify with a unit test.</text>
+        </Item>
+        <Item id="R-5">
+          <text>Restart between job-create and fire — APScheduler SQLAlchemyJobStore persists the DateTrigger, so the reminder still fires. But if the bot is DOWN at the exact fire time, APScheduler's misfire_grace_time (currently 30s in job_defaults) would drop it. Mitigation: for reminder_job pass a generous misfire_grace_time (or None = run-on-startup-if-missed) when adding the job; decide the value in Brainstorming. Log scheduler.reminder.misfired if it happens.</text>
+        </Item>
+        <Item id="R-6">
+          <text>Scope creep: 'while we're here' temptations — /reminders list, cancel-a-reminder, snooze, recurring schedules, the digest/aggregator. All explicitly OUT (see Scope). The phase is already borderline-large; keeping it to one-shot reminder_job end-to-end is the fit-not-fragment call. If Brainstorming finds even the reminder slice too big, split confirm-flow vs firing-handler — but they share so much context that one phase is the likely right size.</text>
+        </Item>
+        <Item id="R-7">
+          <text>Firing handler needs a TgSender / aiogram Bot instance, but APScheduler jobs are module-level functions invoked by the scheduler thread/loop, not closures over the bot. Mitigation: either (a) a module-level 'set_bot_sender(...)' wired once at startup that fire_job reads, or (b) fire_job reconstructs a minimal sender from settings (bot token) on demand, or (c) pass the bot via APScheduler's job kwargs only if it's picklable (it is not — reject). Decide (a) vs (b) in Brainstorming; (a) is lighter and keeps one Bot instance.</text>
+        </Item>
+      </risks>
+      <scope>
+        <in>
+          <Item>ReminderPayload variant in storage/jobs/payloads.py added to JobPayload union + parse_job_payload coverage.</Item>
+          <Item>A reminder-creation path: detect REMINDER intent + parsed future time in _run_text_pipeline (shape A or B per OQ-1) → build a reminder confirm draft → ConfirmationService.request_explicit with the 2-button keyboard → on confirm, create the jobs.Job row + register the APScheduler DateTrigger; on cancel/stale, ru notices.</Item>
+          <Item>A new scheduler firing module (e.g. src/ai_steward_wiki/scheduler/firing.py) with fire_job(job_id) — loads the jobs.Job row, dispatches by kind, for reminder_job delivers the message to chat_id via the bot sender, marks the row done/failed, emits scheduler.reminder.* logs; plus a small job-creation helper (create_reminder_job(session, scheduler, ...)) that writes the row and adds the APScheduler job atomically.</Item>
+          <Item>Wiring in __main__.py: a module-level bot-sender registration for the firing handler; pass the jobs sessionmaker + scheduler into the pipeline so the confirm callback can create jobs.</Item>
+          <Item>Past-time / unparseable-time rejection copy; recurring-request 'not yet' copy (FR-5).</Item>
+          <Item>New structlog anchors per FR-7.</Item>
+          <Item>Unit tests: REMINDER intent + future time → request_explicit called with the right draft, no job yet; confirm → jobs.Job row written with the right kind/payload/scheduled_at + scheduler.add_job called with a DateTrigger at when_utc; cancel → cancelled reply, no row; stale → stale reply; unparseable time → clarification, no confirm; past time → rejection, no confirm; recurring phrasing → 'not yet' reply; fire_job(reminder) → bot.send_message(chat_id, message) + row marked done; deliver failure → row marked + scheduler.reminder.deliver_failed; payload round-trip via parse_job_payload; double-confirm idempotency.</Item>
+          <Item>An integration scenario extending tests/integration: a reminder message → recap → simulated confirm callback → assert a jobs.jobs row exists with kind='reminder_job' and the right scheduled_at_utc; (optionally) fast-forward / directly invoke fire_job and assert a TG send.</Item>
+          <Item>GRACE: update M-STORAGE-JOBS-PAYLOADS / M-SCHEDULER (firing) / M-TG-PIPELINE-CLASSIFIER contracts + MODULE_MAPs, knowledge-graph CrossLinks (pipeline → scheduler.firing, scheduler.firing → storage.jobs), verification-plan refs (new tests + log anchors), development-plan Phase-D entry, ADR if a notable decision warrants one (fast-path-vs-router shape; jobs.Job+APScheduler dual-write; reminder confirm-vs-implicit).</Item>
+        </in>
+        <out>
+          <Item>digest_job / aggregator: recurrence parsing, CronTrigger jobs, --add-dir into multiple WIKIs, the PriorityJobQueue worker loop that drains queued CLI jobs, planner-semantics reads from jobs.db — RECOMMENDED to become Phase-D.b (a new bead under aisw-t2r). The MVP just replies 'not yet' (FR-5) for recurring requests.</Item>
+          <Item>Reminder management UX: list / cancel / disable / snooze / edit a reminder, /reminders command, an inline 'cancel this reminder' button on the recap-after-create. Deferred.</Item>
+          <Item>wiki_job (scheduled fixed-prompt Claude run, e.g. 'daily ingest') and the /cron_add NL flow — separate later work; not blocked by this phase but not in it.</Item>
+          <Item>Roll-forward of a past wall-clock time to the next future occurrence (R-1 option b) — MVP rejects past times; roll-forward is a fast-follow.</Item>
+          <Item>tracker_survey / tracker_followup / boundary_message kinds (the time-tracker layer) — out, separate epic.</Item>
+          <Item>DLQ / auto-disable / retry plumbing for reminder_job — reminder_job is single-shot and TG-deliver-only; a delivery failure is logged and the row is marked, no DLQ row (consistent with tech-spec §3 which still lists DLQ=yes for reminder_job, but the MVP keeps it minimal — flag in Brainstorming if strict DLQ parity is wanted).</Item>
+        </out>
+      </scope>
+      <decided>
+        <Item id="D-OQ-1">
+          <text>RESOLVED (Q&amp;A 2026-05-12, /questions-answers): Integration shape = A (Stage-0 fast-path). _run_text_pipeline branches on Intent.REMINDER BEFORE the Stage-1a Router; the Router and prompts/inbox.md are NOT touched. Matches tech-spec §6.</text>
+        </Item>
+        <Item id="D-OQ-2">
+          <text>RESOLVED: explicit confirm (FR-3) — reuse the Phase-C ConfirmationService.request_explicit + build_route_confirm_keyboard 2-button family. Job is created only after the user taps Подтвердить. (Implicit-ack rejected: keeps Phase-C symmetry + the race-safe machinery for free.)</text>
+        </Item>
+        <Item id="D-OQ-3">
+          <text>RESOLVED: SPLIT. aisw-kcz = reminder_job only (this discovery). digest_job → new bead 'Phase-D.b: digest_job' under epic aisw-t2r (recurrence parsing + PriorityJobQueue worker loop + multi-WIKI --add-dir). FR-5's 'not yet' reply for recurring requests stands.</text>
+        </Item>
+        <Item id="D-R-1">
+          <text>RESOLVED: past wall-clock time → roll-forward via dateparser, NOT reject. Add a prefer_future: bool = False param to classifier.time_parse.parse_time; the reminder path calls it with prefer_future=True → dateparser settings PREFER_DATES_FROM='future' (TZ-aware, DST-safe). Reject is kept ONLY for an explicitly-past absolute date (e.g. «напомни 5 мая» when it is already 12 мая) where roll-forward is ambiguous. FR-4's blanket past-time rejection is narrowed accordingly.</text>
+        </Item>
+      </decided>
+      <open_questions>
+        <Item id="OQ-4">
+          <text>jobs.Job ↔ APScheduler jobstore consistency: do we need a startup reconciliation pass (e.g. drop orphaned APScheduler jobs whose jobs.Job row is done/cancelled, or re-add missing triggers)? Discovery says no for the MVP (single-shot, short-lived) but flags it.</text>
+        </Item>
+        <Item id="OQ-5">
+          <text>Does the Stage-0 classifier prompt need a small bump to emit a clean reminder_text in distilled_payload (R-2)? Or is raw-text-minus-time good enough for the MVP? Affects whether prompts/classifier.md gets a semver bump in this phase. → Brainstorming.</text>
+        </Item>
+        <Item id="OQ-6">
+          <text>Cancel-a-just-created reminder UX: explicit confirm means the job is created only on tap, so a 'призрачное' reminder can't exist — but should the post-create ack carry an inline «Отменить» button (cheap, since we have the job_id)? Or is that Phase-D.b/management-UX territory? → Brainstorming.</text>
+        </Item>
+      </open_questions>
+    </requirements>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-digest-interactive-discovery.md" bd_id="aisw-269">
+    <feature>inbox-wiki-digest-interactive</feature>
+    <phase>Inbox-WIKI Phase-D.b.2b</phase>
+    <status>discovery</status>
+    <date>2026-05-12</date>
+    <spec_refs>
+      <Item>docs/Spec-WIKI/decisions/D-024-digest-format.md</Item>
+      <Item>docs/adr/ADR-024-digest-presentation.md</Item>
+      <Item>docs/adr/ADR-007-inbox-wiki-digest-job.md</Item>
+      <Item>docs/superpowers/specs/20260512-inbox-wiki-digest-presentation-discovery.md</Item>
+    </spec_refs>
+    <depends_on>
+      <Item>aisw-w3k</Item>
+    </depends_on>
+    <functional_requirements>
+      <Item id="FR-1">
+        <text>/digest_now command — ad-hoc digest trigger for the calling owner; introduces the bot's first aiogram Command-filter handler + a slash-command router that sits BEFORE the NL fall-through (commands matched first, everything else → pipeline as today). It selects the owner's enabled digest_job rows (status=='scheduled', kind=='digest_job') and runs the existing fire_digest_job(job_id) for each — reusing set_digest_context, run_wiki_session's per-WIKI LockAcquirer (held inside the runner), deliver_output(kind='digest', job_id=...), the planner-window query, and the 3-strike auto-disable; concurrent cron digests just queue behind the per-WIKI flock. Zero digest jobs → ru line «У вас нет настроенной сводки. Создайте, например: «делай сводку каждый день в 9».»</text>
+      </Item>
+      <Item id="FR-2">
+        <text>/expand &lt;section&gt; command — on-demand detail for one digest section. Allowed section keys mirror the four D-024 &lt;b&gt;-headers: today (📅 Сегодня) | meds (💊 Лекарства) | trackers (📈 Трекеры) | wiki (📝 Обновления WIKI). The handler resolves the owner's WIKI set (resolve_owner_wikis — Inbox excluded) and re-runs Claude scoped to that section via a generalised DigestRunner(*, ..., section: str | None = None) — None ⇒ the full D-024 digest (prompts/digest.md, today's behaviour), a key ⇒ section detail (new prompts/digest_expand.md, section name substituted). Output via sender.send_message (short on-demand reply — no run_outputs audit row; that is for cron outputs). Unknown/missing key → ru usage line listing the four keys. «Section was empty over the period» is a valid answer, not an error.</text>
+      </Item>
+      <Item id="FR-3">
+        <text>Named-subset WIKI selection at digest-creation time — DigestPayload.wiki_scope widens from Literal['all'] to 'all' | list[str] (non-empty list of WIKI dir-stems). The digest fast-path in tg/pipeline.py (_handle_digest_intent) extracts the name list heuristically: tokens of the NL turn ∩ the owner's *-WIKI/ dir names (case-insensitive); resolved ⇒ list[str], none mentioned ⇒ 'all', a name-shaped token that does not resolve ⇒ ru clarification and NO job created. create_digest_job persists the new shape (its «'all' if … else …» branch is already there; the Literal is the only blocker). fire_digest_job honours the list — intersect with resolve_owner_wikis(owner); vanished names skip-and-log; empty intersection ⇒ log empty='scope_vanished' + a ru line. The digest recap/ack names the chosen WIKIs. No jobs.db migration ('all' stays valid; existing rows keep validating).</text>
+      </Item>
+      <Item id="FR-4">
+        <text>ADR-025 written (digest interactive surface — slash-command router, /expand scoped re-run, /digest_now reuse-not-fork, wiki_scope widening, AND the explicit deferrals of cards + per-user toggles with rationale). GRACE refreshed: knowledge-graph (new prompts/digest_expand.md; updated MODULE_CONTRACTs M-SCHEDULER-FIRING / M-TG-PIPELINE / M-STORAGE-JOBS / M-RUNTIME-WIRING); verification-plan log anchors for every new branch (tg.command.digest_now, tg.command.expand, scheduler.digest.scope_filter, …).</text>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item id="NFR-1">
+        <text>No new third-party dependency. No new SQLite table / Alembic migration in this phase (per-user toggles — the only thing that needed one — is deferred).</text>
+      </Item>
+      <Item id="NFR-2">
+        <text>All datetime in DB UTC; user-TZ only at input/output (reuse pipeline._resolve_user_tz / firing's tz handling). No new datetime surface here beyond what fire_digest_job already does.</text>
+      </Item>
+      <Item id="NFR-3">
+        <text>Ru-only user-facing strings (D-032), no i18n catalog.</text>
+      </Item>
+      <Item id="NFR-4">
+        <text>Type hints mandatory (mypy --strict for src/); Pydantic on all boundaries (the DigestPayload.wiki_scope union is the schema change — Annotated/Field discriminator unaffected); structlog with ts/event/correlation_id/user_id/wiki_id/job_id.</text>
+      </Item>
+      <Item id="NFR-5">
+        <text>fire_digest_job keeps catching every exception (scheduler/loop must survive); /digest_now and /expand handlers catch-and-reply, never bubble to the aiogram dispatcher; a per-job failure inside /digest_now (one of N digest jobs strikes) must not abort the others.</text>
+      </Item>
+      <Item id="NFR-6">
+        <text>TDD: RED → GREEN → REFACTOR; ≥80% core coverage; unit tests offline — the DigestRunner Protocol (now with section=) is the seam, no real Claude CLI in unit tests.</text>
+      </Item>
+      <Item id="NFR-7">
+        <text>Plan-Sizing: one context window. Estimate after the cards+toggles deferral: ~35-45% of an Opus-4.7 window (touch set = tg/pipeline.py digest-section + a new command-router block, scheduler/firing.py, storage/jobs/payloads.py, two prompts, __main__ wiring, tests). Monolith confirmed at the Discovery gate.</text>
+      </Item>
+    </non_functional_requirements>
+    <risks>
+      <Item id="R-1">
+        <text>First slash-command surface in the bot — handlers.py has zero Command-filter handlers today. /digest_now and /expand introduce aiogram Command routing; it must be registered so commands are matched first and ordinary text still falls through to the existing pipeline unchanged. Risk: wrong router/handler order swallows normal messages or double-handles. Mitigation: a dedicated commands router registered before the catch-all message handler; explicit Command('digest_now')/Command('expand') filters; a test asserting a non-command message still reaches the pipeline path.</text>
+      </Item>
+      <Item id="R-2">
+        <text>/digest_now is a 2nd entry into fire_digest_job — reuse it as-is (call fire_digest_job(job_id) per row), do NOT refactor a parallel _run_digest core and do NOT add a new lock; the per-WIKI flock inside the runner already serialises, a concurrent cron digest just queues behind it (accept). Risk: tempting over-refactor of fire_digest_job into a reusable core — out of scope, would broaden the diff and the test surface.</text>
+      </Item>
+      <Item id="R-3">
+        <text>/expand re-runs Claude — cost + latency on a command. Mitigation: small section-scoped prompt; reuse the DigestRunner seam (lock held inside); treat «nothing for this section over the period» as a normal reply. Risk: generalising the DigestRunner Protocol (adding section=) touches the __main__ closure that builds the runner — must keep section=None behaviour byte-identical to today's digest call.</text>
+      </Item>
+      <Item id="R-4">
+        <text>DigestPayload widening — frozen, extra='forbid' Pydantic v2 model inside a Field(discriminator='kind') union. Widening wiki_scope: Literal['all'] → 'all' | list[str] is schema-compatible for existing 'all' rows (no jobs.db migration), but: create_digest_job's signature/recap, the fast-path extractor, and fire_digest_job's resolver branch all change shape; a list with a name that no longer maps to a *-WIKI/ dir is an expected runtime case, not a validation error.</text>
+      </Item>
+      <Item id="R-5">
+        <text>The digest fast-path heuristic for FR-3 must not over-match — generic words («сводка», «здоровье» as a topic vs a «Health» WIKI dir) could spuriously resolve. Mitigation: match only against the owner's actual *-WIKI/ dir-stems (case-insensitive, whole-token), and on ANY name-shaped-but-unresolved token ask for clarification rather than silently widening to 'all'.</text>
+      </Item>
+    </risks>
+    <scope_in>
+      <Item>/digest_now command + the bot's first slash-command router (reuses fire_digest_job per the owner's digest jobs; 0 jobs → ru hint).</Item>
+      <Item>/expand &lt;section&gt; command (today|meds|trackers|wiki) → section-scoped Claude re-run via generalised DigestRunner(section=) + new prompts/digest_expand.md; reply via send_message.</Item>
+      <Item>DigestPayload.wiki_scope widened to 'all' | list[str]; heuristic name extraction in the digest fast-path; fire_digest_job intersect-and-filter; recap/ack names the WIKIs.</Item>
+      <Item>ADR-025 (incl. the cards + toggles deferral rationale) + GRACE refresh (knowledge-graph, development-plan, verification-plan log anchors).</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Actionable inline cards (medication-due-now / event-soon / pending_confirmation) — DEFERRED to a future bd: reminder_job (ADR-006) has no medication/event subtype or done-state; pending_confirm has a 10-min TTL so a cron digest essentially never finds one live. Cards need either a job-category model or a long-lived «needs your answer» queue first.</Item>
+      <Item>Per-user section toggles (tracker on/off, wiki-updates on/off) + the user_digest_prefs table + alembic/sessions/versions/0002 — DEFERRED to a future bd: a toggle table with no flip surface is inert, and the flip UX + the first sessions.db migration past baseline want their own design pass.</Item>
+      <Item>Refactoring fire_digest_job into a reusable _run_digest core; an ephemeral all-WIKIs /digest_now that works without a configured digest job.</Item>
+      <Item>Haiku-assisted WIKI-name extraction for FR-3 (heuristic over the owner's own *-WIKI/ dir-stems is enough for MVP).</Item>
+      <Item>run_outputs audit row for /expand output (on-demand command reply, not a cron output).</Item>
+      <Item>Digest management UX: /jobs_list, cancel/snooze/edit of an existing digest job; the asyncio.PriorityQueue worker-loop consumer; monthly/interval/raw-cron recurrence; recurrence-parser wiring; jobs.jobs ↔ APScheduler reconciler; cross-WIKI run_outputs search; data/runs/ retention; i18n.</Item>
+    </scope_out>
+    <open_questions/>
+    <preflight>
+      <pre_commit>OK — core.hooksPath=.beads/hooks (bootstrap), .pre-commit-config.yaml present (pre-commit framework wired).</pre_commit>
+      <lint_baseline>clean — make lint ✅: ruff check ✅, ruff format --check ✅ (190 files), mypy src ✅ (70 files).</lint_baseline>
+      <sentrux>skipped — no .sentrux/rules.toml (project not onboarded).</sentrux>
+    </preflight>
+    <covers_fr_from_parent>
+      <Item>FR-7 (/digest_now ← parent FR-7)</Item>
+      <Item>FR-6 (/expand ← parent FR-6)</Item>
+      <Item>FR-9 (named-subset WIKI ← parent FR-9)</Item>
+      <Item>FR-10 delta-half (ADR + GRACE)</Item>
+    </covers_fr_from_parent>
+    <deferred_from_parent>
+      <Item>FR-5 (actionable cards)</Item>
+      <Item>FR-8 (per-user section toggles)</Item>
+    </deferred_from_parent>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-digest-presentation-discovery.md" bd_id="aisw-w3k">
+    <feature>inbox-wiki-digest-presentation</feature>
+    <phase>Inbox-WIKI Phase-D.b.2</phase>
+    <status>discovery</status>
+    <date>2026-05-12</date>
+    <spec_refs>
+      <Item>docs/Spec-WIKI/decisions/D-024-digest-format.md</Item>
+      <Item>docs/Spec-WIKI/decisions/D-025-output-size.md</Item>
+      <Item>docs/adr/ADR-007-inbox-wiki-digest-job.md</Item>
+    </spec_refs>
+    <depends_on>
+      <Item>aisw-oqq</Item>
+    </depends_on>
+    <functional_requirements>
+      <Item id="FR-1">
+        <text>fire_digest_job delivers the Stage-1 text via tg.output.deliver_output(kind='digest') instead of the plain truncated send_message — D-025 size hybrid (≤3500 inline / ≤10000 chain-split / &gt;10000 Haiku-summary + send_document), full text persisted to &lt;wiki&gt;/data/runs/&lt;date&gt;/&lt;run_id&gt;.md, audit run_outputs row written.</text>
+      </Item>
+      <Item id="FR-2">
+        <text>Long digest split prefers &lt;b&gt;-header section boundaries (D-024) with (n/m) continuity footer; falls through to D-025 send_document only if a single section still exceeds the chain threshold.</text>
+      </Item>
+      <Item id="FR-3">
+        <text>prompts/digest.md enforces the D-024 output contract: a TL;DR section (3-5 lines) first, then sectioned summary (📅 Сегодня / 💊 Лекарства / 📈 Tracker / 📝 Wiki updates), HTML parse_mode, empty-digest line «🌿 Сегодня дел нет.».</text>
+      </Item>
+      <Item id="FR-4">
+        <text>Real planner context: fire_digest_job queries jobs.db for the owner's scheduled jobs in the digest window (±today, plus medication/event rows due within ±2h) and passes a structured planner block to the digest prompt instead of the current one-line note.</text>
+      </Item>
+      <Item id="FR-5">
+        <text>Actionable inline cards — separate TG messages with inline keyboards ONLY for items needing action within ±2h: medication-due-now «✅ Принял»/«⏰ +30мин»/«❌ Skip» (jobs.db), event-soon «📍 Я в пути»/«⏰ Опаздываю»/«❌ Отменить» (jobs.db), pending_confirmation «✅ Подтвердить»/«✏️ Изменить»/«❌ Отмена» (sessions.db, reuse D-023 ConfirmationService). Read-only items stay in the summary without buttons.</text>
+      </Item>
+      <Item id="FR-6">
+        <text>/expand &lt;section&gt; command — on-demand detail for a digest section (e.g. /expand tracker → full tracker summary for the period).</text>
+      </Item>
+      <Item id="FR-7">
+        <text>/digest_now command — ad-hoc digest trigger for the calling owner (runs the same digest pipeline immediately, ignores cron).</text>
+      </Item>
+      <Item id="FR-8">
+        <text>Per-user section toggles (tracker on/off, wiki-updates on/off) persisted per telegram_id; honoured both in the prompt (sections Claude is asked to fill) and in card emission.</text>
+      </Item>
+      <Item id="FR-9">
+        <text>Named-subset WIKI selection in the digest-creation turn (e.g. «сводка по Health и Money каждый день в 9») — wiki_scope widens from the 'all' sentinel to an explicit name list resolved against the owner's *-WIKI/ dirs.</text>
+      </Item>
+      <Item id="FR-10">
+        <text>ADR-024 written; GRACE artifacts (knowledge-graph, verification-plan, development-plan) refreshed; verification-plan log anchors for the new branches.</text>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item id="NFR-1">
+        <text>No new third-party dependency. New SQLite tables / Alembic migrations only for the per-user toggles (sessions.db).</text>
+      </Item>
+      <Item id="NFR-2">
+        <text>All datetime in DB UTC; user-TZ applied only at input/output (reuse pipeline._resolve_user_tz / default_user_tz).</text>
+      </Item>
+      <Item id="NFR-3">
+        <text>Ru-only user-facing strings (D-032), no i18n catalog.</text>
+      </Item>
+      <Item id="NFR-4">
+        <text>Type hints mandatory (mypy --strict for src/); Pydantic on all boundaries; structlog with ts/event/correlation_id/user_id/wiki_id/job_id.</text>
+      </Item>
+      <Item id="NFR-5">
+        <text>fire_digest_job must keep catching every exception (scheduler/event loop must survive); card-send failures must not abort the summary delivery.</text>
+      </Item>
+      <Item id="NFR-6">
+        <text>TDD: RED → GREEN → REFACTOR; ≥80% core coverage; unit tests offline (no real Claude CLI).</text>
+      </Item>
+      <Item id="NFR-7">
+        <text>Plan-Sizing budget: each implementation phase must fit one context window with its files + contracts + tests + logs.</text>
+      </Item>
+    </non_functional_requirements>
+    <risks>
+      <Item id="R-1">
+        <text>Scope is large (10 FR across 5+ modules: scheduler/firing, tg/output, tg/pipeline, tg/confirm, storage/sessions, prompts, a new cards module, a new jobs-query helper, Alembic migration). Likely exceeds one context window → MUST split. Mitigation: split into Phase-D.b.2a (presentation core, FR-1..4,10) and Phase-D.b.2b (interactive + cards, FR-5..9 + its GRACE delta).</text>
+      </Item>
+      <Item id="R-2">
+        <text>Actionable cards span two bounded contexts (jobs.db medication/event rows + sessions.db pending_confirms) and need callback handlers — couples with D-023 ConfirmationService and with whatever 'medication-due-now' / 'event-soon' job classification exists today (the reminder_job from ADR-006 has no medication/event subtype yet → may need a job-kind/category lookup that doesn't exist).</text>
+      </Item>
+      <Item id="R-3">
+        <text>/digest_now bypasses cron — must reuse the same lock discipline (run_wiki_session's per-WIKI LockAcquirer) and the same set_digest_context registry, not a parallel path; risk of double-fire if a cron digest is in flight (per-WIKI flock already serialises, accept queue-behind).</text>
+      </Item>
+      <Item id="R-4">
+        <text>Section-boundary split: the existing ChainSplitter (tg/output.py) splits at &lt;b&gt;/blank-line/sentence boundaries already — need to confirm it treats &lt;b&gt;-headers as the top priority and emits (n/m); may be a no-op or a small tweak rather than new code.</text>
+      </Item>
+      <Item id="R-5">
+        <text>Per-user toggles add a 6th sessions.db table — first schema migration on sessions.db beyond the baseline; must follow the commit-before-add ordering / WAL conventions and ship alembic/sessions/versions/0002_*.</text>
+      </Item>
+    </risks>
+    <scope_in>
+      <Item>Replace plain send_message in fire_digest_job with deliver_output(kind='digest').</Item>
+      <Item>&lt;b&gt;-header section-boundary split + (n/m) markers + send_document fallthrough.</Item>
+      <Item>prompts/digest.md D-024 contract (TL;DR section + sections + empty line).</Item>
+      <Item>Real jobs.db planner-window query feeding the digest prompt.</Item>
+      <Item>Actionable inline cards (medication/event/pending_confirm) + their callback handlers.</Item>
+      <Item>/expand &lt;section&gt; and /digest_now commands.</Item>
+      <Item>Per-user section toggles (tracker / wiki-updates on/off).</Item>
+      <Item>Named-subset WIKI selection at digest-creation time.</Item>
+      <Item>ADR-024, GRACE refresh, verification-plan log anchors.</Item>
+    </scope_in>
+    <scope_out>
+      <Item>The asyncio.PriorityQueue worker-loop consumer (de-scoped out of aisw-19o entirely — own future bd).</Item>
+      <Item>Monthly / interval / raw-cron recurrence (still → escalate; owned by recurrence parser, not this phase).</Item>
+      <Item>Haiku-backed recurrence parser wiring (prompts/recurrence.md shipped, not wired).</Item>
+      <Item>Digest management UX: /jobs_list, cancel/snooze/edit of an existing digest job.</Item>
+      <Item>jobs.jobs ↔ APScheduler reconciler for the millisecond-gap silent-miss (carried over from ADR-006).</Item>
+      <Item>Cross-WIKI search over run_outputs; data/runs/ retention policy.</Item>
+      <Item>i18n / non-ru locales.</Item>
+    </scope_out>
+    <open_questions>
+      <Item id="OQ-1">
+        <text>Split or monolith? Recommendation: SPLIT into Phase-D.b.2a (presentation core) + Phase-D.b.2b (interactive + cards). Confirm at the Discovery gate.</text>
+      </Item>
+      <Item id="OQ-2">
+        <text>Where do medication-due-now / event-soon cards get their 'subtype' from? reminder_job (ADR-006) currently has no medication/event category. Option A: derive from the job's free-text title/payload heuristically; Option B: defer cards for medication/event to a later phase and ship only the pending_confirmation card now (it has a real D-023 source). To resolve in Brainstorming.</text>
+      </Item>
+      <Item id="OQ-3">
+        <text>Per-user toggles storage: new sessions.db table `user_digest_prefs(user_id PK FK, tracker_enabled bool, wiki_updates_enabled bool, updated_at_utc)` vs a JSON column on `users`. Recommendation: dedicated table (SSoT, no JSON-blob drift). To resolve in GRACE Plan.</text>
+      </Item>
+      <Item id="OQ-4">
+        <text>/expand &lt;section&gt; — does it re-run Claude with a section-scoped prompt, or replay/expand from the persisted run_outputs file? Recommendation: re-run Claude scoped to the section (the run file is the whole digest, not section detail). To resolve in Brainstorming.</text>
+      </Item>
+    </open_questions>
+    <preflight>
+      <pre_commit>OK — core.hooksPath=.beads/hooks (bootstrap), .pre-commit-config.yaml present, pre-commit framework wired.</pre_commit>
+      <lint_baseline>clean — ruff check ✅, ruff format ✅ (190 files), mypy ✅ (70 files).</lint_baseline>
+      <sentrux>skipped — no .sentrux/rules.toml (project not onboarded).</sentrux>
+    </preflight>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-digest-section-toggles-discovery.md" bd_id="aisw-pv8">
+    <feature>inbox-wiki-digest-section-toggles</feature>
+    <phase>Inbox-WIKI Phase-D.b.2c</phase>
+    <status>discovery</status>
+    <date>2026-05-12</date>
+    <spec_refs>
+      <Item>docs/Spec-WIKI/decisions/D-024-digest-format.md</Item>
+      <Item>docs/adr/ADR-024-digest-presentation.md</Item>
+      <Item>docs/adr/ADR-025-digest-interactive-surface.md</Item>
+      <Item>docs/adr/ADR-007-inbox-wiki-digest-job.md</Item>
+    </spec_refs>
+    <depends_on>
+      <Item>aisw-269</Item>
+    </depends_on>
+    <functional_requirements>
+      <Item id="FR-1">
+        <text>user_digest_prefs table in sessions.db — per-owner on/off state for the two optional digest sections named in ADR-025: `trackers` (📈 Трекеры) and `wiki` (📝 Обновления WIKI). Default for both = ON (no row ⇒ everything shown — today's behaviour). The TL;DR (📌) and `today` (📅 Сегодня) sections stay always-on (TL;DR is the summary itself; `today` is the planner-window core of the digest). FK to users.user_id with ON DELETE CASCADE — mirrors the existing inbox_hint_cache pattern; reuses storage.sessions.users.resolve_user_id(telegram_id → user_id). Storage shape (generic per-section row vs fixed two-boolean columns) is a Brainstorming decision.</text>
+      </Item>
+      <Item id="FR-2">
+        <text>alembic/sessions/versions/0002_*.py — the first incremental sessions.db migration past 0001_baseline. Creates only the user_digest_prefs table (op.create_table under batch mode for SQLite — NOT Base.metadata.create_all, which is baseline-only). down_revision = '0001_sessions_baseline'. tests/unit/storage/test_baselines.py expected-tables set for sessions gains `user_digest_prefs`, plus a test that `alembic upgrade head` applied stepwise (0001 → 0002) yields the table. The create_all/op.create_table convention split is a Brainstorming decision.</text>
+      </Item>
+      <Item id="FR-3">
+        <text>/digest_sections command — the flip surface (without it the table is inert; ADR-025 §8). Shows the caller's current per-section state and lets them flip `trackers` / `wiki` on↔off. UX form (inline-keyboard toggle buttons with a `digestsec:` callback prefix mirroring the existing `confirm:` pattern, vs `/digest_sections &lt;key&gt; &lt;on|off&gt;` text args) is a Brainstorming decision. Registered in the same commands-router group introduced by aisw-269 (matched before the NL fall-through). Ru-only strings. New log anchors `tg.command.digest_sections(.shown|.toggled|.bad_arg)`.</text>
+      </Item>
+      <Item id="FR-4">
+        <text>Honour the toggles in digest assembly — fire_digest_job (or the _DigestRunnerAdapter it calls) reads the owner's user_digest_prefs and, when any optional section is OFF, injects a directive into the digest prompt input naming the disabled section(s) so Claude omits them. When all sections are enabled (the default / no prefs row) the prompt input MUST be byte-identical to today's (zero behaviour change for the common case). prompts/digest.md gains a sentence explaining the «disabled sections» directive. New log anchor `scheduler.digest.sections_filtered` (job_id, disabled). The exact injection mechanism (extra line appended to planner_context / user_input vs a new prompt variable) is a Brainstorming decision.</text>
+      </Item>
+      <Item id="FR-5">
+        <text>/expand &lt;section&gt; behaviour vs the toggle — decide and document: explicit `/expand trackers` overrides a disabled `trackers` toggle (an explicit request wins), so /expand needs no change; OR /expand on a disabled section returns a ru hint «раздел отключён в /digest_sections». Default leaning: explicit-wins, no change to /expand. Brainstorming confirms.</text>
+      </Item>
+      <Item id="FR-6">
+        <text>ADR-026 written (per-user digest section toggles — the user_digest_prefs schema + FK choice, the first incremental sessions.db migration &amp; the op.create_table-vs-create_all convention, the /digest_sections flip-UX choice, the prompt-injection mechanism, the /expand-override decision). GRACE refreshed: knowledge-graph (new M-STORAGE-SESSIONS model + repo fn, updated M-TG-HANDLERS-WIRING / M-SCHEDULER-FIRING / M-RUNTIME-WIRING contracts, prompts/digest.md node bump); verification-plan log anchors for every new branch.</text>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item id="NFR-1">
+        <text>No new third-party dependency. Exactly one new SQLite table (user_digest_prefs) and exactly one new Alembic migration (alembic/sessions/versions/0002_*) — both in sessions.db only; jobs.db and audit.db untouched.</text>
+      </Item>
+      <Item id="NFR-2">
+        <text>WAL + busy_timeout=5000 + foreign_keys=ON apply to the new table via the existing storage.pragmas.apply_sqlite_pragmas connect-listener — no new pragma surface.</text>
+      </Item>
+      <Item id="NFR-3">
+        <text>All datetime in DB UTC (created_at_utc / updated_at_utc on the new row if timestamped); user-TZ only at input/output. Ru-only user-facing strings (D-032), no i18n catalog.</text>
+      </Item>
+      <Item id="NFR-4">
+        <text>Type hints mandatory (mypy --strict for src/); Pydantic on all boundaries where one applies; structlog with ts/event/correlation_id/user_id/job_id (wiki_id where a WIKI is in scope).</text>
+      </Item>
+      <Item id="NFR-5">
+        <text>fire_digest_job keeps catching every exception (scheduler/loop must survive a prefs-read failure — degrade to «all sections shown»); the /digest_sections handler catches-and-replies, never bubbles to the aiogram dispatcher.</text>
+      </Item>
+      <Item id="NFR-6">
+        <text>TDD: RED → GREEN → REFACTOR; ≥80% core coverage; unit tests offline — the DigestRunner Protocol is the seam (no real Claude CLI in unit tests); the migration test runs alembic against a tmp sqlite file.</text>
+      </Item>
+      <Item id="NFR-7">
+        <text>Plan-Sizing: one context window. Touch set ≈ storage/sessions/models.py + a new repo fn (storage/sessions/digest_prefs.py) + alembic/sessions/versions/0002_* + tg/handlers.py (one new command handler, maybe a callback branch) + scheduler/firing.py (prefs read + directive injection) + __main__ wiring (session_maker passed to the command/firing context) + prompts/digest.md + tests. Estimated ~35-45% of an Opus-4.7 window. Monolith — confirm at the Discovery gate.</text>
+      </Item>
+    </non_functional_requirements>
+    <risks>
+      <Item id="R-1">
+        <text>First incremental sessions.db migration past baseline. 0001_baseline does Base.metadata.create_all of the whole schema; 0002 must instead op.create_table the single new table under render_as_batch=True (env.py already sets it). Risk: a fresh DB created by `alembic upgrade head` (baseline create_all already includes every current model) vs an existing DB upgraded 0001→0002 must converge to the same schema — the new model is added to models.py so baseline's create_all picks it up too, and 0002 is the delta for already-migrated DBs. Mitigation: test BOTH paths (stamp 0001 then upgrade; and upgrade head from empty) and assert the table set matches; add `user_digest_prefs` to test_baselines.py expected sets.</text>
+      </Item>
+      <Item id="R-2">
+        <text>FK target choice — users.user_id (surrogate, like inbox_hint_cache; needs an onboarded User row + resolve_user_id) vs telegram_id (canonical, no join, but no referential integrity to users). A digest job's owner is by construction an onboarded user, so user_id+CASCADE is consistent with the existing pattern; chosen unless Brainstorming surfaces a reason otherwise. Risk: a digest fires for an owner whose User row was deleted — CASCADE already removed the prefs, so the read returns «no prefs ⇒ all on», which is the safe default.</text>
+      </Item>
+      <Item id="R-3">
+        <text>Byte-identical default. FR-4's directive injection must produce exactly today's digest prompt input when no section is disabled (the overwhelming common case). Risk: an always-appended «отключённые разделы: (нет)» line changes the input and could perturb Claude's output / break the digest_e2e golden assertions. Mitigation: inject the directive ONLY when the disabled set is non-empty; a test asserting the no-prefs path calls the runner with the same user_input as before.</text>
+      </Item>
+      <Item id="R-4">
+        <text>Section-key vocabulary drift. The keys `today|meds|trackers|wiki` already exist in three places (prompts/digest_expand.md, tg/handlers.EXPAND_SECTION_KEYS, ADR-025). user_digest_prefs must use the SAME keys for the two it covers (`trackers`, `wiki`) — and the /digest_sections command, the prompt directive, and the table CHECK/enum (if any) must all reference one shared constant, not re-spell them. Mitigation: a single module-level tuple/Literal reused everywhere; a test that the prefs keys ⊆ EXPAND_SECTION_KEYS.</text>
+      </Item>
+      <Item id="R-5">
+        <text>/digest_sections is the bot's 3rd slash command — same router-order concern as aisw-269's R-1, already mitigated by the dedicated commands-router-before-catch-all pattern; this just adds one handler to that group. Low risk, but the router-order regression test should cover a non-command message still reaching the pipeline with the new handler registered.</text>
+      </Item>
+      <Item id="R-6">
+        <text>Scope creep toward scheduling-time section selection (choose sections when creating the digest job, like wiki_scope in aisw-269) or per-WIKI-per-section toggles. Out of scope — this phase is one global-per-owner on/off pair, flipped by a command, read at fire time. The DigestPayload is NOT touched (no jobs.db migration).</text>
+      </Item>
+    </risks>
+    <scope_in>
+      <Item>user_digest_prefs table in sessions.db (FK users.user_id CASCADE) — on/off for `trackers` and `wiki` sections, default ON; a small repo module (get/set the owner's prefs).</Item>
+      <Item>alembic/sessions/versions/0002_* — first incremental sessions.db migration; op.create_table for the new table; down_revision = 0001_sessions_baseline; test_baselines.py expected-tables updated; stepwise-upgrade test.</Item>
+      <Item>/digest_sections command (the flip surface) — shows current state, flips trackers/wiki; registered in the aisw-269 commands router; ru-only; new log anchors.</Item>
+      <Item>Honour the toggles in fire_digest_job / the digest runner — inject a «disabled sections» directive into the digest prompt ONLY when something is off; byte-identical default; prompts/digest.md updated; new log anchor.</Item>
+      <Item>Decide &amp; document /expand-vs-toggle interaction (default: explicit /expand overrides the toggle, no change to /expand).</Item>
+      <Item>ADR-026 + GRACE refresh (knowledge-graph, development-plan, verification-plan log anchors).</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Scheduling-time section selection (picking sections when creating the digest job, the way wiki_scope is picked) — DigestPayload / jobs.db untouched.</Item>
+      <Item>Per-WIKI-per-section toggles; toggles for the always-on sections (TL;DR, today); a `meds` toggle (the medication section is auto-omitted when empty, so a toggle adds little — revisit if asked).</Item>
+      <Item>Actionable inline cards (medication-due-now / event-soon / pending_confirmation) — still deferred per ADR-025 §8 (needs a job-category model or a long-lived «needs your answer» queue first).</Item>
+      <Item>Digest management UX: /jobs_list, cancel/snooze/edit of an existing digest job; the asyncio.PriorityQueue worker-loop consumer; the jobs.jobs ↔ APScheduler reconciler; data/runs/ retention; i18n.</Item>
+      <Item>Refactoring fire_digest_job into a reusable _run_digest core; an ephemeral /digest_now without a configured job; Haiku-assisted parsing anywhere on this path.</Item>
+    </scope_out>
+    <open_questions>
+      <Item>FR-1 storage shape: generic per-section rows ((user_id, section_key, enabled), UNIQUE(user_id, section_key)) vs a single row per user with `trackers_enabled BOOLEAN, wiki_enabled BOOLEAN`. Generic = extensible (add `meds` later with no migration); fixed = simpler, matches «exactly two». → Brainstorming.</Item>
+      <Item>FR-3 /digest_sections UX: inline-keyboard toggles (callback `digestsec:&lt;key&gt;:&lt;on|off&gt;`, nicer mobile UX, reuses the callback_query machinery) vs `/digest_sections &lt;key&gt; &lt;on|off&gt;` text args (KISS, no new callback prefix). → Brainstorming.</Item>
+      <Item>FR-2 migration convention: keep adding new models to models.py so baseline's create_all stays the whole schema and each NNNN_* is the delta (current implicit pattern) — confirm this is the intended convention, or switch baseline to explicit op.create_table per table. → Brainstorming / possibly ADR.</Item>
+      <Item>FR-4 injection mechanism: append a line to the existing planner_context/user_input string vs add a distinct prompt template variable. → Brainstorming.</Item>
+      <Item>FR-5: does `/expand trackers` work when `trackers` is toggled off? Default leaning: yes (explicit wins). Confirm.</Item>
+    </open_questions>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-hint-fastpath-phase-e-b-discovery.md" bd_id="aisw-5sd">
+    <feature>inbox-wiki-hint-fastpath</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-E.b</phase>
+    <status>draft</status>
+    <created>2026-05-12</created>
+    <parent_discovery>docs/superpowers/specs/20260512-inbox-wiki-hint-fastpath-staging-discovery.md</parent_discovery>
+    <note>Split out from aisw-12t (Phase-E, bit 1). Phase-E.a (per-user media _staging, bit 2) shipped under aisw-12t. This iteration = the '## Inbox hint' fast-path / router-bypass only.</note>
+    <requirements>
+      <functional>
+        <Item id="FR-1">
+          <text>Before invoking the heavy Inbox-WIKI Router-Claude run for a routable Stage-0 intent, a lightweight step builds the sender's domain catalog from the cached '## Inbox hint' of each &lt;Domain&gt;-WIKI/CLAUDE.md (reuse inbox/hint_cache.get_or_refresh_hint per domain, enumerated via the existing owner→[(stem, path)] resolver _resolve_owner_wikis_factory, already injected into DefaultPipeline as owner_wikis_resolver). It then matches the incoming content (Stage-0 distilled_payload, falling back to raw text) against the hint catalog. On a CONFIDENT hit it synthesises a RouterDecision(intent=ROUTE, target_wiki=&lt;matched stem&gt;) and feeds the EXISTING Phase-C confirm loop (route_action_to_payload → PendingConfirmDraft(category='route_ingest') → ConfirmationService.request_explicit with build_route_confirm_keyboard), skipping the ~10–30 s Sonnet Router-Claude run. On no match / ambiguous match → fall through to today's heavy Router path unchanged.</text>
+        </Item>
+        <Item id="FR-2">
+          <text>The matching mechanism and the definition of 'confident' is the central design fork (OQ-A), decided at the Brainstorming gate: Option A = deterministic keyword/regex token-overlap scoring over the cached hint lines, fire only on a SINGLE unambiguous domain above a fixed threshold; Option B = a tiny Haiku call over the cached catalog (cheaper than the Sonnet Router but still a CLI round-trip); Option B′ = spec-faithful 'feed the cached catalog into the existing Router prompt as context' (no bypass, smaller latency win, no new heuristic); Option C = drop bit 1 entirely. Discovery records the fork only — no recommendation locked here beyond 'precision over recall' (NFR-2).</text>
+        </Item>
+        <Item id="FR-3">
+          <text>The fast-path NEVER silently routes — the user always confirms via the existing inline-button recap (build_route_recap / build_route_confirm_keyboard) before any file move/ingest. The synthesised RouterDecision MUST be of the same shape route_action_to_payload / on_confirm_callback / the Stage-1b librarian path already consume, so no parallel confirm/execute path is introduced.</text>
+        </Item>
+        <Item id="FR-4">
+          <text>The fast-path sits in tg/pipeline.py inside _run_text_pipeline, AFTER the reminder fast-path (START_BLOCK_REMINDER_FASTPATH) and BEFORE START_BLOCK_ROUTABLE_BRANCH — i.e. it gates on `result.intent in _ROUTABLE_INTENTS` and runs before `self._router.route(...)`. On fall-through, START_BLOCK_ROUTABLE_BRANCH executes verbatim. It is a third pre-router fast-path of the same family as the reminder (aisw-kcz) and digest (aisw-269) ones.</text>
+        </Item>
+        <Item id="FR-5">
+          <text>DefaultPipeline gains the dependency it needs to read the hint catalog: an InboxHintCacheRepo instance (constructed in __main__ from the sessions session-maker — the sessions.inbox_hint_cache table already exists) OR an equivalent narrow Protocol; owner_wikis_resolver is already a dep. New constructor kwarg is optional (None ⇒ fast-path disabled, fall straight through — keeps existing pipeline unit tests green without the new dep). __main__.py wires the repo + (if Option B) any Haiku CLI handle.</text>
+        </Item>
+        <Item id="FR-6">
+          <text>New structlog anchors in tg/pipeline.py: tg.pipeline.hint_fastpath.catalog (n_domains, source — per-domain cache 'hit' vs 'refresh' aggregated), tg.pipeline.hint_fastpath.hit (target_wiki, score), tg.pipeline.hint_fastpath.miss (reason='no_match'|'ambiguous'|'empty_catalog'), tg.pipeline.hint_fastpath.fallthrough (so every bypass attempt is observable for offline threshold tuning). Existing inbox.hint_cache.{hit,refresh,invalidate_missing} from get_or_refresh_hint are unchanged.</text>
+        </Item>
+        <Item id="FR-7">
+          <text>Unit tests with fakes only (no live Telegram / Claude / real APScheduler / filesystem outside tmp_path): a confident single-match → synthesised RouterDecision feeds the confirm loop and self._router.route is NOT called; ambiguous (two domains score above threshold) → fall through, router IS called; empty catalog (user has no domain WIKIs) → fall through; cache-hit catalog build does zero filesystem reads beyond the stat in get_or_refresh_hint; the new log anchors fire on each path. Coverage stays ≥80%.</text>
+        </Item>
+      </functional>
+      <non_functional>
+        <Item id="NFR-1">
+          <text>Reuse-only — NO new SQLite table (inbox_hint_cache exists), NO Alembic migration, NO new third-party dependency, NO prompt change unless Option B′ is chosen (then prompts/inbox.md gains a catalog block). Reuse: inbox/hint_cache.get_or_refresh_hint + InboxHintCacheRepo, inbox/parser.extract_inbox_hint, _resolve_owner_wikis_factory, inbox/route.route_action_to_payload, ConfirmationService + build_route_recap + build_route_confirm_keyboard + PendingConfirmDraft, RouterDecision/RouterIntent, PIIRedactor for logs.</text>
+        </Item>
+        <Item id="NFR-2">
+          <text>Latency/cost is the WHY (tech-spec §4 'Экономия cache' + §8.3.3 fast/heavy two-tier): with the hint cache, 0 filesystem reads on a hot message; the bypass additionally saves the ~10–30 s + ~3500-token Sonnet Router run on the ~80 % of messages whose target is obvious from a one-line hint. The bypass MUST stay conservative: a wrong auto-route the user then cancels is worse than a 20 s router run, so 'confident' is narrow (single unambiguous match). Precision over recall.</text>
+        </Item>
+        <Item id="NFR-3">
+          <text>mypy --strict / ruff / ruff-format / grace lint clean (`make lint`); `make total-test` semantics (lint + grace + inv-lint + coverage ≥80% + integration where applicable). Ru-only (D-032) — Phase-E.b reuses the existing route-confirm copy verbatim, no new user-facing strings. All datetime UTC. No bypass of pre-commit hooks. Isolation (CLAUDE.md §Изоляция) — nothing reads or writes /home/bgs/ai-steward/.</text>
+        </Item>
+        <Item id="NFR-4">
+          <text>grace-refresh + grace-refresh --verify after the change — new log markers (tg.pipeline.hint_fastpath.*) and the new DefaultPipeline dependency edge (M-TG-PIPELINE → M-INBOX hint_cache, if not already present) must land in knowledge-graph.xml / verification-plan.xml. Also clears the Phase-D-era deferred 'hint fast-path' note now that the cache is wired as a catalog.</text>
+        </Item>
+      </non_functional>
+      <constraints>
+        <Item>MUST hook the EXISTING Stage-0 → (Stage-1a Router) → Phase-C confirm pipeline, not introduce a parallel one — the bypass produces a RouterDecision of the same shape the heavy router produces.</Item>
+        <Item>The hint cache is the runtime domain catalog; it is NOT materialised into any WIKI file (tech-spec §4). Phase-E.b only READS domain CLAUDE.md files (via the metadata-guarded get_or_refresh_hint) — never writes them.</Item>
+        <Item>No new lifecycle command, no /wiki_* surface change (D-041). The fast-path is invisible to the user except that the confirm prompt appears faster on an obvious-target message.</Item>
+        <Item>user_id vs owner_telegram_id mismatch: get_or_refresh_hint(repo, user_id, claude_md_path) is keyed on the sessions-DB surrogate user_id, while _resolve_owner_wikis_factory is keyed on owner_telegram_id. The fast-path must resolve the surrogate user_id for the sender (the pipeline already has the user_id surrogate available wherever it touches sessions.db — confirm exact accessor in Brainstorming) before calling get_or_refresh_hint. (Identity vocabulary, D-042.)</Item>
+      </constraints>
+      <risks>
+        <Item id="R-1">
+          <text>False-positive auto-route — a hint-match fires on the wrong domain and the user has to cancel. Mitigation: NFR-2 precision-over-recall; only a single unambiguous match above threshold fires; everything else falls through; log every hit/miss/score for offline tuning. The user-confirm step is the final guard (FR-3) — a bad guess costs one extra tap, not a wrong file move.</text>
+        </Item>
+        <Item id="R-2">
+          <text>The hint cache was built (chunk 6) but is currently UNWIRED — nothing populates it for all domains and nothing reads it as a catalog. Phase-E.b is real new integration (a new DefaultPipeline dep + a catalog-build helper over the resolver + per-domain get_or_refresh_hint calls), not a small tweak. Mitigation: it is its own feature-workflow iteration (this one); scope is one context window (pipeline.py edit is localised to one new pre-router block + the helper; hint_cache.py gets a catalog wrapper; tests).</text>
+        </Item>
+        <Item id="R-3">
+          <text>Scope creep beyond what tech-spec §4 strictly mandates — the spec uses the hint cache to FEED the Router prompt (Option B′), not necessarily to BYPASS the router (Option A/B). The bd description ('on a confident hint short-circuit the heavy Router-Claude run') reads as A/B. Mitigation: OQ-A is decided at the Brainstorming gate; if B′ is chosen the latency win shrinks but no new heuristic ships and the spec is followed literally; if C is chosen the issue closes as 'wontfix — spec-faithful path deemed sufficient'.</text>
+        </Item>
+        <Item id="R-4">
+          <text>Catalog build cost on a cache MISS — first message after a domain CLAUDE.md edit re-reads + sha256s that file. With many domains a cold catalog is N file reads. Mitigation: get_or_refresh_hint already does stat→cache-hit on (size, mtime) so steady state is N stats, 0 reads; a cold/changed file is one read each — bounded by the user's domain count (small). Acceptable; log source breakdown (FR-6) to confirm in practice.</text>
+        </Item>
+        <Item id="R-5">
+          <text>grace-lint governs ~66 modules + 3 XML; adding a log marker or a new module edge without a grace-refresh breaks the gate. Mitigation: NFR-4 — grace-refresh (+ --verify) is a planned step.</text>
+        </Item>
+        <Item id="R-6">
+          <text>An empty distilled_payload (Stage-0 produced none) forces a fall-back to raw text for matching, which may be long/noisy and skew a keyword overlap. Mitigation: Option A scoring normalises by token count and requires a margin between #1 and #2 domain; if raw text is the only signal and it is ambiguous, fall through — the heavy router is the correct tool for ambiguous content.</text>
+        </Item>
+      </risks>
+      <scope>
+        <in>
+          <Item>tg/pipeline.py — a new pre-router fast-path block (between START_BLOCK_REMINDER_FASTPATH and START_BLOCK_ROUTABLE_BRANCH) inside _run_text_pipeline that builds the hint catalog, scores the incoming content, and on a confident hit synthesises a RouterDecision(ROUTE, target_wiki=&lt;stem&gt;) → existing route_action_to_payload → PendingConfirmDraft → request_explicit; on miss/ambiguous returns control to START_BLOCK_ROUTABLE_BRANCH. New optional DefaultPipeline ctor kwarg for the hint-cache repo (or Protocol).</Item>
+          <Item>inbox/hint_cache.py (or a small new helper module) — a catalog-build helper: given (repo, user_id, [(stem, path)]) → dict[stem, hint_text] via get_or_refresh_hint per domain (resolving each &lt;Domain&gt;-WIKI dir's CLAUDE.md), plus the scoring function for Option A (if A is chosen). __all__ / MODULE_MAP / SCOPE updated.</Item>
+          <Item>src/ai_steward_wiki/__main__.py — construct InboxHintCacheRepo from the sessions session-maker and inject it into DefaultPipeline; if Option B, wire a Haiku CLI handle.</Item>
+          <Item>tests/unit/tg/test_pipeline*.py — fast-path hit / ambiguous / empty-catalog / fallthrough cases + log-anchor assertions; tests/unit/inbox/ — catalog-build helper + scorer unit tests.</Item>
+          <Item>grace-refresh + grace-refresh --verify.</Item>
+          <Item>If Option B′ instead of A/B: prompts/inbox.md gains a cached-catalog context block; _RouterAdapter passes the catalog into the prompt; the pipeline change is just building+passing the catalog (no synthesised RouterDecision).</Item>
+        </in>
+        <out>
+          <Item>Any change to how the heavy Inbox-WIKI Router-Claude run works internally (prompts/inbox.md, _RouterAdapter), UNLESS Option B′ is chosen.</Item>
+          <Item>Populating the hint cache outside the on-message hot path (e.g. a warm-up job at boot) — the lazy get_or_refresh_hint is sufficient for MVP; a warm-up job is a possible later optimisation.</Item>
+          <Item>Invalidation on domain CLAUDE.md edit beyond what get_or_refresh_hint's (size, mtime) stat already gives — no fs-watch.</Item>
+          <Item>Per-call vision timeout, captions, video_note ext, ops/retention.purge_staging cleanup — unrelated deferred items from the media-handling track.</Item>
+        </out>
+        <later>
+          <Item>A boot-time / periodic hint-cache warm-up job (refresh all domains for all owners) if cold-catalog latency proves noticeable in production logs (R-4).</Item>
+        </later>
+      </scope>
+      <open_questions>
+        <Item id="OQ-A">
+          <text>Matching mechanism + 'confident' definition: Option A deterministic keyword/regex token-overlap with a single-unambiguous-match threshold + margin | Option B tiny Haiku call over the cached catalog | Option B′ spec-faithful 'feed the catalog into the existing Router prompt' (no bypass) | Option C drop bit 1. Decide at the Brainstorming gate. Discovery leans A or B′ (A = biggest latency win + fully deterministic + testable; B′ = literal spec compliance, smaller win, zero new heuristic) over B (a Haiku round-trip is cheaper than Sonnet but still a CLI call — middling) and over C (the bd issue is explicitly open and the win is real).</text>
+        </Item>
+        <Item id="OQ-B">
+          <text>Where does the pipeline get the sessions-DB surrogate user_id for the sender (needed by get_or_refresh_hint)? Confirm the exact accessor / whether to add one in Brainstorming. If awkward, an alternative is to re-key get_or_refresh_hint on owner_telegram_id (a one-line signature change, since wiki_path is the real cache key and user_id is just a scoping column) — decide in Brainstorming.</text>
+        </Item>
+        <Item id="OQ-C">
+          <text>Scoring details for Option A (if chosen): tokenisation (lowercase word-split vs the hint's own comma/keyword list), stop-word handling, threshold value, the margin between #1 and #2 domain, and whether to also match on the domain stem name itself. Belongs in Brainstorming/Plan, not Discovery.</text>
+        </Item>
+      </open_questions>
+    </requirements>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-hint-fastpath-staging-discovery.md" bd_id="aisw-12t">
+    <feature>inbox-wiki-hint-fastpath-staging</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-E</phase>
+    <status>draft</status>
+    <created>2026-05-12</created>
+    <requirements>
+      <functional>
+        <Item id="FR-1">
+          <text>Voice and photo (and image-document) ingestion stages the raw bytes under the SENDER'S per-user Inbox-WIKI — &lt;wiki_root&gt;/&lt;telegram_id&gt;/Inbox-WIKI/raw/media/_staging/&lt;run_id&gt;_&lt;sha8&gt;.&lt;ext&gt; — instead of the single shared settings.media_staging_root. A new pure helper inbox_wiki_path(telegram_id, *, wiki_root) -&gt; Path in inbox/materialize.py returns &lt;wiki_root&gt;/&lt;telegram_id&gt;/&lt;INBOX_WIKI_DIRNAME&gt;; the staging dir itself is created lazily by stage_media's mkdir(parents=True) — no CLAUDE.md materialisation is required just to stage media (ensure_inbox_wiki stays the first-contact materialiser used by the Router adapter).</text>
+        </Item>
+        <Item id="FR-2">
+          <text>VoiceHandler / PhotoIngestor no longer bind a fixed inbox_root at construction time; the per-user staging root is resolved per message from telegram_id. Concrete shape is an Open Question (OQ-A): (a) .handle(..., inbox_root: Path) per-call arg with the pipeline computing inbox_root; (b) the pipeline gets wiki_root injected and passes it; (c) an inbox_wiki_path_resolver: Callable[[int], Path] injected into DefaultPipeline. on_voice / on_photo / the image-document branch in tg/pipeline.py pass the resolved root. _run_text_pipeline / media_paths / promote_path_to_raw are unchanged (the staged path is still absolute; the runner adapter still promotes it into the target WIKI on success).</text>
+        </Item>
+        <Item id="FR-3">
+          <text>The 24h _staging retention sweep iterates EVERY user's Inbox-WIKI staging dir, not one shared dir: a new wrapper sweep_all_user_staging(wiki_root, *, now, ttl_s) globs &lt;wiki_root&gt;/*/Inbox-WIKI/ and calls sweep_staging on each (sweep_staging itself, keyed on a single inbox_root, is unchanged). scheduler/maintenance.register_media_staging_sweep_job is re-pointed from a staging_root: Path to wiki_root: Path; register_all_retention_jobs / register_all_maintenance_jobs and __main__.py wiring updated accordingly. Failed runs still leave the file in _staging for this sweep (D-022 No-WIKI flow).</text>
+        </Item>
+        <Item id="FR-4">
+          <text>settings.media_staging_root and the comments/log fields referencing it are removed (no internal backwards-compat shim — nothing has shipped to prod that depends on it; the field was an explicit MVP placeholder per DEC-C1-2). [If OQ-B decides to keep it as a fallback for users with no Inbox-WIKI yet, this FR is replaced by a 'keep + document' variant in Brainstorming — Discovery recommends removal because Inbox-WIKI is always reachable via inbox_wiki_path(telegram_id) and the dir auto-creates.]</text>
+        </Item>
+        <Item id="FR-5">
+          <text>Unit tests: per-user staging path assertion for voice + photo + image-document (each lands under &lt;wiki_root&gt;/&lt;tid&gt;/Inbox-WIKI/raw/media/_staging/); inbox_wiki_path returns the expected path; sweep_all_user_staging removes stale files across multiple user dirs and leaves fresh ones; the existing tests/unit/inbox/test_staging.py and any voice/photo handler tests updated for the new construction/handle shape; tests/unit/scheduler/* for the re-pointed sweep job. Coverage stays ≥80%.</text>
+        </Item>
+        <Item id="FR-6">
+          <text>Structlog: media.staged already logs the full path (now per-user) — no change needed there; the sweep wrapper emits maintenance.media_sweep.done (already present) plus a per-user-dir count; new/renamed anchors only where the wiring shape forces it. PII tier-2: paths under raw/media/_staging never embed the user name (only telegram_id, which is already non-secret and present in every log line).</text>
+        </Item>
+        <Item id="FR-7">
+          <text>[Phase-E.b — RECOMMENDED SPLIT, see Scope/LATER] Before invoking the heavy Inbox-WIKI Router-Claude run for a routable Stage-0 intent, a lightweight deterministic step builds the user's domain catalog from the cached '## Inbox hint' of each &lt;Domain&gt;-WIKI/CLAUDE.md (reuse inbox/hint_cache.get_or_refresh_hint per domain, enumerated via the existing owner→[(stem,path)] resolver) and matches the incoming content (Stage-0 distilled_payload / raw text) against the hints. The matching mechanism and the definition of 'confident' are the central design fork (OQ-C): Option A = deterministic keyword/regex overlap, fire only on a SINGLE unambiguous domain match above a threshold; Option B = a tiny Haiku call over the catalog (still far cheaper than the Sonnet Router run in Inbox-WIKI). On a confident hit → synthesise a RouterDecision(intent=ROUTE, target_wiki=&lt;matched stem&gt;) and feed the EXISTING Phase-C confirm loop (route_action_to_payload → PendingConfirmDraft → ConfirmationService.request_explicit) — skipping the ~10–30s Router-Claude run (tech-spec §8.3.3 fast/heavy two-tier). On no match or ambiguity → fall through to today's heavy Router path unchanged.</text>
+        </Item>
+        <Item id="FR-8">
+          <text>[Phase-E.b] The fast-path never SILENTLY routes — the user still confirms via the existing inline-button recap before any file move/ingest. The hint catalog is cached (sessions.db.inbox_hint_cache, already exists, metadata-guarded, no TTL) so a hot message does zero filesystem reads on a cache hit. New structlog anchors: tg.pipeline.hint_fastpath.catalog (n_domains, source='cache'|'refresh'), tg.pipeline.hint_fastpath.hit (target_wiki, score), tg.pipeline.hint_fastpath.miss (reason='no_match'|'ambiguous'), tg.pipeline.hint_fastpath.fallthrough.</text>
+        </Item>
+      </functional>
+      <non_functional>
+        <Item id="NFR-1">
+          <text>Reuse-only: inbox/staging.py stage_media/promote_*/sweep_staging, inbox/materialize.py, inbox/hint_cache.py (Phase-E.b), inbox/parser.extract_inbox_hint, the owner→wikis resolver (__main__._resolve_owner_wikis_factory), ConfirmationService + the route-confirm keyboard family + route_action_to_payload (Phase-E.b), scheduler/maintenance + register_all_*; PIIRedactor for log lines. NO new SQLite table (inbox_hint_cache already exists), NO Alembic migration, NO new third-party dependency.</text>
+        </Item>
+        <Item id="NFR-2">
+          <text>mypy --strict / ruff / ruff-format / grace lint clean (run `make lint` AND `make total-test` semantics: lint + grace + inv-lint + coverage ≥80% + integration where applicable); coverage stays ≥80%. All new behaviour unit-tested with fakes — no live Telegram / Claude / real APScheduler thread / real filesystem outside tmp_path in unit tests. The sweep wrapper is tested by calling it directly on a tmp tree of fake user dirs with backdated mtimes.</text>
+        </Item>
+        <Item id="NFR-3">
+          <text>Ru-only (D-032) — no new user-facing strings in Phase-E.a; Phase-E.b reuses the existing route-confirm copy verbatim. All datetime in DB / sweep cutoffs are UTC. No bypass of pre-commit hooks. Isolation (CLAUDE.md §Изоляция): nothing reads or writes /home/bgs/ai-steward/.</text>
+        </Item>
+        <Item id="NFR-4">
+          <text>Latency/cost intent (the WHY of bit 1): tech-spec §4 'Экономия cache' — with the hint cache, 0 filesystem reads on the hot path; bit 1's router-bypass additionally saves the ~10–30s + ~3500-token Sonnet Router run on the ~80% of messages whose target is obvious from a one-line hint. The bypass MUST stay conservative (precision over recall) — a wrong auto-route that the user then has to cancel is worse than a 20s router run, so 'confident' is defined narrowly (single unambiguous match).</text>
+        </Item>
+        <Item id="NFR-5">
+          <text>grace-refresh after the change — new log markers (maintenance.media_sweep per-user count, tg.pipeline.hint_fastpath.*) and any moved module exports must land in knowledge-graph.xml / verification-plan.xml. (Also clears the Phase-D-era deferred #6 'grace-refresh' note for the new media markers.)</text>
+        </Item>
+      </non_functional>
+      <constraints>
+        <Item>Phase-E.a MUST keep the staged-path → target-WIKI promotion adapter-side (DEC-C4-1): the runner adapter still owns promote_path_to_raw(staging_path, wiki_root=&lt;target wiki&gt;); only the *origin* of the staged file changes (shared dir → per-user Inbox-WIKI). In current MVP the target WIKI is still the flat &lt;wiki_root&gt;/&lt;owner_telegram_id&gt;/, so promotion is unaffected by where staging lives.</Item>
+        <Item>Phase-E.b MUST hook the EXISTING Stage-0 → (Stage-1a Router) → Phase-C confirm pipeline, not introduce a parallel one: the bypass produces a RouterDecision of the same shape the heavy router produces, so route_action_to_payload / on_confirm_callback / the Stage-1b librarian path are reused verbatim. It sits BEFORE the `if result.intent in _ROUTABLE_INTENTS and self._router is not None:` block (or just inside it, before `self._router.route(...)`).</Item>
+        <Item>The hint cache is the runtime domain catalog; it is NOT materialised into any WIKI file (tech-spec §4). Phase-E.b only READS domain CLAUDE.md files (via the metadata-guarded get_or_refresh_hint) — it never writes them.</Item>
+        <Item>No new lifecycle command, no /wiki_* surface change (D-041). The fast-path is invisible to the user except that the confirm prompt appears faster.</Item>
+      </constraints>
+      <risks>
+        <Item id="R-1">
+          <text>[E.a] VoiceHandler/PhotoIngestor are currently constructed once at startup with a fixed inbox_root — moving the path to per-call ripples into __main__ wiring + every handler test. Mitigation: pick the OQ-A shape that minimises churn (likely (b) inject wiki_root into DefaultPipeline, or (c) a one-line resolver) and update tests in lockstep; the change is mechanical.</text>
+        </Item>
+        <Item id="R-2">
+          <text>[E.a] A message arrives before the user's Inbox-WIKI exists. Mitigation: inbox_wiki_path is pure path arithmetic and stage_media.mkdir(parents=True) creates the tree; full CLAUDE.md materialisation is only needed for the Router run (which already calls ensure_inbox_wiki). So staging media for a brand-new user just works. Verify with a unit test on a fresh tmp wiki_root.</text>
+        </Item>
+        <Item id="R-3">
+          <text>[E.a] sweep_all_user_staging globbing &lt;wiki_root&gt;/* will also see _trash/ and any non-numeric dirs — must skip anything without an Inbox-WIKI/ child rather than assume the layout. Mitigation: glob &lt;wiki_root&gt;/*/Inbox-WIKI and derive the staging dir from each; tolerate missing dirs. Unit-tested with a mixed tree (a user dir, a _trash dir, a stray file).</text>
+        </Item>
+        <Item id="R-4">
+          <text>[E.b] False-positive auto-route — a hint-match fires on the wrong domain and the user has to cancel. Mitigation: NFR-4 — precision over recall; only a single unambiguous match above threshold fires; everything else falls through to the heavy router. Tunable threshold; log every hit/miss for offline tuning.</text>
+        </Item>
+        <Item id="R-5">
+          <text>[E.b] The hint cache was built (chunk 6) but is currently UNWIRED — nothing populates it for all domains and nothing reads it as a catalog. Phase-E.b is therefore real new integration, not a small tweak; combined with bit 2 it exceeds one context window (pipeline.py alone is ~2.1k lines). Mitigation: SPLIT — Phase-E.a (bit 2, this iteration) + Phase-E.b (bit 1, follow-up). This is the Plan-Sizing 'fit, not fragment' call; the two bits share almost no files.</text>
+        </Item>
+        <Item id="R-6">
+          <text>[E.b] The bd description's framing ('on a confident hint short-circuit the heavy Router-Claude run') goes BEYOND what tech-spec §4 strictly mandates (the spec uses the hint cache to FEED the Router prompt, not to bypass it). Three readings on the table (OQ-C / Scope): A = implement the conservative keyword-match bypass as written; B = spec-faithful 'pass the cached catalog into the Inbox Router prompt' (smaller latency win, no new heuristic); C = defer bit 1 entirely. Recommendation: split it out (E.b) and decide A vs B at that phase's Brainstorming gate.</text>
+        </Item>
+        <Item id="R-7">
+          <text>[both] grace-lint governs ~66 modules + 3 XML; moving/renaming an export or a log marker without a grace-refresh breaks the gate. Mitigation: NFR-5 — grace-refresh (+ --verify) is a planned step, not an afterthought.</text>
+        </Item>
+      </risks>
+      <scope>
+        <in>
+          <Item>Phase-E.a (THIS iteration): inbox/materialize.py — add inbox_wiki_path(telegram_id, *, wiki_root). tg/voice.py + tg/photo.py — per-call (or resolver-injected) staging root instead of fixed inbox_root. tg/pipeline.py — on_voice / on_photo / image-document branch resolve &amp; pass the per-user root; DefaultPipeline gets whatever injection OQ-A picks. inbox/staging.py (or scheduler/maintenance.py) — sweep_all_user_staging(wiki_root, ...) wrapper. scheduler/maintenance.py — register_media_staging_sweep_job re-pointed to wiki_root; register_all_* signatures updated. src/ai_steward_wiki/__main__.py — media-pipeline wiring + sweep-job wiring updated; settings.media_staging_root removed (OQ-B). settings.py — drop media_staging_root (OQ-B). tests/unit/inbox/test_staging.py + voice/photo handler tests + scheduler sweep tests updated. grace-refresh + grace-refresh --verify.</Item>
+        </in>
+        <out>
+          <Item>Per-call vision timeout 30s (DEC-C2-4 deferred — separate task).</Item>
+          <Item>Document/voice captions (DEC-C3-2 deferred — separate task).</Item>
+          <Item>register_all_retention_jobs not being called from __main__ (DEC-C4-2 pre-existing gap — separate task).</Item>
+          <Item>video_note wrong ext (cosmetic — separate task).</Item>
+          <Item>Any change to how the heavy Inbox-WIKI Router-Claude run works (prompts/inbox.md, _RouterAdapter) — untouched in E.a.</Item>
+        </out>
+        <later>
+          <Item>Phase-E.b (FOLLOW-UP, recommended): the '## Inbox hint' fast-path router-bypass (FR-7, FR-8) — its own feature-workflow iteration with a Brainstorming gate that picks OQ-C Option A vs B, the matching mechanism, and the 'confident' threshold. Touches tg/pipeline.py (the routable branch), inbox/hint_cache.py (catalog-build helper over the resolver), tests. A new child bd issue under aisw-12t (or aisw-12t relabelled to E.b once E.a closes the aisw-64c subsumption).</Item>
+        </later>
+      </scope>
+      <open_questions>
+        <Item id="OQ-A">
+          <text>Per-user staging root injection shape: (a) VoiceHandler/PhotoIngestor .handle(..., inbox_root) per-call + pipeline computes it; (b) inject wiki_root: Path into DefaultPipeline and pass it; (c) inject inbox_wiki_path_resolver: Callable[[int], Path] into DefaultPipeline. Lean (b) or (c) — keeps the handler protocol stable-ish and the pipeline already owns telegram_id. Decide in Brainstorming.</text>
+        </Item>
+        <Item id="OQ-B">
+          <text>Keep settings.media_staging_root as a fallback (e.g. for the sweep job before any Inbox-WIKI exists, or as an escape hatch) or remove it outright? Discovery recommends REMOVE (no internal backwards-compat shim; the per-user path always resolves and auto-creates). Confirm at the Discovery gate.</text>
+        </Item>
+        <Item id="OQ-C">
+          <text>[Phase-E.b] Hint fast-path matching: Option A deterministic keyword/regex overlap with a narrow single-unambiguous-match threshold | Option B tiny Haiku call over the cached catalog | Option C defer bit 1. Decide at Phase-E.b Brainstorming (out of scope for this Discovery beyond recording the fork).</text>
+        </Item>
+        <Item id="OQ-D">
+          <text>Split confirmed? Discovery strongly recommends Phase-E.a now / Phase-E.b later (R-5, Plan-Sizing). If rejected and both bits stay in one iteration, the plan must still be one-context-window-sized — which Discovery judges unlikely given pipeline.py's size + the bit-1 design work. User call at the Discovery gate.</text>
+        </Item>
+      </open_questions>
+    </requirements>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-route-confirm-discovery.md" bd_id="aisw-e45">
+    <feature>inbox-wiki-route-confirm</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-C</phase>
+    <status>draft</status>
+    <created>2026-05-12</created>
+    <requirements>
+      <functional>
+        <Item id="FR-1">
+          <text>When the Stage-1a Router returns a RouterDecision with intent ∈ {ROUTE, CREATE_WIKI} AND a Librarian + OutputDelivery are wired, the pipeline NO LONGER executes the Phase-B move+ingest immediately; instead it builds a confirm draft and calls ConfirmationService.request_explicit(...) — an explicit-level (D-023) recap message with inline buttons is sent, and a pending row is persisted in sessions.pending_confirms with category='route_ingest', 10-minute TTL, and draft_json holding everything needed to replay the action (intent, target_wiki, notes, raw, parsed_ok, user_text, source, media_paths as strings, correlation_id).</text>
+        </Item>
+        <Item id="FR-2">
+          <text>intent ∈ {CLARIFY, REJECT}, or the no-Librarian / no-OutputDelivery case, keep the existing Phase-A notes-echo (reply decision.notes, no WIKI touched, no confirm row). The Stage-0→Stage-1a router dispatch and all Phase-A/B logging up to tg.pipeline.router.decided are unchanged.</text>
+        </Item>
+        <Item id="FR-3">
+          <text>The recap message is Russian and states the proposed action derived from the decision: ROUTE → «Положу это в вики «&lt;target_wiki&gt;». Подтверждаешь?» plus decision.notes; CREATE_WIKI → «Заведу новую вики «&lt;target_wiki&gt;» и положу это туда. Подтверждаешь?» plus decision.notes. Buttons: «✅ Подтвердить» (confirm) and «❌ Отмена» (cancel) — a 2-button keyboard variant for route confirms (the 3-button correct/«Изменить» path is not meaningful for routing in the MVP and is omitted).</text>
+        </Item>
+        <Item id="FR-4">
+          <text>On the confirm callback (callback_data confirm:&lt;pending_id&gt;:confirm): ConfirmationService.resolve(...) flips the row to 'confirmed' race-safely; if it returned 'confirmed', the pipeline loads the pending row (get_pending), checks category=='route_ingest', reconstructs the RouterDecision from draft_json, and runs the Phase-B path — Librarian.ingest(decision, telegram_id=…, user_text=…, source=…, media_paths=…, correlation_id=…) — then delivers the reply exactly like Phase-B (status=='ok' → OutputDelivery.deliver(reply); else → send_message(reply)). If resolve returned None (already resolved / TTL-expired) → reply «Время на подтверждение истекло, пришли заново.» (or a 'already handled' line). The recap message's keyboard is removed after resolution (edit_reply_markup best-effort).</text>
+        </Item>
+        <Item id="FR-5">
+          <text>On the cancel callback (confirm:&lt;pending_id&gt;:cancel): resolve(...) flips to 'cancelled'; reply «Отменено. Файл остался в Inbox — можешь прислать заново с уточнением.» The staged raw (Inbox-WIKI/raw/&lt;ts&gt;_&lt;source&gt;.md sidecar + any media binary) is NOT deleted on cancel or TTL expiry (D-022 / Phase-B no-rollback philosophy — it's an audit artifact, content-addressed for media; a sweep job is a later ops task). expire_due is already run by the existing TTL sweeper (no new scheduler job).</text>
+        </Item>
+        <Item id="FR-6">
+          <text>Structlog anchors (all with correlation_id, telegram_id): tg.pipeline.route.confirm_requested (pending_id, intent, target_wiki); tg.pipeline.confirm.route_dispatched (pending_id, action) — emitted from on_confirm_callback when category=='route_ingest'; tg.pipeline.route.confirm_executed (pending_id, status, target_wiki, created, run_id) on confirm→ingest done; tg.pipeline.route.confirm_cancelled (pending_id); tg.pipeline.route.confirm_stale (pending_id) when resolve returns None. The existing tg.pipeline.confirm anchor in on_confirm_callback stays for non-route categories.</text>
+        </Item>
+      </functional>
+      <non_functional>
+        <Item id="NFR-1">
+          <text>Reuses ConfirmationService (request_explicit / resolve / get_pending / expire_due), the existing CONFIRM_CALLBACK_PREFIX handler in tg/handlers.py, the PendingConfirm ORM model, and the Phase-B Librarian.ingest path — no reimplementation of the confirm machinery or the ingest. NO new SQLite table, NO new Alembic migration (draft_json + category columns already exist on pending_confirms from chunk 10). NO new third-party dependency.</text>
+        </Item>
+        <Item id="NFR-2">
+          <text>mypy --strict / ruff / ruff-format / grace lint clean; coverage stays ≥80%. New behaviour fully unit-tested with fakes (FakeConfirmationService recording request_explicit calls; FakeLibrarian; FakeOutputDelivery) — no live Telegram / Claude in unit tests.</text>
+        </Item>
+        <Item id="NFR-3">
+          <text>Ru-only (D-032). All datetimes UTC (the confirm TTL already is). No bypass of pre-commit hooks. The recap-message keyboard removal on callback is best-effort (a failed edit_reply_markup must not break the ingest).</text>
+        </Item>
+        <Item id="NFR-4">
+          <text>media_paths in draft_json are serialised as POSIX path strings and re-hydrated to Path on replay; the staged files are expected to still exist (Phase-A staged them under Inbox-WIKI/raw/ + media_staging_root, which are not GC'd within the 10-min window). If a media path no longer exists at confirm time, Librarian.ingest handles it as Phase-B does (no special new handling here).</text>
+        </Item>
+      </non_functional>
+      <constraints>
+        <Item>Phase-B's auto-execute is REPLACED, not kept behind a flag — confirm-before-mutate is strictly the desired behaviour (R-3 in the Phase-B discovery explicitly named the missing gate; this closes it). No route_confirm_enabled toggle in the MVP (KISS).</Item>
+        <Item>No new structured `proposed_actions` field on RouterDecision. The proposed action for Phase-C is fully derivable from (intent, target_wiki); a multi-action list (route + reminder + aggregator) only becomes necessary with the Phase-D cron bridge (aisw-kcz) and is out of scope here. The bd issue title's 'RouterDecision.proposed_actions' is interpreted as 'the action proposed by the RouterDecision', not a literal new field.</Item>
+        <Item>The 3-button explicit keyboard (build_explicit_keyboard, with «Изменить») stays for the chunk-10 confirm category; route confirms use a new 2-button keyboard builder. parse_confirm_callback already accepts both 'confirm' and 'cancel' actions, so handlers.py needs no parser change — only the pipeline dispatch in on_confirm_callback branches on the pending row's category.</Item>
+        <Item>ConfirmationService.request_explicit currently builds its keyboard internally via build_explicit_keyboard(pending_id). To send a 2-button keyboard for route confirms we either (a) add an optional keyboard-factory param to request_explicit, or (b) add a dedicated request_explicit_route(...) method, or (c) pass the recap text already and let the pipeline send its own keyboard via implicit_ack-style call but persist via request_explicit. Decided in Brainstorming — (a) is the lightest.</Item>
+      </constraints>
+      <risks>
+        <Item id="R-1">
+          <text>Between request_explicit and the confirm callback (≤10 min) the user sends the SAME content again → Phase-A re-stages, Stage-1a re-runs, and request_explicit is called with a draft whose payload_hash collides with the pending row → request_explicit is idempotent on (telegram_id, payload_hash, status='pending') and returns the existing record without a new recap. Acceptable (no duplicate buttons). Mitigation: rely on the existing idempotency; verify with a unit test.</text>
+        </Item>
+        <Item id="R-2">
+          <text>User taps Подтвердить twice (double-tap, or on two devices). resolve(...) is UPDATE … WHERE status='pending' → the second tap gets rowcount 0 → returns None → FR-4 'stale' reply, no second ingest. Race-safe by construction.</text>
+        </Item>
+        <Item id="R-3">
+          <text>draft_json round-trip loses type info (Path → str, RouterIntent enum → str). Mitigation: explicit (de)serialiser with a unit test; reconstruct RouterIntent(decision_dict['intent']) and RouterDecision(**fields); Path(p) for each media path.</text>
+        </Item>
+        <Item id="R-4">
+          <text>Latency: a routable turn now needs TWO user interactions (message → recap → tap → ingest) and the Stage-1b run happens on the callback, not the original message. The callback handler must answer the CallbackQuery promptly (aiogram answer()) before the (possibly ~30-300s) ingest, and ideally send a «Записываю…» line first. Mitigation: handlers.py already answers the callback; the pipeline sends a short ack before the ingest. Considered in Brainstorming.</text>
+        </Item>
+        <Item id="R-5">
+          <text>expire_due flips rows to 'expired' but the user never gets a notice. Acceptable for the MVP (the file stays in Inbox, the user can resend). A 'твоё подтверждение устарело' nudge is a later UX refinement, not Phase-C.</text>
+        </Item>
+      </risks>
+      <scope>
+        <in>
+          <Item>Replace the Phase-B immediate librarian.ingest() call (in _run_text_pipeline's routable branch) with a confirm-request: build a route confirm draft + recap text + call ConfirmationService.request_explicit with a 2-button keyboard.</Item>
+          <Item>Extend on_confirm_callback: after resolve, if the pending row's category=='route_ingest', dispatch to a new _execute_route_confirm path — reconstruct RouterDecision, run Librarian.ingest, deliver the reply, remove the keyboard; handle cancel and stale cases with ru messages.</Item>
+          <Item>A draft (de)serialiser for the route action payload (RouterDecision + user_text + source + media_paths + correlation_id ↔ dict).</Item>
+          <Item>An optional keyboard-factory hook on ConfirmationService.request_explicit (or equivalent) + a build_route_confirm_keyboard(pending_id) 2-button builder.</Item>
+          <Item>New structlog anchors per FR-6.</Item>
+          <Item>Unit tests: routable ROUTE/CREATE_WIKI → request_explicit called with the right draft + keyboard, no immediate ingest; confirm callback → ingest + deliver; cancel callback → cancelled reply, no ingest; stale (resolve→None) → stale reply; CLARIFY/REJECT and no-librarian → unchanged notes-echo; draft round-trip; double-confirm idempotency. An e2e/integration scenario extending tests/integration: routable text → recap → simulate confirm callback → page written in the target &lt;Domain&gt;-WIKI.</Item>
+          <Item>GRACE: update M-TG-PIPELINE-CLASSIFIER / M-TG-DOCUMENT-FULL (pipeline) + M-TG-TEXT (confirm) contracts + MODULE_MAP, knowledge-graph CrossLinks (pipeline → confirm now used for routing), verification-plan refs (new tests + log anchors), development-plan Phase-C entry, ADR if a notable decision (e.g. replace-vs-flag, keyboard variant) warrants one.</Item>
+        </in>
+        <out>
+          <Item>Router → cron/job bridge (Phase-D / aisw-kcz) — the confirm path executes only the Phase-B move+ingest; cron creation hooks in later (the draft schema is forward-compatible but not used for cron here).</Item>
+          <Item>## Inbox hint fast-path + per-user media _staging migration (Phase-E / aisw-12t).</Item>
+          <Item>A literal `proposed_actions` list field on RouterDecision (deferred; not needed until Phase-D).</Item>
+          <Item>The «Изменить»/correct UX for route confirms (re-route flow) — omitted from the keyboard.</Item>
+          <Item>TTL-expiry user notification, restore-from-trash on ROUTE to a soft-deleted name (lifecycle UX), per-WIKI git auto-commit on ingest.</Item>
+          <Item>Any change to Stage-0 / Stage-1a / prompts/inbox.md / prompts/wiki.md.</Item>
+        </out>
+      </scope>
+    </requirements>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-route-ingest-discovery.md" bd_id="aisw-zd9">
+    <feature>inbox-wiki-route-ingest</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-B</phase>
+    <status>done</status>
+    <created>2026-05-12</created>
+    <requirements>
+      <functional>
+        <Item id="FR-1">
+          <text>After Phase-A's Router returns a RouterDecision with intent ∈ {ROUTE, CREATE_WIKI}, the pipeline resolves a concrete target &lt;Domain&gt;-WIKI for the owner: CREATE_WIKI → WikiLifecycleManager.create_wiki(owner, decision.target_wiki, template_id); ROUTE → lifecycle.lookup(owner, decision.target_wiki), and if the named WIKI does not exist, create it (the Router asserted it belongs there) — with a logged warning.</text>
+        </Item>
+        <Item id="FR-2">
+          <text>AntiSpamCapError on create (owner at wiki cap) → no ingest; reply with decision.notes + a ru hint that the WIKI cap is reached; log inbox.route.cap_reached. WikiNameError on a malformed Router-proposed name → reply decision.notes + a ru 'не смог разобрать имя вики' hint; log inbox.route.bad_name.</text>
+        </Item>
+        <Item id="FR-3">
+          <text>The Phase-A raw payload (Inbox-WIKI/raw/&lt;ts&gt;_&lt;source&gt;.md sidecar, and for media the staged binary in media_staging_root) is moved into the target WIKI's raw/ before the Stage-1b run: text sidecar → &lt;Domain&gt;-WIKI/raw/&lt;ts&gt;_&lt;source&gt;.md; media binary → &lt;Domain&gt;-WIKI/raw/media/&lt;ISO8601&gt;_&lt;sha8&gt;.&lt;ext&gt; via inbox.staging.promote_path_to_raw(wiki_root=&lt;Domain&gt;-WIKI dir). On Stage-1b failure the moved raw stays in &lt;Domain&gt;-WIKI/raw/ (logged inbox.route.ingest_failed) — a future retry/sweep re-ingests; no rollback in Phase-B.</text>
+        </Item>
+        <Item id="FR-4">
+          <text>A Stage-1b 'librarian' session runs IN the target WIKI: run_wiki_session(wiki_id=f'{owner}/{primary}', wiki_path=&lt;Domain&gt;-WIKI dir, base_prompt_path=prompts/wiki.md, overlay_prompt_path=prompts/domain-&lt;slug&gt;.md if it exists else prompts/domain-default.md, user_input=&lt;ingest instruction referencing the moved raw file path(s) + the original user text&gt;, media_paths=[&lt;promoted binary&gt;] when media, timeout_s=&lt;configured text timeout, or vision timeout for media&gt;). The aggregated assistant text is the ingest summary.</text>
+        </Item>
+        <Item id="FR-5">
+          <text>The user reply on a successful route+ingest = decision.notes + '\n\n' + the Stage-1b ingest summary (so the user sees both 'куда' and 'что записал'). On a Stage-1b WikiRunnerError → reply decision.notes + a ru 'не удалось разложить — попробую позже' hint (the raw stays in the target WIKI). intent ∈ {CLARIFY, REJECT} keeps Phase-A behaviour (reply decision.notes, no WIKI touched).</text>
+        </Item>
+        <Item id="FR-6">
+          <text>Structlog anchors: inbox.route.target_resolved (owner, target_wiki, created: bool), inbox.route.cap_reached, inbox.route.bad_name, inbox.route.raw_moved (src, dest), inbox.route.ingest.begin/done (wiki_id, run_id, latency_ms, chars), inbox.route.ingest_failed — all with correlation_id, telegram_id.</text>
+        </Item>
+      </functional>
+      <non_functional>
+        <Item id="NFR-1">
+          <text>Reuses WikiLifecycleManager (create/lookup), run_wiki_session (lock manager, kill-sequence, transcript persistence), inbox.staging.promote_path_to_raw — no reimplementation. mypy --strict / ruff / ruff-format / grace lint clean; coverage stays ≥80%.</text>
+        </Item>
+        <Item id="NFR-2">
+          <text>No new third-party dependency. No new SQLite table (Phase-B is filesystem + Stage-1b only; pending-action persistence is Phase-C).</text>
+        </Item>
+        <Item id="NFR-3">
+          <text>Lock discipline: the Stage-1b run takes the per-WIKI lock keyed on the target WIKI (wiki_id=f'{owner}/{primary}'), independent of the Inbox-WIKI lock used by the Stage-1a router run in Phase-A.</text>
+        </Item>
+        <Item id="NFR-4">
+          <text>Ru-only (D-032) — all user-facing strings Russian. All datetimes UTC. No bypass of pre-commit hooks. Per-WIKI git auto-commit (M-OPS-BACKUP) is NOT wired by Phase-B (separate concern); raw moves and Stage-1b page writes are plain filesystem ops.</text>
+        </Item>
+      </non_functional>
+      <constraints>
+        <Item>Building blocks (WikiLifecycleManager, run_wiki_session, promote_path_to_raw, RouterDecision, prompts/wiki.md + prompts/domain-*.md) are unchanged in their public API; Phase-B composes them.</Item>
+        <Item>Phase-B auto-executes route+ingest (no user confirmation) — the inline-button confirm loop is Phase-C (aisw-e45). Phase-B is a strict prerequisite for C/D.</Item>
+        <Item>template_id for create_wiki: Phase-B uses a single default (templates/_default.md → template_id='_default'); a domain→template mapping (health/budget/…) is a later refinement, NOT Phase-B (the Router emits only a name, not a template id).</Item>
+        <Item>WikiLifecycleManager.create_wiki currently writes a minimal CLAUDE.md (frontmatter only, empty template_sha256) and does NOT render the full template body — pre-existing behaviour, NOT fixed by Phase-B.</Item>
+      </constraints>
+      <risks>
+        <Item id="R-1">
+          <text>Router proposes a target_wiki that doesn't exist on a ROUTE intent (hallucinated name). Mitigation: FR-1 treats ROUTE-with-missing-target as create (Router said it belongs there) + logs a warning; alternative (reject/clarify) is heavier and overlaps Phase-C — decided in Brainstorming.</text>
+        </Item>
+        <Item id="R-2">
+          <text>Moving the raw payload BEFORE Stage-1b means a failed run leaves an un-ingested file in &lt;Domain&gt;-WIKI/raw/. Mitigation: it's content-addressed for media (idempotent on retry); the text sidecar is a small audit artifact; FR-3 logs the failure; a retry/sweep job is a later ops task. Alternative (copy → ingest → delete-Inbox-copy-on-success) considered in Brainstorming.</text>
+        </Item>
+        <Item id="R-3">
+          <text>Auto-executing a WIKI mutation from a single user message (no confirm) until Phase-C lands. Mitigation: the WIKI is the user's own private sandbox; Stage-1b only does atomic page writes + log.md append (per prompts/wiki.md); per-WIKI git history (when wired) gives undo; acceptable for an MVP slice; Phase-C adds the gate.</text>
+        </Item>
+        <Item id="R-4">
+          <text>Two Claude CLI invocations per routable message now (Stage-1a router + Stage-1b librarian) — latency + token cost roughly double for routable turns. Mitigation: accepted (the spec's two-stage design, §8.3.3); the ## Inbox hint fast-path (Phase-E) skips Stage-1a on confident hints; Phase-B does not add a third run.</text>
+        </Item>
+      </risks>
+      <scope>
+        <in>
+          <Item>Resolve/create the target &lt;Domain&gt;-WIKI from RouterDecision (via WikiLifecycleManager).</Item>
+          <Item>Move the Phase-A raw payload (text sidecar + media binary) into &lt;Domain&gt;-WIKI/raw/.</Item>
+          <Item>Stage-1b librarian run in the target WIKI (run_wiki_session + prompts/wiki.md + prompts/domain-*.md overlay).</Item>
+          <Item>Pipeline orchestration: router.route() → if ROUTE/CREATE_WIKI → resolve+move+ingest → reply notes + summary; else reply notes.</Item>
+          <Item>A new runtime adapter + narrow Protocol for the Stage-1b ingest step; possibly a thin inbox/route.py helper module for target-resolution + raw-move.</Item>
+          <Item>Unit tests (target resolution incl. cap/bad-name/missing-on-route, raw move, adapter ingest, pipeline two-step branch) + an integration scenario (routable text → real Stage-1a + Stage-1b → page written in &lt;Domain&gt;-WIKI).</Item>
+          <Item>GRACE: new module(s) + verification refs + dep/CrossLink updates + dev-plan Phase-B entry.</Item>
+        </in>
+        <out>
+          <Item>Inline-button confirmation loop before executing (Phase-C / aisw-e45).</Item>
+          <Item>Router → cron/job bridge (Phase-D / aisw-kcz).</Item>
+          <Item>## Inbox hint fast-path + per-user media _staging migration (Phase-E / aisw-12t).</Item>
+          <Item>Domain → template_id mapping for create_wiki (later refinement).</Item>
+          <Item>Full template-body rendering in create_wiki (pre-existing gap).</Item>
+          <Item>Per-WIKI git auto-commit on ingest (M-OPS-BACKUP wiring — separate concern).</Item>
+          <Item>Retry/sweep of un-ingested files left in &lt;Domain&gt;-WIKI/raw/ (later ops task).</Item>
+        </out>
+        <later>
+          <Item>Restore-from-trash on a ROUTE to a soft-deleted name (Phase-C/lifecycle UX).</Item>
+          <Item>Smarter ingest prompt (page-structure hints per domain).</Item>
+        </later>
+      </scope>
+    </requirements>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-router-discovery.md" bd_id="aisw-dsg">
+    <feature>inbox-wiki-router</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-A</phase>
+    <status>done</status>
+    <created>2026-05-12</created>
+    <requirements>
+      <functional>
+        <Item id="FR-1">
+          <text>On every routable incoming TG message (text/voice transcript/document text/photo), the pipeline materialises the user's Inbox-WIKI (ensure_inbox_wiki) before any Stage-1 run.</text>
+        </Item>
+        <Item id="FR-2">
+          <text>The raw user payload is persisted under &lt;user&gt;/Inbox-WIKI/raw/&lt; utc-ts &gt;_&lt;source&gt;.&lt;ext&gt; (text → .md with the message body; media → a small .md sidecar referencing the already-staged media path, the binary itself is staged by the existing voice/photo handlers and moved into raw/ only in Phase-E).</text>
+        </Item>
+        <Item id="FR-3">
+          <text>The Stage-1a Claude session for a routable message runs with cwd = &lt;user&gt;/Inbox-WIKI/ and overlay prompt prompts/inbox.md (the Router prompt), not the current flat &lt;wiki_root&gt;/&lt;telegram_id&gt;/ run.</text>
+        </Item>
+        <Item id="FR-4">
+          <text>The Router's free-text reply is parsed into a structured RouterDecision Pydantic model: { target_wiki: str | None, intent: Literal['create_wiki','route','clarify','reject'], notes: str }. Parse failure → a safe RouterDecision(intent='clarify', notes=&lt;fallback&gt;) plus a logged parse-error event (Fail-Fast at the boundary, no crash).</text>
+        </Item>
+        <Item id="FR-5">
+          <text>RouterDecision.notes is delivered back to the user as the turn reply (so the bot stays useful between Phase-A and Phase-B: it explains where the content would go / asks a clarifying question). No file move, no domain-WIKI ingest, no cron in Phase-A.</text>
+        </Item>
+        <Item id="FR-6">
+          <text>The Router run is gated by Stage-0 intent: only WIKI_INGEST / WIKI_QUERY / UNKNOWN messages go through the Router (these are the 'route this somewhere' intents). REMINDER / DIGEST / WIKI_LINT / ADMIN keep their current handling untouched.</text>
+        </Item>
+      </functional>
+      <non_functional>
+        <Item id="NFR-1">
+          <text>Structlog anchors on every decision point: inbox.router.materialized, inbox.router.staged_raw, inbox.router.run.begin/done, inbox.router.parsed (intent, target_wiki), inbox.router.parse_error — all carrying correlation_id, telegram_id, wiki_id.</text>
+        </Item>
+        <Item id="NFR-2">
+          <text>Router run reuses the existing run_wiki_session machinery (lock manager, kill-sequence, transcript persistence, timeout). Lock id = f'{telegram_id}/Inbox-WIKI' so a router run serialises against itself but not against an unrelated domain-WIKI run.</text>
+        </Item>
+        <Item id="NFR-3">
+          <text>Router run timeout = the configured text timeout (~300s); no new timeout knob in Phase-A.</text>
+        </Item>
+        <Item id="NFR-4">
+          <text>mypy --strict clean, ruff/ruff-format clean, grace lint 0 issues. New MODULE_CONTRACT for the RouterDecision parser; knowledge-graph + verification-plan refreshed.</text>
+        </Item>
+        <Item id="NFR-5">
+          <text>No new third-party dependency. RouterDecision parsing is hand-rolled (regex/line-scan over the documented prompts/inbox.md response format) — no LLM-JSON-mode change in Phase-A.</text>
+        </Item>
+      </non_functional>
+      <constraints>
+        <Item>Ru-only (D-032) — RouterDecision.notes is Russian, no i18n.</Item>
+        <Item>All DB datetimes UTC; raw/ filenames use UTC timestamps.</Item>
+        <Item>No bypass of pre-commit hooks.</Item>
+        <Item>prompts/inbox.md is the SSoT for the Router response format; the parser must follow it, and any format tightening (e.g. fenced key:value block) is a change to that file with a semver bump.</Item>
+        <Item>Phase-A is composition + a small new parser module; building blocks (ensure_inbox_wiki, run_wiki_session, Classifier) are unchanged.</Item>
+      </constraints>
+      <risks>
+        <Item id="R-1">
+          <text>Between Phase-A and Phase-B merge the bot no longer ingests anything into domain WIKIs — it only echoes the Router's notes. Mitigation: FR-5 keeps it conversational; the epic sequences B right after A; optionally A ships behind a settings flag (decided in Brainstorming).</text>
+        </Item>
+        <Item id="R-2">
+          <text>Free-text Router output is brittle to parse. Mitigation: FR-4 safe fallback to 'clarify'; consider tightening prompts/inbox.md to emit a fenced, machine-parseable block (Brainstorming decision); unit tests over real transcript samples.</text>
+        </Item>
+        <Item id="R-3">
+          <text>Double-run cost/latency if the old flat Stage-1 run is kept alongside the new Router run. Mitigation: Phase-A replaces the flat run for the routable intents (FR-3/FR-6), it does not add a second run.</text>
+        </Item>
+        <Item id="R-4">
+          <text>raw/ directory growth (one .md per message). Mitigation: out of scope for Phase-A; retention sweep of Inbox-WIKI/raw/ is a later ops task (note in epic), not a blocker.</text>
+        </Item>
+      </risks>
+      <scope>
+        <in>
+          <Item>ensure_inbox_wiki call wired into the pipeline path.</Item>
+          <Item>Raw payload staging into Inbox-WIKI/raw/ (text + media sidecar).</Item>
+          <Item>Router Stage-1a run in Inbox-WIKI/ cwd with prompts/inbox.md.</Item>
+          <Item>New RouterDecision model + parser module (e.g. src/ai_steward_wiki/inbox/router.py).</Item>
+          <Item>RouterDecision.notes delivered as the turn reply.</Item>
+          <Item>Intent gate (FR-6).</Item>
+          <Item>Unit tests (parser, staging path, intent gate) + an integration test that Claude really runs in Inbox-WIKI/ cwd.</Item>
+        </in>
+        <out>
+          <Item>Domain-WIKI lookup/create + file move + Stage-1b librarian ingest (Phase-B / aisw-zd9).</Item>
+          <Item>Inline-button confirmation loop (Phase-C / aisw-e45).</Item>
+          <Item>Router → cron/job bridge (Phase-D / aisw-kcz).</Item>
+          <Item>## Inbox hint fast-path + per-user media _staging migration (Phase-E / aisw-12t).</Item>
+        </out>
+        <later>
+          <Item>Retention sweep for Inbox-WIKI/raw/.</Item>
+          <Item>Possible switch of prompts/inbox.md to a strict machine-readable response envelope (if Brainstorming defers it).</Item>
+        </later>
+      </scope>
+    </requirements>
+  </Feature>
+  <Feature source="20260512-streaming-double-reply-discovery.md" bd_id="aisw-x92">
+    <feature>streaming-double-reply</feature>
+    <status>approved</status>
+    <date>2026-05-12</date>
+    <functional_requirements>
+      <Item id="FR-1">
+        <text>On the streaming slow-path, the assistant reply MUST be delivered to Telegram exactly once (via the StreamEditor placeholder edits); deliver_output MUST NOT additionally send a fresh TG message.</text>
+      </Item>
+      <Item id="FR-2">
+        <text>deliver_output MUST still persist the reply to disk and record the run output in audit.db on the slow-path (persistence/audit are unconditional, independent of TG send).</text>
+      </Item>
+      <Item id="FR-3">
+        <text>deliver_output / OutputDelivery.deliver gains a tg_send: bool = True parameter; DefaultStreamingDelivery slow-path calls it with tg_send=False. Fast-path and DefaultPipeline keep the default (tg_send=True).</text>
+      </Item>
+      <Item id="FR-4">
+        <text>StreamEditor.finalize MUST skip the edit_message_text call when the rendered final text equals the text of the last edit already sent — eliminating the spurious tg.stream.final_flush_failed / TelegramBadRequest 'message is not modified' warning on short replies.</text>
+      </Item>
+      <Item id="FR-5">
+        <text>Unit tests MUST enforce: (a) slow-path → sender.send_message NOT called by deliver_output, but disk-persist + audit record happen; (b) finalize with unchanged buffer → no edit call, no warning.</text>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item id="NFR-1">
+        <text>No change to fast-path behaviour, to OutputKind/DeliveryReceipt semantics, or to the D-025 hybrid policy (inline / chain-split / summary+document).</text>
+      </Item>
+      <Item id="NFR-2">
+        <text>structlog event tg.output.delivered keeps emitting on the slow-path (persistence happened); add a field tg_send=false so logs distinguish 'persisted only' from 'persisted + sent'.</text>
+      </Item>
+      <Item id="NFR-3">
+        <text>All existing unit tests for output.py, pipeline.py streaming, and stream_edit.py must still pass.</text>
+      </Item>
+    </non_functional_requirements>
+    <constraints>
+      <Item>OutputDelivery is a Protocol with two implementers in the codebase — both call sites and the Protocol signature must stay in sync (mypy --strict).</Item>
+      <Item>deliver_output already has many keyword args; tg_send is added as a keyword-only bool with a default, no positional churn.</Item>
+    </constraints>
+    <risks>
+      <Item>Risk: a third caller of deliver()/deliver_output exists that relies on the send. Mitigation: grep all call sites before edit; only DefaultPipeline (fast/non-stream) and DefaultStreamingDelivery (fast + slow) call it.</Item>
+      <Item>Risk: finalize 'unchanged' check compares post-balance text; if HtmlBalancer is non-deterministic the comparison could be wrong. Mitigation: balance is pure/deterministic; compare the exact string that would be sent against a stored _last_sent_text.</Item>
+    </risks>
+    <scope>
+      <in>
+        <Item>Add tg_send: bool = True (keyword-only) to deliver_output in src/ai_steward_wiki/tg/output.py — when False, skip the send_message/send_document branch but keep _persist_to_disk + _record_run_output + tg.output.delivered log (with tg_send field).</Item>
+        <Item>Add tg_send to OutputDelivery.deliver Protocol and to the concrete DefaultOutputDelivery.deliver wrapper in pipeline.py.</Item>
+        <Item>DefaultStreamingDelivery.run_and_deliver slow-path: call output.deliver(..., tg_send=False) at pipeline.py:968.</Item>
+        <Item>StreamEditor: track _last_sent_text; in finalize(), if final_text == _last_sent_text → return without edit (still set _finalized=True, log tg.stream.finalized with skipped=true). Update feed() to record _last_sent_text on every successful edit.</Item>
+        <Item>Bump CHANGE_SUMMARY headers in output.py, pipeline.py, stream_edit.py.</Item>
+        <Item>Tests: tests/unit/tg/test_output.py (tg_send=False path), tests/unit/tg/test_pipeline_streaming.py or equivalent (slow-path single delivery), tests/unit/tg/test_stream_edit.py (finalize no-op on unchanged buffer).</Item>
+      </in>
+      <out>
+        <Item>Splitting deliver_output into persist_and_audit() + send_reply_to_tg() — Variant 2, separate refactor.</Item>
+        <Item>Reworking the race timeout / when slow-path triggers — out of scope, behaviour is correct.</Item>
+        <Item>Token-level streaming (--include-partial-messages) — unrelated.</Item>
+      </out>
+      <later>
+        <Item>If deliver_output grows more modes, revisit Variant 2 (SoC split).</Item>
+      </later>
+    </scope>
+  </Feature>
+  <Feature source="20260512-wiki-runner-cli-fix-discovery.md" bd_id="aisw-d3i">
+    <feature>wiki-runner-cli-fix</feature>
+    <date>2026-05-12</date>
+    <status>draft</status>
+    <module_ids>
+      <Item>M-WIKI-RUNNER</Item>
+      <Item>M-CLASSIFIER-STAGE0</Item>
+      <Item>M-CLAUDE-CLI-COMMON</Item>
+    </module_ids>
+    <functional_requirements>
+      <Item id="FR-1">
+        <text>Stage-1 wiki runner MUST replace the default Claude Code system prompt with the assembled wiki prompt (base + overlay), not append to it, so the model adopts WIKI persona and not the default Claude Code assistant persona.</text>
+      </Item>
+      <Item id="FR-2">
+        <text>Stage-1 wiki runner MUST pass the prompt via a real CLI flag form accepted by the installed `claude` binary (concretely `--system-prompt-file &lt;path&gt;`); the legacy `--append-system-prompt @&lt;path&gt;` form MUST be removed because it is the documented cause of `exit_code=1, n_events=0` observed in production logs.</text>
+      </Item>
+      <Item id="FR-3">
+        <text>Stage-1 wiki runner MUST spawn `claude` with a neutral cwd (the read-only `claude_config_dir`) so that Claude Code's automatic CLAUDE.md walk-up does not inject the project's CLAUDE.md or global ~/.claude/CLAUDE.md into the model context; the wiki tree MUST be exposed solely via the explicit `--add-dir &lt;wiki_path&gt;` argument.</text>
+      </Item>
+      <Item id="FR-4">
+        <text>On non-zero CLI exit, the Stage-1 wiki runner MUST capture and log stderr (truncated, e.g. first 512 bytes) on `wiki.run.finish` (or a dedicated `wiki.run.error`) and propagate a `WikiRunnerError` upward instead of silently returning `WikiRunResult` with `exit_code != 0` and empty events — current behaviour masks failures as the user-facing fallback `"Принято."`.</text>
+      </Item>
+      <Item id="FR-5">
+        <text>Shared Claude CLI invocation primitives MUST live in a single module (`M-CLAUDE-CLI-COMMON`, e.g. `src/ai_steward_wiki/claude_cli/`) and be reused by both Stage-0 (`classifier/backend.py`) and Stage-1 (`wiki/runner.py`). Primitives in scope (strong DRY) - binary resolution (`shutil.which`), env builder (`PATH=/usr/bin:/bin` + `CLAUDE_CONFIG_DIR`), neutral-cwd resolution, the `--system-prompt-file &lt;path&gt;` + `--permission-mode dontAsk` flag fragment, and stderr-truncation helper for error logging. Stage-specific concerns (JSON envelope unwrap, stream-json parsing, allowed/disallowed tools, max-turns, output-format) remain in their respective backends.</text>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item id="NFR-1">
+        <text>Unit test for Stage-1 runner MUST assert (a) `--system-prompt-file` flag with the assembled path, (b) cwd equals `claude_config_dir`, (c) on non-zero exit the runner raises and stderr appears in the log call. Regression-pin against the same bug class fixed for Stage-0 in 4ebb5a0 + f08c912.</text>
+      </Item>
+      <Item id="NFR-2">
+        <text>No change to `WikiRunResult` schema, `StreamEvent` schema, `aggregate_text`, lock acquirer, transcript persistence, or kill-sequence behaviour. Surface-level refactor only.</text>
+      </Item>
+      <Item id="NFR-3">
+        <text>New `M-CLAUDE-CLI-COMMON` module MUST carry a MODULE_CONTRACT and be reflected in `docs/knowledge-graph.xml`; both Stage-0 and Stage-1 contracts MUST add it to `DEPENDS`.</text>
+      </Item>
+      <Item id="NFR-4">
+        <text>Behaviour preserved at Stage-0 — refactor does not alter the JSON envelope unwrap, the test double `FakeClaudeRunner`, or any public Stage-0 API (`ClassifierBackend.call`).</text>
+      </Item>
+    </non_functional_requirements>
+    <risks>
+      <Item id="R-1">
+        <text>Extracting common primitives can over-generalise (premature abstraction). Mitigation — limit shared API to functions already duplicated verbatim (binary resolve, env, cwd, system-prompt-file fragment, stderr truncation). No "ClaudeInvocationBuilder" class.</text>
+      </Item>
+      <Item id="R-2">
+        <text>Stage-1 currently uses different spawn semantics than Stage-0 (asyncio.create_subprocess_exec with `stdin=DEVNULL` + stream parse; Stage-0 uses `communicate(stdin=text)`). Shared module MUST NOT try to unify spawn — each stage keeps its own Spawner Protocol; only argv/env/cwd helpers are shared.</text>
+      </Item>
+      <Item id="R-3">
+        <text>Production logs show wiki run latency 2 s with exit 1 — confirms `--append-system-prompt @path` parse-failure hypothesis, but stderr is currently not read, so verification of root cause needs a one-off invocation (or test) that captures stderr before the fix is committed.</text>
+      </Item>
+      <Item id="R-4">
+        <text>Per-WIKI CLAUDE.md inside `wiki_path` (D-007) is *expected* to be discovered. Switching cwd to `claude_config_dir` and exposing wiki via `--add-dir` MUST preserve that — verify Claude Code still walks the `--add-dir` tree for CLAUDE.md (per `f08c912` commit message, auto-discovery walks *from cwd*, not from `--add-dir`; if so, per-WIKI overlay must be assembled into the prompt explicitly via `assemble_prompt`). If verification fails, fallback is to keep cwd=wiki_path but explicitly disable parent CLAUDE.md walk (no known flag) — escalate as ADR if hit.</text>
+      </Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/wiki/runner.py (_build_argv, run_wiki_session — flag + cwd + stderr logging)</Item>
+      <Item>src/ai_steward_wiki/classifier/backend.py (refactor to use shared primitives, no behaviour change)</Item>
+      <Item>src/ai_steward_wiki/claude_cli/ (new module M-CLAUDE-CLI-COMMON)</Item>
+      <Item>tests/unit/wiki/test_runner.py (regression tests for the 3 invariants)</Item>
+      <Item>tests/unit/classifier/test_cli_envelope.py (adapt assertions to shared helpers; behaviour unchanged)</Item>
+      <Item>docs/knowledge-graph.xml (new module + DEPENDS updates)</Item>
+    </scope_in>
+    <scope_out>
+      <Item>aggregate_text logic, StreamEvent parsing, lock acquisition, kill-sequence, transcript persistence</Item>
+      <Item>prompt content changes (prompts/wiki.md, prompts/classifier.md)</Item>
+      <Item>AnthropicApiBackend, systemd-run wrapper (chunk 16)</Item>
+      <Item>Pipeline-level fallback strings (ACK_TEXT_RU stays as-is)</Item>
+      <Item>Per-WIKI CLAUDE.md overlay semantics — out of scope unless R-4 verification forces escalation</Item>
+    </scope_out>
+  </Feature>
+  <Feature source="20260512-wiki-runner-verbose-discovery.md" bd_id="aisw-kpb">
+    <feature>wiki-runner-verbose</feature>
+    <status>approved</status>
+    <date>2026-05-12</date>
+    <functional_requirements>
+      <Item id="FR-1">
+        <text>M-WIKI-RUNNER MUST pass --verbose to the claude CLI whenever it uses --print (-p) together with --output-format stream-json, so the CLI does not exit rc=1.</text>
+      </Item>
+      <Item id="FR-2">
+        <text>A unit test MUST enforce the invariant: if 'stream-json' is present in the runner argv, then '--verbose' is also present.</text>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item id="NFR-1">
+        <text>No change to Spawner protocol, stdin piping, or stream-json event parsing — fix is confined to argv construction.</text>
+      </Item>
+      <Item id="NFR-2">
+        <text>Existing happy-path test (test_run_wiki_session_happy_path) and stream parser tests must still pass.</text>
+      </Item>
+    </non_functional_requirements>
+    <risks>
+      <Item>Risk: --verbose may inject extra diagnostic/system-init events into the stream. Mitigation: existing _concat_assistant_text filters by event type; FakeSpawner lines in tests already model only assistant/final events — verify happy-path still green.</Item>
+    </risks>
+    <scope>
+      <in>
+        <Item>Add '--verbose' to _build_argv in src/ai_steward_wiki/wiki/runner.py.</Item>
+        <Item>Add argv invariant assertion to tests/unit/wiki/test_runner.py.</Item>
+        <Item>Bump CHANGE_SUMMARY in runner.py header.</Item>
+      </in>
+      <out>
+        <Item>Switching wiki runner to --output-format json (non-streaming) — separate architectural change.</Item>
+        <Item>Centralising CLI flags into claude_cli_common — separate refactor.</Item>
+        <Item>Pre-flight CLI flag smoke-check at startup — separate hardening task.</Item>
+      </out>
+      <later>
+        <Item>Optional: --include-partial-messages for token-level streaming (not required for MVP).</Item>
+      </later>
+    </scope>
+  </Feature>
+  <Feature source="20260513-digest-actionable-cards-discovery.md" bd_id="aisw-163">
+    <title>Inbox-WIKI digest: actionable inline cards (±2h)</title>
+    <date>2026-05-13</date>
+    <phase>discovery</phase>
+    <status>draft</status>
+    <related>
+      <adr>
+        <Item>ADR-025-digest-interactive-surface.md</Item>
+        <Item>ADR-006-inbox-wiki-reminder-cron-bridge.md</Item>
+        <Item>ADR-024-digest-presentation.md</Item>
+      </adr>
+      <spec_decisions>
+        <Item>D-023-confirmation-flow</Item>
+        <Item>D-024-digest-format</Item>
+      </spec_decisions>
+      <bd_parent>aisw-269</bd_parent>
+      <bd_epic>aisw-t2r</bd_epic>
+    </related>
+    <fr>
+      <Item id="FR-1">
+        <text>Digest emits a separate Telegram message with inline keyboard for every owner reminder_job whose fire-time falls in [now-2h, now+2h] window at digest fire time.</text>
+      </Item>
+      <Item id="FR-2">
+        <text>Reminder cards carry category-specific button sets — medication: ✅Принял / ⏰+30мин / ❌Skip; event: 📍Я в пути / ⏰Опаздываю / ❌Отменить; generic: ✅Сделал / ⏰+30мин / ❌Skip.</text>
+      </Item>
+      <Item id="FR-3">
+        <text>Reminder card buttons mutate persistent state in jobs.db (NOT in sessions.db) — done/snoozed/skipped — so the next digest no longer surfaces a resolved card.</text>
+      </Item>
+      <Item id="FR-4">
+        <text>Snooze (+30мин) reschedules the same job to fire 30 minutes later (single new APScheduler DateTrigger), preserving job_id, message, lead_time_min.</text>
+      </Item>
+      <Item id="FR-5">
+        <text>pending_confirmation surface stays out of digest cards (data-source mismatch: TTL 10min vs digest cadence — see ADR-025 §Options.1); covered later by a separate long-lived needs-answer queue.</text>
+      </Item>
+      <Item id="FR-6">
+        <text>Cards appear AFTER the digest summary message but BEFORE the document fallthrough (D-025 hybrid order); read-only items stay buttonless in the summary.</text>
+      </Item>
+      <Item id="FR-7">
+        <text>Card emission is opt-out via user_digest_prefs.cards_enabled (default ON); reuses ADR-026 toggle infra.</text>
+      </Item>
+      <Item id="FR-8">
+        <text>Each button press is acked with a single short ru reply (≤1 line), no Claude call; idempotent — pressing the same button twice is a no-op.</text>
+      </Item>
+    </fr>
+    <nfr>
+      <Item id="NFR-1">
+        <type>latency</type>
+        <text>Card emission per reminder ≤50ms (no Claude, no HTTP — pure DB scan + TG send).</text>
+      </Item>
+      <Item id="NFR-2">
+        <type>observability</type>
+        <text>Log anchors: tg.command.reminder_card.{pressed,done,snoozed,skipped,idempotent_noop,owner_mismatch}; scheduler.digest.cards_emitted with count by category.</text>
+      </Item>
+      <Item id="NFR-3">
+        <type>security</type>
+        <text>Callback owner-check: only the reminder_job.owner_telegram_id may resolve the card; foreign user_id ⇒ silent ack + owner_mismatch log.</text>
+      </Item>
+      <Item id="NFR-4">
+        <type>backwards_compat</type>
+        <text>Existing reminder_job rows (no category, no state) keep firing unchanged via DateTrigger; only the digest surface materialises cards for them as 'generic'.</text>
+      </Item>
+      <Item id="NFR-5">
+        <type>testability</type>
+        <text>≥90% line coverage on new modules; integration test: create reminder → fire digest → assert card → press button → assert state + assert next digest skips it.</text>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>No new third-party deps.</Item>
+      <Item>Schema change is alembic/jobs/0002_*; no sessions.db migration in this feature.</Item>
+      <Item>ReminderPayload version bump 0.0.3 → 0.0.4; legacy rows MUST keep validating (category default 'generic', state default 'pending').</Item>
+      <Item>Ru-only strings (D-032).</Item>
+    </constraints>
+    <risks>
+      <Item id="R-1">
+        <text>Schema-rollout risk: existing rows missing category/state. Mitigation — migration backfills 'generic'/'pending' for all existing reminder_job rows in one DDL+UPDATE alembic step.</text>
+      </Item>
+      <Item id="R-2">
+        <text>Card explosion: a heavy reminder schedule could emit ≥10 cards per digest, drowning the summary. Mitigation — hard cap N=8 per digest, oldest first, residual count appended to summary footer.</text>
+      </Item>
+      <Item id="R-3">
+        <text>Idempotency race: user double-taps in &lt;1s. Mitigation — DB-level UPDATE … WHERE state='pending' (single-row CAS); second hit returns 0 rows ⇒ idempotent_noop ack.</text>
+      </Item>
+      <Item id="R-4">
+        <text>Snooze recursion: snooze emits a new card 30min later, which user snoozes again. Mitigation — max_snooze_count=3 per job; 4th press collapses to skip ack.</text>
+      </Item>
+      <Item id="R-5">
+        <text>Category misclassification: medication labelled as event ⇒ wrong button set. Mitigation — classification happens at create_reminder_job time (NL pipeline), changeable via /reminder_edit (deferred — out of scope).</text>
+      </Item>
+    </risks>
+    <scope>
+      <in>
+        <Item>ReminderPayload.category: Literal['medication','event','generic'] = 'generic' (semver 0.0.3 → 0.0.4).</Item>
+        <Item>jobs.jobs.user_state column (alembic/jobs/0002_user_state): TEXT NOT NULL DEFAULT 'pending' CHECK IN ('pending','done','snoozed','skipped').</Item>
+        <Item>jobs.jobs.snooze_count column: INTEGER NOT NULL DEFAULT 0.</Item>
+        <Item>M-DIGEST-CARDS new module: window_query → card render → emit; integrates into fire_digest_job between summary delivery and document fallthrough.</Item>
+        <Item>M-TG-CALLBACKS new module: callback_data parser, owner-check, state mutator, snooze rescheduler, ack sender.</Item>
+        <Item>user_digest_prefs.cards_enabled BOOL DEFAULT 1 (sessions.db, alembic/sessions/0002 — extends ADR-026 row).</Item>
+        <Item>/digest_now and cron digest both emit cards (reuse via fire_digest_job).</Item>
+        <Item>Integration tests: card emission, button press, snooze, skip, idempotency, owner-check.</Item>
+      </in>
+      <out>
+        <Item>pending_confirmation cards (no long-lived needs-answer queue yet — own future bd).</Item>
+        <Item>Card editing / reschedule UX beyond snooze+30.</Item>
+        <Item>Per-category templates configurable by user.</Item>
+        <Item>i18n / non-ru strings.</Item>
+        <Item>Card delivery on /expand (only /digest_now and cron digest).</Item>
+        <Item>Webhook/inline-mode equivalents.</Item>
+      </out>
+    </scope>
+    <open_questions>
+      <Item id="Q-1">
+        <text>Snooze ±30 — fixed at 30min or configurable per category (med ±15, event ±10)? (recommend fixed 30 for MVP)</text>
+      </Item>
+      <Item id="Q-2">
+        <text>user_state on Job row vs separate reminder_state table? Choice impacts indexability and audit trail. (recommend column for MVP — single-writer, no history needed yet)</text>
+      </Item>
+      <Item id="Q-3">
+        <text>Card cap N=8 — tuneable? (recommend hardcoded constant + log overflow; ADR if user requests)</text>
+      </Item>
+      <Item id="Q-4">
+        <text>Should /digest_now emit cards on demand even if scheduled digest already emitted them today (duplicate cards)? (recommend yes — /digest_now is user-initiated, idempotency on press handles duplicates safely)</text>
+      </Item>
+    </open_questions>
+    <stakeholders>
+      <Item>
+        <role>owner (telegram user)</role>
+        <impact>Gets actionable cards in digest; can resolve reminders in one tap.</impact>
+      </Item>
+      <Item>
+        <role>bot operator (admin)</role>
+        <impact>New module M-DIGEST-CARDS + M-TG-CALLBACKS, new alembic migration on jobs.db AND sessions.db.</impact>
+      </Item>
+      <Item>
+        <role>scheduler</role>
+        <impact>Snooze creates new DateTrigger via existing add_job path.</impact>
+      </Item>
+    </stakeholders>
+    <preflight>
+      <lint_baseline_errors>0</lint_baseline_errors>
+      <hooks_path>.beads/hooks</hooks_path>
+      <sentrux_rules_present>False</sentrux_rules_present>
+      <parent_bd_aisw_269>closed</parent_bd_aisw_269>
+      <adr_025_status>accepted</adr_025_status>
+    </preflight>
+  </Feature>
+  <Feature source="20260513-reminder-fastpath-fix-discovery.md" bd_id="aisw-5q5">
+    <title>Reminder fast-path broken end-to-end — Discovery</title>
+    <status>approved</status>
+    <risk>medium</risk>
+    <evidence>strong</evidence>
+    <date>2026-05-13</date>
+    <modules_touched>
+      <Item>M-TG-PIPELINE</Item>
+      <Item>M-CLASSIFIER-STAGE0</Item>
+      <Item>M-CLASSIFIER-TIME</Item>
+      <Item>prompts/classifier.md</Item>
+      <Item>prompts/time-parse.md</Item>
+    </modules_touched>
+    <open_questions/>
+    <sources>
+      <Item>
+        <correlation_id>1396ef6b-4ff1-4636-b143-a2840ba3e347</correlation_id>
+      </Item>
+      <Item>
+        <log_evidence>/tmp/aisw.log @ 2026-05-13T12:25:16…12:25:30Z</log_evidence>
+      </Item>
+      <Item>
+        <traceback_file>src/ai_steward_wiki/classifier/backend.py:262 ClassifierSchemaError</traceback_file>
+      </Item>
+      <Item>
+        <dateparser_probe>local repl, dateparser 1.2.0, RU+EN, RELATIVE_BASE+PREFER_DATES_FROM=future</dateparser_probe>
+      </Item>
+      <Item>
+        <tech_spec>docs/Spec-WIKI/research/tech-spec-draft.md D-010 (NL time parsing)</tech_spec>
+      </Item>
+    </sources>
+  </Feature>
+  <Feature source="20260513-scheduler-jobstore-split-discovery.md" bd_id="aisw-6mi">
+    <feature>scheduler-jobstore-split</feature>
+    <module_id>M-SCHEDULER</module_id>
+    <status>stable</status>
+    <date>2026-05-13</date>
+    <fr>
+      <Item>
+        <FR-1>Boot the bot without AttributeError from SQLAlchemyJobStore pickling</FR-1>
+      </Item>
+      <Item>
+        <FR-2>Maintenance/retention/snapshot/media-sweep jobs run in a non-persistent (in-memory) jobstore</FR-2>
+      </Item>
+      <Item>
+        <FR-3>User reminder jobs continue to persist in jobs.db (SQLAlchemyJobStore default)</FR-3>
+      </Item>
+      <Item>
+        <FR-4>Idempotent registration on every boot via replace_existing=True (unchanged)</FR-4>
+      </Item>
+      <Item>
+        <FR-5>One-time cleanup at boot — orphaned maintenance rows already in jobs.db are removed before re-registering into memory store</FR-5>
+      </Item>
+      <Item>
+        <FR-6>Smoke test registers all maintenance jobs on an AsyncIOScheduler and asserts no pickle error</FR-6>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>No change to user-facing reminder behaviour or durability</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>structlog event scheduler.bootstrap.legacy_maintenance_purged with count</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>mypy --strict + ruff + grace lint clean</NFR-3>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>APScheduler 3.x semantics; jobstore alias used at add_job time</Item>
+      <Item>SQLAlchemyJobStore must keep sync URL; MemoryJobStore takes no URL</Item>
+    </constraints>
+    <risks>
+      <Item>Leftover maintenance rows in jobs.db block re-registration with same id in a different store → mitigated by FR-5 one-time cleanup</Item>
+      <Item>Future code paths that add maintenance jobs without jobstore="memory" silently regress → mitigated by smoke test</Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/scheduler/core.py (build_scheduler — add memory jobstore)</Item>
+      <Item>src/ai_steward_wiki/scheduler/maintenance.py (purge_expired_pending + media sweep → memory)</Item>
+      <Item>src/ai_steward_wiki/ops/retention.py (register_retention_jobs → memory)</Item>
+      <Item>src/ai_steward_wiki/ops/snapshot.py (register_db_snapshot_job → memory)</Item>
+      <Item>src/ai_steward_wiki/__main__.py (boot-time legacy cleanup, after build_scheduler before register)</Item>
+      <Item>tests/unit/scheduler/test_maintenance_jobstore.py (new smoke test)</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Refactor of run_purge to drop sessionmaker dependency</Item>
+      <Item>Migration of any user reminder logic</Item>
+    </scope_out>
+  </Feature>
+  <Feature source="20260513-start-help-manual-discovery.md" bd_id="aisw-s5i">
+    <feature>start-help-manual</feature>
+    <status>discovery</status>
+    <date>2026-05-13</date>
+    <requirements>
+      <fr>
+        <Item id="FR-1">
+          <title>/start handler — branched by user state</title>
+          <body>Bot MUST register a `/start` command handler. For an unknown `telegram_id` (not in allowlist) it invokes the existing `auth.onboarding.start_unknown_user` + `format_intro_message` pipeline (D-030). For an approved (allowlisted) user it renders a new template `templates/start-known.ru.md` containing a short greeting, brief how-to-start, and pointers to `/help` and `/manual`.
+</body>
+        </Item>
+        <Item id="FR-2">
+          <title>/help handler — capabilities + command list</title>
+          <body>`/help` MUST render `templates/help.ru.md` for any user (approved or pending). Content includes the D-041 mandatory WIKI-explainer paragraph verbatim, a short list of main scenarios (note, reminder, digest, voice/photo), and a cheat-sheet of all six commands.
+</body>
+        </Item>
+        <Item id="FR-3">
+          <title>/manual handler — extended scenarios</title>
+          <body>`/manual` MUST render `templates/manual.ru.md` for any user. Content expands on `/help` with worked scenarios (creating a WIKI by NL, setting a recurring digest, expanding a digest section, toggling sections).
+</body>
+        </Item>
+        <Item id="FR-4">
+          <title>Template loader — slug-validated, reusable</title>
+          <body>A slug-validated template loader (already exists as `auth.onboarding._render_intro_template` / `format_intro_message`) MUST be extracted or extended so the three new templates and the existing `onboarding-intro.ru.md` share one code path. Slugs in templates are validated against a per-template allowlist; missing/extra slugs raise at load time.
+</body>
+        </Item>
+        <Item id="FR-5">
+          <title>Native TG command menu</title>
+          <body>At bot startup the runtime MUST call `bot.set_my_commands([...])` with all six commands (`/start`, `/help`, `/manual`, `/digest_now`, `/expand`, `/digest_sections`) and Russian descriptions, so the Telegram client shows them in the `≡` menu.
+</body>
+        </Item>
+        <Item id="FR-6">
+          <title>Auth middleware pass-through</title>
+          <body>`tg/middleware_auth.py` MUST allow `/help` and `/manual` from any `telegram_id` (same exemption family as `/start`), so unknown users can read about the bot before requesting access. The middleware MUST NOT, however, allow `/digest_*` or `/expand` for non-allowlisted ids.
+</body>
+        </Item>
+      </fr>
+      <nfr>
+        <Item id="NFR-1">
+          <title>RU-only</title>
+          <body>All user-facing strings in Russian (D-032 MVP). No i18n catalog.</body>
+        </Item>
+        <Item id="NFR-2">
+          <title>SSoT</title>
+          <body>Command text lives in `templates/*.md`, not in code. Code only renders. Tests assert that templates load with required slugs; text correctness is reviewed via PR diff.
+</body>
+        </Item>
+        <Item id="NFR-3">
+          <title>TDD</title>
+          <body>Each handler and loader change goes through RED → GREEN → REFACTOR. Unit tests cover loader (happy + malformed), each handler branch (known / unknown for /start; flat for /help, /manual), and middleware exemption logic.
+</body>
+        </Item>
+        <Item id="NFR-4">
+          <title>Observability</title>
+          <body>structlog events per existing convention — `tg.command.start`, `tg.command.help`, `tg.command.manual` with `correlation_id`, `owner_telegram_id`, `state` (known|pending|unknown). No PII in logs.
+</body>
+        </Item>
+        <Item id="NFR-5">
+          <title>D-041 text compliance</title>
+          <body>`/help` template MUST contain the exact WIKI-explainer paragraph defined in D-041 (load-bearing — referenced by other specs).
+</body>
+        </Item>
+        <Item id="NFR-6">
+          <title>Idempotent /start for unknown</title>
+          <body>`/start` from unknown id repeated → pending_users row refreshed, not duplicated (already guaranteed by `start_unknown_user`).
+</body>
+        </Item>
+      </nfr>
+      <constraints>
+        <Item id="C-1">
+          <body>aiogram 3.x router pattern, asyncio, no blocking I/O in handlers.</body>
+        </Item>
+        <Item id="C-2">
+          <body>Template path is `templates/` at repo root (project convention).</body>
+        </Item>
+        <Item id="C-3">
+          <body>No new dependencies — use stdlib + existing aiogram.</body>
+        </Item>
+      </constraints>
+      <risks>
+        <Item id="R-1">
+          <body>`set_my_commands` is cached by Telegram clients; description changes propagate with delay. Acceptable — content lives in templates, native menu only shows command names.
+</body>
+          <mitigation>Document delay in CLAUDE.md (one-line note).</mitigation>
+        </Item>
+        <Item id="R-2">
+          <body>Adding /help and /manual for unknown ids could be abused for reconnaissance / amplification.
+</body>
+          <mitigation>Rate-limit via existing middleware if present; otherwise accept in MVP — content is public-by-design.
+</mitigation>
+        </Item>
+        <Item id="R-3">
+          <body>`auth.onboarding.format_intro_message` is slug-tight (exact match required). Extracting a generic loader risks regression in the existing intro flow.
+</body>
+          <mitigation>Keep existing function as adapter calling the new generic loader. Re-run existing onboarding tests as part of Step 11.
+</mitigation>
+        </Item>
+        <Item id="R-4">
+          <body>D-041 mandatory paragraph might be quoted with minor drift if copied by hand.
+</body>
+          <mitigation>Plan step lifts the exact text from `docs/Spec-WIKI/decisions/D-041-no-direct-wiki-commands.md` via Read tool and pastes verbatim into the template.
+</mitigation>
+        </Item>
+      </risks>
+      <dependencies>
+        <Item>aiogram 3.15 (existing)</Item>
+        <Item>auth.onboarding.PendingUserRepo (existing, D-030)</Item>
+        <Item>auth.allowlist (existing, D-031/D-042)</Item>
+        <Item>tg.middleware_auth (existing, modified)</Item>
+        <Item>templates/onboarding-intro.ru.md (existing reference)</Item>
+      </dependencies>
+      <scope>
+        <in>
+          <Item>Three new templates (start-known, help, manual) — ru.</Item>
+          <Item>Three new handlers in tg/handlers.py.</Item>
+          <Item>Shared slug-validated template loader (extract/reuse).</Item>
+          <Item>bot.set_my_commands at startup.</Item>
+          <Item>Middleware exemption for /help, /manual.</Item>
+          <Item>Unit tests for loader, handlers, middleware.</Item>
+        </in>
+        <out>
+          <Item>English / multi-language support (D-032 defers).</Item>
+          <Item>Self-signup full flow (ENABLE_SELF_SIGNUP=false stays).</Item>
+          <Item>/admin namespace (D-028, out of MVP).</Item>
+          <Item>Read-only WIKI commands /wiki_list, /wiki_show (D-041, separate feature).</Item>
+          <Item>Rate-limiting middleware overhaul.</Item>
+        </out>
+        <later>
+          <Item>i18n catalog when EN support lands.</Item>
+          <Item>Dynamic command list (admin sees more commands).</Item>
+        </later>
+      </scope>
+      <use_cases>
+        <Item id="UC-1">
+          <actor>unknown user</actor>
+          <flow>sends `/start` → middleware pass → handler routes to onboarding.start_unknown_user → bot replies with formatted intro template, instructing to wait for admin.</flow>
+        </Item>
+        <Item id="UC-2">
+          <actor>approved user, first contact</actor>
+          <flow>sends `/start` → middleware pass → handler renders start-known.ru.md → user sees greeting + pointer to /help and /manual.</flow>
+        </Item>
+        <Item id="UC-3">
+          <actor>any user</actor>
+          <flow>sends `/help` → middleware pass (new exemption) → handler renders help.ru.md → user sees D-041 WIKI-explainer + cheat-sheet of 6 commands.</flow>
+        </Item>
+        <Item id="UC-4">
+          <actor>any user</actor>
+          <flow>sends `/manual` → middleware pass (new exemption) → handler renders manual.ru.md → user sees worked scenarios.</flow>
+        </Item>
+        <Item id="UC-5">
+          <actor>telegram client (UI)</actor>
+          <flow>on bot startup `set_my_commands` populates native `≡` menu with 6 commands and RU descriptions; user discovers commands without typing.</flow>
+        </Item>
+      </use_cases>
+    </requirements>
+  </Feature>
+  <Feature source="20260514-cron-add-queue-walking-skeleton-discovery.md" bd_id="aisw-02v">
+    <feature>cron-add-queue-walking-skeleton</feature>
+    <date>2026-05-14</date>
+    <status>discovery</status>
+    <risk>medium</risk>
+    <risk_justification>3-4 modules touched (new M-TG-CRON-ADD, M-SCHEDULER-QUEUE-PRODUCER, M-SCHEDULER-QUEUE-CONSUMER; reuse M-CLASSIFIER-RECURRENCE), new user-facing TG command (public API surface), no DB schema change beyond reusing jobs.db SQLAlchemyJobStore, no auth/security change, reversible (purely additive).</risk_justification>
+    <evidence>strong</evidence>
+    <evidence_sources>
+      <Item>Q&amp;A 4/4 decisions recorded 2026-05-14 (audit trail in aisw-02v notes)</Item>
+      <Item>Existing direct-fire pattern: src/ai_steward_wiki/scheduler/maintenance.py (digest_job, aisw-oqq commit 95672ab)</Item>
+      <Item>PriorityJobQueue stub: src/ai_steward_wiki/scheduler/queue.py (Lane enum, QueueItem, aisw-19o Phase-D.b)</Item>
+      <Item>M-CLASSIFIER-RECURRENCE typed monthly recurrence: commit e5e275a</Item>
+      <Item>tech-spec §3 D-011 (docs/Spec-WIKI/research/tech-spec-draft.md)</Item>
+      <Item>CLAUDE.md identity vocab D-042 (telegram_id/owner_telegram_id/chat_id/user_id)</Item>
+    </evidence_sources>
+    <open_questions/>
+    <functional_requirements>
+      <Item>
+        <FR-1>TG handler `/cron_add &lt;NL recurrence&gt; | &lt;command&gt;` accepts user input, validates via M-CLASSIFIER-RECURRENCE NL parser, persists APScheduler job to jobs.db (SQLAlchemyJobStore), replies with job_id + parsed cron expression.</FR-1>
+      </Item>
+      <Item>
+        <FR-2>APScheduler CronTrigger fires on schedule → producer callback constructs CronJobPayload(chat_id, command, correlation_id, owner_telegram_id, job_id) → PriorityJobQueue.put(lane=USER, item=payload).</FR-2>
+      </Item>
+      <Item>
+        <FR-3>Consumer async loop drains PriorityJobQueue (await get()), for each item: spawns systemd-run --scope cli-&lt;job_id&gt;.scope claude-code CLI with the command, captures stdout, timeout=600s.</FR-3>
+      </Item>
+      <Item>
+        <FR-4>Consumer delivers CLI result (or error message in Russian) via bot.send_message(chat_id, text). Long results chunked per Telegram 4096-char limit (reuse existing tg/output.py chunking).</FR-4>
+      </Item>
+      <Item>
+        <FR-5>Both /cron_add and consumer log structlog events with correlation_id, owner_telegram_id, chat_id, job_id, wiki_id at every decision point (BLOCK markers per logging convention).</FR-5>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item>
+        <NFR-1>Lane=USER (priority 1, between URGENT and DIGEST). Consumer concurrency: single drain loop (asyncio.Task in bot lifecycle), at-most-once delivery for MVP.</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>CLI timeout = 600s (D-011 §3). Timeout → consumer kills scope, sends '❌ Timeout' to chat. Exit-code != 0 → sends '❌ Error: &lt;stderr tail&gt;'.</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>All datetimes in DB = UTC. NL recurrence parsed against user_tz from sessions.db (existing pattern). APScheduler job stores tz-aware trigger.</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4>Ru-only user-facing strings (MVP D-032). No i18n catalog.</NFR-4>
+      </Item>
+      <Item>
+        <NFR-5>Mypy --strict on all new src/. Pydantic v2 discriminated union for CronJobPayload (add to existing payload union in scheduler/queue.py or sibling).</NFR-5>
+      </Item>
+      <Item>
+        <NFR-6>Tests: unit ≥80% coverage on producer callback + consumer drain loop; integration test that pushes 1 fake CronJobPayload and asserts bot.send_message called with stub CLI output.</NFR-6>
+      </Item>
+    </non_functional_requirements>
+    <risks>
+      <Item>
+        <R-1>
+          <desc>aiogram Bot instance ref leaking into scheduler/ layer (coupling).</desc>
+          <mitigation>Inject bot via constructor/DI into consumer. Already precedent in maintenance.py — not a new coupling.</mitigation>
+        </R-1>
+      </Item>
+      <Item>
+        <R-2>
+          <desc>systemd-run --scope cleanup failures (orphaned scopes on consumer crash).</desc>
+          <mitigation>Use `--scope --collect` flag; structured log on every spawn/exit; aisw-bot.service Restart=on-failure already configured.</mitigation>
+        </R-2>
+      </Item>
+      <Item>
+        <R-3>
+          <desc>APScheduler SQLAlchemyJobStore + asyncio race conditions on persistent jobs.</desc>
+          <mitigation>AsyncIOScheduler is officially supported; jobs.db WAL+busy_timeout already set; reuse existing init pattern from scheduler/core.py.</mitigation>
+        </R-3>
+      </Item>
+      <Item>
+        <R-4>
+          <desc>NL recurrence parsing edge cases (ambiguous user input) — bad cron silently scheduled.</desc>
+          <mitigation>M-CLASSIFIER-RECURRENCE returns parsed expression; /cron_add replies with HUMAN-readable rendition (e.g. 'каждый день в 09:00 МСК') and asks confirm (reuse confirm.py pattern); reject on parser error with clear ru message.</mitigation>
+        </R-4>
+      </Item>
+      <Item>
+        <R-5>
+          <desc>Bot offline when CronTrigger fires → producer cannot push to in-memory queue.</desc>
+          <mitigation>APScheduler persistent jobstore replays missed_executions=1 on startup; for MVP at-most-once is acceptable (D-032 scope). Document as known limitation.</mitigation>
+        </R-5>
+      </Item>
+      <Item>
+        <R-6>
+          <desc>User schedules many cron jobs → queue backpressure.</desc>
+          <mitigation>PriorityJobQueue is unbounded asyncio.PriorityQueue; lane=USER drains in FIFO within lane; out-of-scope: per-user rate limit (follow-up issue).</mitigation>
+        </R-6>
+      </Item>
+    </risks>
+    <scope>
+      <in>
+        <Item>TG handler /cron_add</Item>
+        <Item>Persistence via existing APScheduler SQLAlchemyJobStore (jobs.db)</Item>
+        <Item>Producer callback (APScheduler→queue)</Item>
+        <Item>Consumer drain loop</Item>
+        <Item>systemd-run --scope CLI invocation</Item>
+        <Item>bot.send_message delivery (text chunking via tg/output.py)</Item>
+        <Item>structlog instrumentation</Item>
+        <Item>Unit + 1 integration test (skeleton)</Item>
+      </in>
+      <out>
+        <Item>/cron_list, /cron_delete, /cron_edit (separate follow-up bd issues)</Item>
+        <Item>Retry/backoff policy (separate follow-up)</Item>
+        <Item>Dead-letter queue for failed jobs (separate)</Item>
+        <Item>Multi-user share / ACL</Item>
+        <Item>Per-user rate limit</Item>
+        <Item>i18n</Item>
+        <Item>Multi-process / distributed worker</Item>
+      </out>
+      <later>
+        <Item>After this epic closes — create bd issues for CRUD + retry policy + DLQ wiring</Item>
+      </later>
+    </scope>
+    <dependencies>
+      <affects>
+        <Item>M-CLASSIFIER-RECURRENCE (reused as-is, no contract change)</Item>
+        <Item>scheduler/queue.py (PriorityJobQueue gets first real consumer + producer)</Item>
+        <Item>scheduler/core.py (AsyncIOScheduler wiring, may need consumer task lifecycle hook)</Item>
+        <Item>tg/handlers.py (new /cron_add handler registration)</Item>
+        <Item>tg/pipeline.py (route /cron_add command before/after existing pipeline)</Item>
+      </affects>
+      <breaks/>
+    </dependencies>
+    <stakeholders>
+      <Item>Bot users wanting recurring CLI execution (e.g. daily health brief)</Item>
+      <Item>Future maintenance/digest jobs that may migrate to queue (out of scope here)</Item>
+    </stakeholders>
+    <best_practices>
+      <Item>Walking Skeleton (Cockburn) — vertical slice end-to-end</Item>
+      <Item>Vertical Slice Architecture (Jimmy Bogard) — feature contains all layers thin</Item>
+      <Item>YAGNI — defer CRUD/retry/DLQ until evidence of need</Item>
+      <Item>Producer-first queue design (Celery/RQ/arq evolution pattern)</Item>
+      <Item>Pydantic discriminated union for typed message payloads (FastAPI pattern, also matches existing QueueItem design)</Item>
+    </best_practices>
+    <common_mistakes_avoided>
+      <Item>Building consumer without producer (caught by initial YAGNI gate)</Item>
+      <Item>Designing speculative payload shape (driven by real /cron_add contract instead)</Item>
+      <Item>Building CRUD before walking skeleton works</Item>
+      <Item>Tight coupling consumer to specific delivery channel (mitigated by bot DI)</Item>
+    </common_mistakes_avoided>
   </Feature>
 </Requirements>

@@ -1,5 +1,55 @@
 <?xml version="1.0" ?>
 <Technology generated="auto" source="YAML frontmatter of markdown specs">
+  <Feature source="20260510-auth-users-design.md" bd_id="aisw-hnl">
+    <feature>auth-users-allowlist</feature>
+    <status>stable</status>
+    <date>2026-05-10</date>
+    <stack>
+      <Item>
+        <python>3.11+</python>
+      </Item>
+      <Item>
+        <tomllib>stdlib (read-only TOML parser)</tomllib>
+      </Item>
+      <Item>
+        <pydantic>v2 (already in deps)</pydantic>
+      </Item>
+      <Item>
+        <watchdog>6.0.0 (already in deps)</watchdog>
+      </Item>
+      <Item>
+        <sqlalchemy>async (already in deps)</sqlalchemy>
+      </Item>
+    </stack>
+  </Feature>
+  <Feature source="20260510-classifier-stage0-design.md" bd_id="aisw-5">
+    <feature>classifier-stage0-and-nl-time</feature>
+    <status>stable</status>
+    <date>2026-05-10</date>
+    <stack>
+      <Item>
+        <python>3.11+</python>
+      </Item>
+      <Item>
+        <pydantic>v2 (already in deps) — strict validation of CLI JSON output</pydantic>
+      </Item>
+      <Item>
+        <dateparser>1.2.0 — rule-based NL time parsing, ru/en</dateparser>
+      </Item>
+      <Item>
+        <structlog>already in deps</structlog>
+      </Item>
+      <Item>
+        <asyncio>stdlib — subprocess via asyncio.create_subprocess_exec</asyncio>
+      </Item>
+      <Item>
+        <sqlalchemy>async (already in deps) — audit.prompt_versions writes</sqlalchemy>
+      </Item>
+      <Item>
+        <claude_cli>external binary, invoked via systemd-run --scope per call (chunk 16 wiring; chunk 5 stubs the wrapper)</claude_cli>
+      </Item>
+    </stack>
+  </Feature>
   <Feature source="20260510-foundation-scaffold-design.md" bd_id="aisw-u99">
     <title>Foundation scaffold — Design</title>
     <feature>foundation-scaffold</feature>
@@ -45,5 +95,947 @@
       </dev>
     </deps_pinned>
     <adrs/>
+  </Feature>
+  <Feature source="20260511-chunk10-tg-text-design.md" bd_id="aisw-187">
+    <feature>M-TG-TEXT</feature>
+    <status>stable</status>
+    <date>2026-05-11</date>
+    <chunk>10</chunk>
+  </Feature>
+  <Feature source="20260511-integration-e2e-design.md" bd_id="aisw-vb9">
+    <feature>integration-e2e</feature>
+    <module_id>M-INTEGRATION-E2E</module_id>
+    <date>2026-05-11</date>
+    <status>stable</status>
+    <stack>
+      <Item>pytest 8.3 + pytest-asyncio (auto mode) — already in pyproject</Item>
+      <Item>aiosqlite + SQLAlchemy async — for tmp-path jobs/audit DBs</Item>
+      <Item>structlog — observability, default config</Item>
+      <Item>real ClaudeCliBackend → claude binary on PATH</Item>
+    </stack>
+    <contracts>
+      <Item>tests/integration/conftest.py — fixtures (audit_sm, jobs_sm, fake_aiogram_bot, fake_runner, fake_output, fake_voice, fake_photo, real_classifier_adapter, inbox_root)</Item>
+      <Item>tests/integration/test_e2e_pipeline.py — 4 scenarios</Item>
+    </contracts>
+  </Feature>
+  <Feature source="20260511-runtime-wiring-design.md" bd_id="aisw-cq4">
+    <feature>M-RUNTIME-WIRING</feature>
+    <status>stable</status>
+    <date>2026-05-11</date>
+    <chunk>18</chunk>
+    <approach>single-file-entrypoint</approach>
+    <stack>
+      <Item>aiogram 3.x (Dispatcher.start_polling)</Item>
+      <Item>APScheduler AsyncIOScheduler</Item>
+      <Item>alembic.config.Config + alembic.command.upgrade (programmatic)</Item>
+      <Item>signal (SIGINT/SIGTERM via asyncio loop.add_signal_handler)</Item>
+      <Item>structlog</Item>
+    </stack>
+    <references>
+      <Item>docs/superpowers/specs/20260511-runtime-wiring-discovery.md</Item>
+    </references>
+  </Feature>
+  <Feature source="20260511-tg-document-full-design.md" bd_id="aisw-wku">
+    <feature>tg-document-full</feature>
+    <module_id>M-TG-DOCUMENT-FULL</module_id>
+    <chunk>22</chunk>
+    <date>2026-05-11</date>
+    <discovery_ref>docs/superpowers/specs/20260511-tg-document-full-discovery.md</discovery_ref>
+    <status>approved</status>
+    <technology_stack>
+      <Item>
+        <name>pypdf</name>
+        <version>&gt;=4.0,&lt;5</version>
+        <purpose>Pure-python PDF text extraction (no system deps, no Tesseract).</purpose>
+        <license>BSD-3</license>
+        <alternatives_rejected>
+          <Item>pdfplumber — heavier, depends on pdfminer.six; overkill for first-page-text.</Item>
+          <Item>pymupdf — AGPL/commercial split, system poppler dependency.</Item>
+          <Item>pdf2image — requires poppler binary, raster output, out of D-022 scope.</Item>
+        </alternatives_rejected>
+      </Item>
+      <Item>
+        <name>pytest (existing)</name>
+        <purpose>Unit tests for all branches.</purpose>
+      </Item>
+    </technology_stack>
+    <contracts_touched>
+      <Item>M-TG-PIPELINE (extend on_document, add helpers _route_document, _extract_pdf_text, _safe_log_filename)</Item>
+      <Item>M-INBOX (no change — reuse IdempotencyService.check_content/record_dedup_choice with kind="file")</Item>
+      <Item>M-OPS-PII (no change — reuse PIIRedactor.hash_token)</Item>
+      <Item>M-TG-MEDIA (no change — reuse PhotoIngestor.handle for image/* branch)</Item>
+    </contracts_touched>
+    <data_model_changes>none</data_model_changes>
+    <api_changes>
+      <Item>DefaultPipeline.on_document signature unchanged (telegram_id, chat_id, update_id, doc_bytes, mime, filename).</Item>
+      <Item>Internal helpers added as private DefaultPipeline methods.</Item>
+    </api_changes>
+    <new_strings_ru>
+      <Item>ACK_DOC_UNSUPPORTED_RU = 'Этот тип файла пока не поддерживается.'</Item>
+      <Item>ACK_DOC_PDF_NO_TEXT_RU = 'Не вижу текста в PDF. Попробуйте отправить страницу как фото.'</Item>
+      <Item>ACK_DOC_TOO_LARGE_RU = 'Файл слишком большой (лимит 25 МБ).'</Item>
+    </new_strings_ru>
+    <log_anchors>
+      <Item>tg.pipeline.document.received { telegram_id, mime, size, sha256_short, hashed_filename }</Item>
+      <Item>tg.pipeline.document.dedup_hit { sha256_short, action='duplicate_doc' }</Item>
+      <Item>tg.pipeline.document.rejected { reason: 'unsupported_mime'|'too_large'|'pdf_no_text'|'pdf_parse_error', mime }</Item>
+      <Item>tg.pipeline.document.routed_text { source: 'pdf'|'text', chars }</Item>
+      <Item>tg.pipeline.document.routed_image { ext, sha256_short }</Item>
+    </log_anchors>
+    <verification_strategy>
+      <unit_tests>
+        <Item>test_on_document_pdf_extracts_text_and_routes_through_text_pipeline</Item>
+        <Item>test_on_document_pdf_with_no_extractable_text_rejects_with_hint</Item>
+        <Item>test_on_document_pdf_parse_error_rejects_gracefully</Item>
+        <Item>test_on_document_text_plain_routes_through_text_pipeline_with_utf8_bom_decode</Item>
+        <Item>test_on_document_image_jpeg_routes_through_photo_ingestor</Item>
+        <Item>test_on_document_image_heic_rejected_as_unsupported</Item>
+        <Item>test_on_document_unsupported_mime_rejects_with_ru_message</Item>
+        <Item>test_on_document_octet_stream_treated_as_unsupported</Item>
+        <Item>test_on_document_l2_dedup_hit_short_circuits_before_routing</Item>
+        <Item>test_on_document_oversized_doc_rejected</Item>
+        <Item>test_on_document_log_uses_hashed_filename_never_raw</Item>
+      </unit_tests>
+    </verification_strategy>
+  </Feature>
+  <Feature source="20260511-tg-pipeline-streaming-design.md" bd_id="aisw-a3z">
+    <id>20260511-tg-pipeline-streaming</id>
+    <chunk>21</chunk>
+    <module>M-TG-PIPELINE-STREAMING</module>
+    <status>approved</status>
+    <decisions>
+      <Item id="DEC-TPS-1">
+        <title>Streaming trigger</title>
+        <choice>Wall-clock 5s race (not pre-estimate). Latch-based placeholder; runner-completes-first → fast path single deliver; 5s elapsed → send placeholder + start StreamEditor.</choice>
+        <rationale>WikiRunner has no estimated_duration_s; pre-estimate is speculative. Race is deterministic, simple, equivalent UX.</rationale>
+        <supersedes>DEC-L2 (interpretation only — DEC-L2 intent preserved)</supersedes>
+      </Item>
+      <Item id="DEC-TPS-2">
+        <title>Runner streaming hook</title>
+        <choice>Add on_event callback param to run_wiki_session. Additive, default None → existing behaviour. Callback awaited inside drain loop; exceptions logged and swallowed (runner not impacted).</choice>
+        <rationale>Non-breaking, minimal API surface, keeps StreamEvent type internal to wiki package.</rationale>
+      </Item>
+      <Item id="DEC-TPS-3">
+        <title>Streaming component placement</title>
+        <choice>New class StreamingDelivery in tg/pipeline.py (alongside DefaultPipeline). Owns placeholder send, race timer, StreamEditor lifecycle.</choice>
+        <rationale>Same module as composition orchestrator; reuses TgSender; not framework-thin enough to warrant separate file.</rationale>
+      </Item>
+      <Item id="DEC-TPS-4">
+        <title>Final text source-of-truth</title>
+        <choice>After runner.run returns (or raises), aggregate_text(events) is the canonical final text used by both StreamEditor.finalize and OutputDelivery.deliver. Events captured by a callback into a local list owned by StreamingDelivery.</choice>
+        <rationale>Single source — no drift between TG visible state and audit log.</rationale>
+      </Item>
+      <Item id="DEC-TPS-5">
+        <title>Back-compat</title>
+        <choice>StreamingDelivery is an optional Protocol injection on DefaultPipeline (param `streaming`). If None → existing chunk-20 deliver path. All existing unit tests remain valid unchanged.</choice>
+        <rationale>Zero-risk rollout; tests prove no regression.</rationale>
+      </Item>
+      <Item id="DEC-TPS-6">
+        <title>Voice path scope</title>
+        <choice>Voice on_voice does NOT use streaming in chunk 21 (transcripts are short, typical answer fits one message).</choice>
+        <rationale>Lowest risk MVP; can add later by feeding voice through same StreamingDelivery.</rationale>
+      </Item>
+    </decisions>
+    <log_markers>
+      <Item>tg.pipeline.stream.begin</Item>
+      <Item>tg.pipeline.stream.chunk</Item>
+      <Item>tg.pipeline.stream.final</Item>
+      <Item>tg.pipeline.stream.error</Item>
+    </log_markers>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-cron-bridge-design.md" bd_id="aisw-kcz">
+    <feature>inbox-wiki-cron-bridge</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-D.a</phase>
+    <status>draft</status>
+    <created>2026-05-12</created>
+    <discovery>docs/superpowers/specs/20260512-inbox-wiki-cron-bridge-discovery.md</discovery>
+    <supersedes_in_scope>digest_job → split out to aisw-19o (Phase-D.b)</supersedes_in_scope>
+    <technology>
+      <decisions>
+        <Item id="T-1">
+          <text>Integration shape A (Stage-0 fast-path, tech-spec §6): _run_text_pipeline branches on ClassifierResult.intent == Intent.REMINDER BEFORE the Stage-1a Router. The Stage-1a Router and prompts/inbox.md are NOT touched. (Q&amp;A D-OQ-1.)</text>
+        </Item>
+        <Item id="T-2">
+          <text>Explicit confirm via the Phase-C machinery: ConfirmationService.request_explicit(draft, keyboard_factory=build_route_confirm_keyboard) with category='reminder'; the jobs.Job row is created only on the confirm callback. No implicit-ack. (Q&amp;A D-OQ-2.)</text>
+        </Item>
+        <Item id="T-3">
+          <text>jobs.Job (storage/jobs/models.py, already exists, currently unused) is the SSoT domain record for a scheduled reminder. APScheduler's SQLAlchemyJobStore (same jobs.db) holds the trigger. create_reminder_job writes the Job row + commits, THEN scheduler.add_job(...) — so a crash in the (millisecond) gap leaves at worst a pending row without a trigger (the reminder silently does not fire); no reconciliation pass in the MVP. (Q&amp;A D-OQ-4 / R-1.)</text>
+        </Item>
+        <Item id="T-4">
+          <text>Firing handler is a stable module-level callable ai_steward_wiki.scheduler.firing:fire_job(job_id: int) taking only a picklable int — required for SQLAlchemyJobStore persistence. It reads the aiogram bot-sender + jobs sessionmaker from a module-level registry set once at startup via firing.set_firing_context(...). (Q&amp;A D-OQ-3.) NOTE: this deliberately differs from scheduler/maintenance.py's retention jobs, which pass non-picklable session_makers as add_job args and get away with it because they are re-registered on every boot (replace_existing=True); a one-shot reminder cannot be re-registered, so it must persist correctly with picklable args only.</text>
+        </Item>
+        <Item id="T-5">
+          <text>NL time: classifier.time_parse.parse_time gains a keyword arg prefer_future: bool = False threaded into dateparser settings as PREFER_DATES_FROM='future' when True. The reminder path calls it with prefer_future=True so a bare past wall-clock time («разбуди в 6» at 21:00) rolls forward to the next future occurrence (TZ-aware → DST-safe). User TZ from users.toml UserRecord.tz, falling back to a new Settings field default_user_tz: str = 'Europe/Moscow'. (Q&amp;A D-R-1.)</text>
+        </Item>
+        <Item id="T-6">
+          <text>ReminderPayload.message = distilled_payload['reminder_text'] if it is a non-empty str, else the raw user text. prompts/classifier.md is NOT bumped — its distilled_payload is already documented as an opaque bag of extracted entities, so reading an optional reminder_text opportunistically needs no prompt change. (Q&amp;A D-OQ-1 / R-2.)</text>
+        </Item>
+        <Item id="T-7">
+          <text>misfire_grace_time for the reminder DateTrigger = None (= 'run as soon as possible after a missed fire') so a reminder missed during downtime still arrives (late). An APScheduler EVENT_JOB_MISSED listener registered in __main__ logs scheduler.reminder.misfired. coalesce=True (job_defaults) means a backlog collapses to one fire.</text>
+        </Item>
+        <Item id="T-8">
+          <text>No new third-party dependency. No new SQLite table (jobs.jobs exists). No new Alembic migration (jobs.Job columns suffice; APScheduler tables are owned by SQLAlchemyJobStore at runtime). One new Settings field (default_user_tz). prompts unchanged.</text>
+        </Item>
+      </decisions>
+    </technology>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-digest-interactive-design.md" bd_id="aisw-269">
+    <feature>inbox-wiki-digest-interactive</feature>
+    <phase>Inbox-WIKI Phase-D.b.2b</phase>
+    <status>design</status>
+    <date>2026-05-12</date>
+    <discovery>docs/superpowers/specs/20260512-inbox-wiki-digest-interactive-discovery.md</discovery>
+    <adr>docs/adr/ADR-025-digest-interactive-surface.md</adr>
+    <covers>
+      <Item>FR-1</Item>
+      <Item>FR-2</Item>
+      <Item>FR-3</Item>
+      <Item>FR-4</Item>
+    </covers>
+    <stack_decisions>
+      <Item id="TD-1">
+        <text>aiogram Command filter for the first slash-command surface — a dedicated commands Router (or commands registered FIRST inside the existing m-tg-handlers-wiring router) so `/digest_now` and `/expand` match before the catch-all F.text message handler; ordinary text keeps falling through to MessagePipeline unchanged. No new dependency (aiogram.filters.Command is stdlib of aiogram 3.x).</text>
+      </Item>
+      <Item id="TD-2">
+        <text>Reuse fire_digest_job(job_id) verbatim for /digest_now — no _run_digest core refactor, no new lock; the per-WIKI flock inside run_wiki_session already serialises a concurrent cron digest (queue-behind accepted).</text>
+      </Item>
+      <Item id="TD-3">
+        <text>Generalise the DigestRunner Protocol with `section: str | None = None` (None ⇒ prompts/digest.md, today's behaviour byte-identical; key ⇒ prompts/digest_expand.md). _DigestRunnerAdapter in __main__ swaps overlay_prompt_path and the user_input accordingly. No new set_digest_context tuple element — the existing `runner` covers both modes.</text>
+      </Item>
+      <Item id="TD-4">
+        <text>DigestPayload.wiki_scope: Literal['all'] → 'all' | list[str] (list min_length=1) in storage/jobs/payloads.py. No jobs.db Alembic migration ('all' stays valid; existing rows keep validating; Pydantic union discriminator unaffected — wiki_scope is not the discriminator).</text>
+      </Item>
+      <Item id="TD-5">
+        <text>Heuristic WIKI-name extraction lives in the digest fast-path (tg/pipeline.py _handle_digest_intent / a small helper next to humanize_recurrence) — tokens of the NL turn ∩ the owner's *-WIKI/ dir-stems (case-insensitive, whole-token). No Haiku call. The owner's WIKI dir list comes from the same resolver the firing context already has (resolve_owner_wikis) or the wiki-lifecycle listing used elsewhere in pipeline.py — pick whichever is already imported there.</text>
+      </Item>
+    </stack_decisions>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-digest-job-design.md" bd_id="aisw-oqq">
+    <feature>inbox-wiki-digest-job</feature>
+    <epic>aisw-t2r</epic>
+    <parent>aisw-19o</parent>
+    <status>stable</status>
+    <date>2026-05-12</date>
+    <follows>aisw-kcz</follows>
+    <technology_stack>
+      <Item>
+        <python>3.11+</python>
+      </Item>
+      <Item>
+        <apscheduler>AsyncIOScheduler + SQLAlchemyJobStore + CronTrigger</apscheduler>
+      </Item>
+      <Item>
+        <pydantic>v2 (discriminated union; Recurrence model)</pydantic>
+      </Item>
+      <Item>
+        <aiogram>3.x</aiogram>
+      </Item>
+      <Item>
+        <claude_cli>2.1.139 (subscription auth, run_wiki_session)</claude_cli>
+      </Item>
+      <Item>
+        <dateparser>fallback corpus for time-of-day inside recurrence phrasings</dateparser>
+      </Item>
+    </technology_stack>
+    <approach>direct-fire-digest-job</approach>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-digest-presentation-design.md" bd_id="aisw-w3k">
+    <feature>inbox-wiki-digest-presentation</feature>
+    <phase>Inbox-WIKI Phase-D.b.2a (presentation core)</phase>
+    <status>design</status>
+    <date>2026-05-12</date>
+    <depends_on>
+      <Item>aisw-oqq</Item>
+    </depends_on>
+    <discovery>docs/superpowers/specs/20260512-inbox-wiki-digest-presentation-discovery.md</discovery>
+    <covers_fr>
+      <Item>FR-1</Item>
+      <Item>FR-2</Item>
+      <Item>FR-3</Item>
+      <Item>FR-4</Item>
+      <Item>FR-10</Item>
+    </covers_fr>
+    <approach>Route fire_digest_job's delivery through the already-built tg.output.deliver_output(kind='digest'); grow set_digest_context by audit_session_maker; replace the one-line planner stub with a real jobs.db window query; rewrite prompts/digest.md to the D-024 HTML+TL;DR contract. No new module, no new dependency, no migration.</approach>
+    <stack_decisions>
+      <Item id="SD-1">
+        <text>tg.output.deliver_output already implements D-024's &lt;b&gt;-header section split (ChainSplitter._BOUNDARY_PATTERNS puts &lt;b&gt; first), (i/M) footers, and the &gt;10000 send_document fallthrough. FR-2 needs NO new split code — only a digest-flavoured test + routing fire_digest_job through deliver_output. Rejected: a separate digest splitter (DRY violation).</text>
+      </Item>
+      <Item id="SD-2">
+        <text>set_digest_context gains one required dep: audit_session_maker: async_sessionmaker[AsyncSession] (audit.db, for the run_outputs row written by deliver_output). _digest_ctx becomes a 6-tuple. No summarizer added — deliver_output's default LengthCapSummarizer is used (consistent with _OutputDeliveryAdapter; a real Haiku post-step summarizer is a project-wide future, not digest-specific — YAGNI).</text>
+      </Item>
+      <Item id="SD-3">
+        <text>Planner context: a module-private async helper _build_planner_context(session, *, owner_telegram_id, window_hours, now_utc, tz) -&gt; str in scheduler/firing.py (it already holds the jobs session, parse_job_payload, and the Job model — KISS, no new module). Queries jobs.Job rows: status=='scheduled' AND scheduled_at_utc IS NOT NULL AND scheduled_at_utc &lt;= now_utc + window_hours, ordered by scheduled_at_utc; renders «- HH:MM — &lt;message&gt;» lines in the owner's tz, or «На ближайшие N ч ничего не запланировано.» when empty. tz comes from the digest job's own payload.recurrence.tz.</text>
+      </Item>
+      <Item id="SD-4">
+        <text>prompts/digest.md rewritten to the D-024 contract: &lt;b&gt;📌 TL;DR&lt;/b&gt; as the FIRST section (3-5 lines), then only-if-content &lt;b&gt;📅 Сегодня&lt;/b&gt; / &lt;b&gt;💊 Лекарства&lt;/b&gt; / &lt;b&gt;📈 Трекеры&lt;/b&gt; / &lt;b&gt;📝 Обновления WIKI&lt;/b&gt;; HTML whitelist &lt;b&gt;&lt;i&gt;&lt;u&gt;&lt;s&gt;&lt;code&gt;&lt;pre&gt;&lt;a&gt;&lt;blockquote&gt;, escape &lt; &gt; &amp; in literal text, NO MarkdownV2; one short line per item, no tables; empty → exactly «🌿 Сегодня дел нет.»; consume the «Запланировано…» planner block from the user message. semver 0.0.1 → 0.1.0.</text>
+      </Item>
+      <Item id="SD-5">
+        <text>fire_digest_job: after the runner returns text → body = text.strip() or _DIGEST_EMPTY_RU; run_id = f'digest-{uuid4().hex[:12]}'; runs_dir = primary_path / 'data' / 'runs'; await deliver_output(sender=, chat_id=, telegram_id=owner_id, wiki_id=primary_id, run_id=run_id, text=body, runs_dir=runs_dir, audit_session_maker=audit_maker, kind='digest', job_id=job_id) — wrapped in the existing try/except → _digest_strike. Remove _DIGEST_TG_LIMIT and its truncation (deliver_output owns sizing). The _DIGEST_NO_WIKI_RU branch stays a plain sender.send_message (it is a control message, not a Claude output → no audit row).</text>
+      </Item>
+      <Item id="SD-6">
+        <text>__main__: set_digest_context(..., audit_session_maker=audit_maker); bump _DigestRunnerAdapter / wiring change-summary. The runner adapter is unchanged (it still returns raw text; deliver_output is called by fire_digest_job, not the adapter).</text>
+      </Item>
+    </stack_decisions>
+    <log_anchors>
+      <Item>scheduler.digest.delivered — now also carries n_messages, document_sent, run_id (from the DeliveryReceipt).</Item>
+      <Item>scheduler.digest.planner_context — new DEBUG anchor: job_id, owner_telegram_id, n_planned (count of jobs in the window).</Item>
+    </log_anchors>
+    <adr>ADR-024 (digest presentation core) — records SD-1..SD-3 + the rejected alternatives. The Spec-WIKI D-024 'перенос в ADR' checkbox gets ticked.</adr>
+    <out_of_scope_here>
+      <Item>Actionable inline cards + callbacks (FR-5) → aisw-269.</Item>
+      <Item>/expand, /digest_now (FR-6, FR-7) → aisw-269.</Item>
+      <Item>Per-user section toggles + sessions.db 0002 (FR-8) → aisw-269.</Item>
+      <Item>Named-subset WIKI selection (FR-9) → aisw-269.</Item>
+      <Item>Real Haiku post-step summarizer wiring (project-wide, tracked elsewhere).</Item>
+    </out_of_scope_here>
+    <files_touched>
+      <Item>src/ai_steward_wiki/scheduler/firing.py</Item>
+      <Item>src/ai_steward_wiki/__main__.py</Item>
+      <Item>prompts/digest.md</Item>
+      <Item>docs/adr/ADR-024-digest-presentation.md</Item>
+      <Item>docs/Spec-WIKI/decisions/D-024-digest-format.md</Item>
+      <Item>docs/knowledge-graph.xml / verification-plan.xml / development-plan.xml</Item>
+      <Item>tests/unit/scheduler/test_firing_digest.py</Item>
+      <Item>tests/unit/tg/test_output.py</Item>
+    </files_touched>
+    <context7>Not required — no new library; SQLAlchemy async select on Job and uuid4 are already used in firing.py.</context7>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-hint-fastpath-phase-e-b-design.md" bd_id="aisw-5sd">
+    <feature>inbox-wiki-hint-fastpath</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-E.b</phase>
+    <status>draft</status>
+    <created>2026-05-12</created>
+    <discovery>docs/superpowers/specs/20260512-inbox-wiki-hint-fastpath-phase-e-b-discovery.md</discovery>
+    <decision>OQ-A → Option A (deterministic keyword/token-overlap, single-unambiguous-match threshold + margin). Confirmed at Brainstorming gate 2026-05-12.</decision>
+    <technology>
+      <decisions>
+        <Item id="T-1">
+          <text>New pure module inbox/hint_match.py: score_catalog(text: str, catalog: Mapping[str, str]) -&gt; HintMatch where HintMatch is a small frozen dataclass {ranked: list[tuple[str, float]] (stem, score, desc), top_stem: str | None, top_score: float, margin: float}. Scoring = normalised token-overlap: tokens(text) and tokens(hint) are lowercased word-runs (regex r'\w+' over the casefolded string, drop tokens shorter than MIN_TOKEN_LEN=3 and a tiny ru/en stop-word set); score(stem) = |tokens(text) ∩ tokens(hint_stem)| / max(1, |tokens(hint_stem)|); the domain stem name itself (minus the '-WIKI' suffix, casefolded, split on non-word) is folded into that domain's token set so 'health'/'здоровье' in the message also counts. Pure, deterministic, no IO.</text>
+        </Item>
+        <Item id="T-2">
+          <text>‘Confident’ predicate (in hint_match.py): is_confident(m: HintMatch) -&gt; bool := m.top_stem is not None AND m.top_score &gt;= HINT_FASTPATH_MIN_SCORE AND m.margin &gt;= HINT_FASTPATH_MIN_MARGIN, where margin = top_score − second_score (second_score = 0.0 if only one domain scored &gt; 0). Default constants live in inbox/hint_match.py as module-level Final[float]: MIN_SCORE = 0.34, MIN_MARGIN = 0.17 (tunable; chosen conservative per NFR-2 precision-over-recall — re-tuned offline from the tg.pipeline.hint_fastpath.* logs). NOT exposed via settings.py in MVP (D-032 / YAGNI — no env knob until logs justify one).</text>
+        </Item>
+        <Item id="T-3">
+          <text>Catalog build: a factory in __main__ — make_hint_catalog_resolver(*, hint_repo: InboxHintCacheRepo, owner_wikis_resolver: OwnerWikisResolver, surrogate_id_of: Callable[[int], Awaitable[int | None]]) -&gt; Callable[[int], Awaitable[dict[str, str]]]. The returned async resolver: uid = await surrogate_id_of(telegram_id); if uid is None → return {}; for (stem, dir_path) in await owner_wikis_resolver(telegram_id): hint = await get_or_refresh_hint(hint_repo, uid, dir_path / 'CLAUDE.md'); if hint: catalog[stem] = hint; return catalog. Reuses the existing get_or_refresh_hint stat→cache-hit path verbatim (0 fs reads on a hot message). surrogate_id_of is the existing users-table telegram_id→user_id lookup that __main__ already builds (the same surrogate every other sessions.db row uses — D-042); if no such helper is exposed yet, add a one-liner read over the users table in storage/sessions next to the engine setup.</text>
+        </Item>
+        <Item id="T-4">
+          <text>DefaultPipeline gains ONE new optional kwarg: hint_catalog_resolver: Callable[[int], Awaitable[Mapping[str, str]]] | None = None (stored as self._hint_catalog_resolver). None ⇒ the fast-path block is a no-op fall-through — keeps every existing pipeline unit test green without the new dep. No other constructor change; owner_wikis_resolver stays as-is (the catalog resolver wraps it internally — the pipeline does not re-enumerate WIKIs).</text>
+        </Item>
+        <Item id="T-5">
+          <text>New block START_BLOCK_HINT_FASTPATH … END_BLOCK_HINT_FASTPATH in tg/pipeline.py _run_text_pipeline, placed AFTER END_BLOCK_REMINDER_FASTPATH and BEFORE START_BLOCK_ROUTABLE_BRANCH. Guard: `if result.intent in _ROUTABLE_INTENTS and self._router is not None and self._hint_catalog_resolver is not None and self._librarian is not None and self._output is not None:` (the librarian/output guard mirrors START_BLOCK_ROUTABLE_BRANCH's confirm-path guard — no point bypassing the router if we cannot then run the confirm+ingest). Inside: catalog = await self._hint_catalog_resolver(telegram_id); if not catalog → log tg.pipeline.hint_fastpath.miss(reason='empty_catalog') and fall through. Else m = score_catalog(result.distilled_payload or text, catalog); log tg.pipeline.hint_fastpath.catalog(n_domains=len(catalog)). If not is_confident(m) → log tg.pipeline.hint_fastpath.miss(reason='ambiguous' if m.top_stem else 'no_match', top_stem, top_score, margin) and fall through. Else: synthesise decision = RouterDecision(intent=RouterIntent.ROUTE, target_wiki=m.top_stem, notes=&lt;short ru recap&gt;, parsed_ok=True, …) — exact field set mirrored from what _RouterAdapter returns for a ROUTE; payload = route_action_to_payload(decision, user_text=text, source=source, media_paths=media_paths, correlation_id=correlation_id); confirm_draft = PendingConfirmDraft(telegram_id, chat_id, category='route_ingest', draft=payload, recap_text=build_route_recap(decision)); rec = await self._confirm.request_explicit(confirm_draft, keyboard_factory=build_route_confirm_keyboard); log tg.pipeline.hint_fastpath.hit(target_wiki=m.top_stem, score=m.top_score, margin=m.margin, pending_id=rec.pending_id); return. (Falls through ⇒ START_BLOCK_ROUTABLE_BRANCH runs verbatim.)</text>
+        </Item>
+        <Item id="T-6">
+          <text>Constructing a stand-in RouterDecision: read RouterDecision's field set from inbox/router.py at execution time and fill the minimum for a ROUTE — intent, target_wiki, parsed_ok=True, notes=ru one-liner ('Похоже на запись для «{stem}». Подтвердите перенос.' — wording finalised against the existing build_route_recap output so the recap reads naturally), and any other required fields with their natural defaults (e.g. an empty/structured payload field if RouterDecision has one). If RouterDecision has a required field we cannot meaningfully synthesise (e.g. a raw-CLI-output blob) → that is a deviation: stop, re-evaluate (advisory gate). route_action_to_payload / on_confirm_callback / Stage-1b librarian consume it unchanged.</text>
+        </Item>
+        <Item id="T-7">
+          <text>structlog anchors (tg/pipeline.py, all under correlation_id + telegram_id): tg.pipeline.hint_fastpath.catalog(n_domains: int); tg.pipeline.hint_fastpath.hit(target_wiki, score, margin, pending_id); tg.pipeline.hint_fastpath.miss(reason: 'empty_catalog'|'no_match'|'ambiguous', top_stem: str|None, top_score: float, margin: float); tg.pipeline.hint_fastpath.fallthrough(reason) — emitted whenever we leave the block without short-circuiting (covers the guard-not-satisfied case at block top and the miss cases, so 'every bypass attempt observable' per FR-6). hint_text content is NEVER logged (it can quote arbitrary user-authored CLAUDE.md prose) — only stems, counts, scores. PIIRedactor already wraps the logger; no new redact rule needed (scores/counts/stems are non-PII).</text>
+        </Item>
+        <Item id="T-8">
+          <text>No new third-party dependency, no new SQLite table, no new Alembic migration, no new user-facing string beyond the synthesised RouterDecision.notes ru one-liner (which is internal recap text, reusing the existing route-confirm copy family — D-032 ru-only honoured), no prompt change, no /wiki_* surface change (D-041), no change to _RouterAdapter / prompts/inbox.md / the heavy Router path. ops/retention and the media track are untouched.</text>
+        </Item>
+        <Item id="T-9">
+          <text>Tests — all with fakes, no live Telegram/Claude/APScheduler/fs-outside-tmp_path: (a) tests/unit/inbox/test_hint_match.py — score_catalog on a hand-built catalog: single clear winner above thresholds → is_confident True; two domains both above MIN_SCORE within MIN_MARGIN → is_confident False (ambiguous); winner below MIN_SCORE → False (no_match); empty catalog → top_stem None; stem-name folding ('здоровье'/'health' in text matches Health-WIKI even if absent from the hint body); token normalisation (case, short-token drop, stop-words). (b) tests/unit/tg/test_pipeline_hint_fastpath.py — DefaultPipeline built with a fake hint_catalog_resolver returning a curated catalog + a fake confirm + a stub router whose .route is asserted NOT called on a confident hit and asserted called on miss/ambiguous/empty/disabled; assert a route_ingest PendingConfirmDraft was requested with category='route_ingest' on hit; assert the four log anchors fire on their respective paths (caplog/structlog capture). (c) existing tests/unit/tg/test_pipeline*.py untouched (new kwarg defaults to None). Coverage stays ≥80%.</text>
+        </Item>
+        <Item id="T-10">
+          <text>grace-refresh + grace-refresh --verify after the change: knowledge-graph.xml — new module inbox/hint_match.py (M-INBOX-HINT-MATCH or folded into M-INBOX per the existing granularity; score_catalog/is_confident/HintMatch exports), DefaultPipeline DEPENDS += inbox.hint_match.score_catalog/is_confident + inbox.hint_cache.get_or_refresh_hint (transitively via the resolver dep), __main__ exports make_hint_catalog_resolver. verification-plan.xml — new test modules + the tg.pipeline.hint_fastpath.* log markers. Also clears the Phase-D-era 'hint fast-path' deferred note now that the cache is wired as a catalog.</text>
+        </Item>
+      </decisions>
+    </technology>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-hint-fastpath-staging-design.md" bd_id="aisw-12t">
+    <feature>inbox-wiki-per-user-media-staging</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-E.a</phase>
+    <status>draft</status>
+    <created>2026-05-12</created>
+    <discovery>docs/superpowers/specs/20260512-inbox-wiki-hint-fastpath-staging-discovery.md</discovery>
+    <supersedes_in_scope>bit 1 (## Inbox hint router-bypass) → split out to Phase-E.b (own feature-workflow iteration); this iteration = bit 2 only (per-user media _staging, subsumes aisw-64c)</supersedes_in_scope>
+    <technology>
+      <decisions>
+        <Item id="T-1">
+          <text>New pure helper inbox_wiki_path(telegram_id: int, *, wiki_root: Path) -&gt; Path in inbox/materialize.py returns wiki_root / str(telegram_id) / INBOX_WIKI_DIRNAME. No IO — path arithmetic only; the dir tree is created lazily by stage_media's mkdir(parents=True). ensure_inbox_wiki (CLAUDE.md first-contact materialiser) is unchanged and still owned by the _RouterAdapter. (OQ-A/R-2.)</text>
+        </Item>
+        <Item id="T-2">
+          <text>Per-user staging root is injected into DefaultPipeline as wiki_root: Path (one new constructor kwarg, optional; None ⇒ media handlers fall back to the legacy fixed inbox_root they were constructed with — keeps existing pipeline unit tests that build handlers with a tmp inbox_root green without a wiki_root). The pipeline computes inbox_root = inbox_wiki_path(telegram_id, wiki_root=self._wiki_root) per message and passes it to the handler. (OQ-A: shape (b).)</text>
+        </Item>
+        <Item id="T-3">
+          <text>VoiceHandler / PhotoIngestor: inbox_root moves from a required __init__ kwarg to an optional .handle(..., inbox_root: Path | None = None) override. __init__ keeps inbox_root as the default (so a handler can still be constructed standalone with a fixed root — used by integration tests and as the pipeline-fallback path). At call time: effective_root = inbox_root if inbox_root is not None else self._inbox_root. Both must not be None ⇒ a handler with no constructor root requires a per-call root (assert / ValueError). (OQ-A.)</text>
+        </Item>
+        <Item id="T-4">
+          <text>New wrapper sweep_all_user_staging(wiki_root: Path, *, now: datetime | None = None, ttl_s: int = DEFAULT_STAGING_TTL_S) -&gt; int in inbox/staging.py: for each child of wiki_root that is a directory AND has an &lt;child&gt;/Inbox-WIKI/ subdir, call sweep_staging(child / INBOX_WIKI_DIRNAME, now=now, ttl_s=ttl_s) and sum the removed counts. Skips _trash/, stray files, and dirs without Inbox-WIKI. sweep_staging itself (keyed on one inbox_root) is unchanged. Emits media.staging_sweep_all_done(wiki_root, removed, scanned_users).</text>
+        </Item>
+        <Item id="T-5">
+          <text>scheduler/maintenance.py: register_media_staging_sweep_job's staging_root: Path kwarg is renamed to wiki_root: Path; its job callable becomes _run_all_user_media_sweep(wiki_root, ttl_s) wrapping asyncio.to_thread(sweep_all_user_staging, ...). MEDIA_STAGING_SWEEP_JOB_ID, the 04:30 UTC cron, and idempotency (replace_existing=True) are unchanged. register_all_retention_jobs's media_staging_root: Path | None kwarg is renamed wiki_root_for_media_sweep: Path | None and threaded through. (The old _run_media_sweep over a single dir is removed — no internal backwards-compat shim.)</text>
+        </Item>
+        <Item id="T-6">
+          <text>settings.media_staging_root is REMOVED (it was an explicit MVP placeholder per DEC-C1-2; nothing has shipped to prod that reads it). settings.py drops the field + its 3-line comment; the settings.py CHANGE_SUMMARY notes the removal. (OQ-B: remove, confirmed at Discovery gate.)</text>
+        </Item>
+        <Item id="T-7">
+          <text>src/ai_steward_wiki/__main__.py: VoiceHandler/PhotoIngestor are constructed WITHOUT inbox_root (or with None); DefaultPipeline gains wiki_root=settings.wiki_root; register_all_retention_jobs is called with wiki_root_for_media_sweep=settings.wiki_root; the runtime.scheduler.started / runtime.media_pipeline.wired log fields that referenced media_staging_root now reference wiki_root. _WikiRunnerAdapter.run's promote_path_to_raw(media_path, wiki_root=&lt;target wiki&gt;) is unchanged — only the *origin* of the staged file changed (DEC-C4-1).</text>
+        </Item>
+        <Item id="T-8">
+          <text>No new third-party dependency, no new SQLite table, no new Alembic migration, no new user-facing string, no prompt change. ops/retention.purge_staging (a separate, currently-unwired single-dir helper) is left untouched — out of scope; flag for a later cleanup task if it stays dead.</text>
+        </Item>
+        <Item id="T-9">
+          <text>Tests: tests/unit/inbox/test_materialize.py +inbox_wiki_path; tests/unit/inbox/test_staging.py +sweep_all_user_staging over a mixed tree (a numeric user dir with stale+fresh staged files, a _trash dir, a stray file, a user dir with no Inbox-WIKI); tests/unit/tg/test_voice.py + test_photo.py updated for the .handle(inbox_root=...) override + the no-root-anywhere error; tests/unit/scheduler/test_maintenance.py updated for register_media_staging_sweep_job(wiki_root=...) + a _run_all_user_media_sweep test; tests/unit/tg/test_pipeline*.py — wherever a DefaultPipeline is built with voice/photo, pass wiki_root=tmp_path (or rely on the None-fallback). Coverage stays ≥80%.</text>
+        </Item>
+        <Item id="T-10">
+          <text>grace-refresh + grace-refresh --verify after the change: knowledge-graph.xml (moved/renamed exports: sweep_all_user_staging, inbox_wiki_path, the maintenance signature) + verification-plan.xml (new log markers media.staging_sweep_all_done; removed media_staging_root references). Also clears the Phase-D report's deferred #6 for the media markers.</text>
+        </Item>
+      </decisions>
+    </technology>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-route-confirm-design.md" bd_id="aisw-e45">
+    <feature>inbox-wiki-route-confirm</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-C</phase>
+    <status>draft</status>
+    <created>2026-05-12</created>
+    <approach>Confirm-gate the Phase-B route+ingest: a ROUTE/CREATE_WIKI RouterDecision is persisted as a `route_ingest` pending_confirms row (10-min TTL, draft_json) and proposed via a 2-button inline keyboard; the move+ingest runs in on_confirm_callback on 'confirmed'. Reuses ConfirmationService, the existing confirm:&lt;id&gt;:&lt;action&gt; handler, the PendingConfirm model (no migration), and the Phase-B Librarian.ingest path.</approach>
+    <technology>
+      <decisions>
+        <Item id="TD-1">
+          <text>Reuse `ConfirmationService` (D-023) as-is plus one additive change: `request_explicit(draft, *, keyboard_factory: Callable[[int], object] = build_explicit_keyboard)`. Route confirms pass `keyboard_factory=build_route_confirm_keyboard`. The chunk-10 explicit-confirm path keeps the default 3-button keyboard. No new confirm service, no parallel persistence.</text>
+        </Item>
+        <Item id="TD-2">
+          <text>Reuse the `pending_confirms` table and `PendingConfirm` ORM model unchanged — `category`, `draft_json`, `chat_id`, `recap_message_id` columns exist since chunk 10. Route confirms set `category='route_ingest'` and `draft_json=json.dumps(route_action_payload)`. NO Alembic migration.</text>
+        </Item>
+        <Item id="TD-3">
+          <text>Route-action (de)serialisation lives in `inbox/route.py` (it already owns `RouterDecision`): `RouteAction` frozen dataclass (decision: RouterDecision, user_text: str, source: Literal['text','voice','document','photo'], media_paths: list[str], correlation_id: str), `route_action_to_payload(decision, *, user_text, source, media_paths, correlation_id) -&gt; dict[str, object]`, `route_action_from_payload(payload: dict[str, object]) -&gt; RouteAction`. RouterIntent ↔ str via `RouterIntent(value)`/`.value`; RouterDecision ↔ dict via `.model_dump()`/`RouterDecision(**d)`; Path ↔ POSIX str.</text>
+        </Item>
+        <Item id="TD-4">
+          <text>Russian recap / ack strings + the `build_route_recap(decision) -&gt; str` helper live in `tg/pipeline.py` next to the existing `*_RU` constants. `build_route_confirm_keyboard(pending_id) -&gt; InlineKeyboardMarkup` (2 buttons: `confirm:&lt;id&gt;:confirm`, `confirm:&lt;id&gt;:cancel`) lives in `tg/confirm.py` next to `build_explicit_keyboard`.</text>
+        </Item>
+        <Item id="TD-5">
+          <text>`handlers.py` is untouched — `parse_confirm_callback` already accepts `confirm`/`correct`/`cancel`, and `pipeline.on_confirm_callback(telegram_id, chat_id, pending_id, action)` already receives everything. The route-vs-other dispatch happens inside `DefaultPipeline.on_confirm_callback` by reading the pending row's `category`.</text>
+        </Item>
+        <Item id="TD-6">
+          <text>On `confirm` the pipeline sends a short ru ack («📝 Записываю в вики…») via `TgSender.send_message` BEFORE the (≤vision/text-timeout) `Librarian.ingest` call so the user isn't left hanging; the aiogram callback itself is already `answer()`-ed in `handlers.py`. Keyboard removal on the recap message is NOT done in the MVP (no `edit_reply_markup` on `TgSender`; a repeat tap is harmless — `resolve` returns `None` → 'stale' reply).</text>
+        </Item>
+        <Item id="TD-7">
+          <text>Phase-B's immediate `librarian.ingest()` in `_run_text_pipeline`'s routable branch is REPLACED (not gated behind a flag). No `route_confirm_enabled` toggle. No new `proposed_actions` field on `RouterDecision`.</text>
+        </Item>
+        <Item id="TD-8">
+          <text>No new third-party dependency. TTL expiry continues to rely on the existing `ConfirmationService.expire_due` sweeper job — no new scheduler entry. mypy --strict / ruff / ruff-format / grace lint clean; coverage ≥80%.</text>
+        </Item>
+      </decisions>
+      <stack_unchanged>
+        <Item>aiogram 3.x (InlineKeyboardMarkup/InlineKeyboardButton), SQLAlchemy async (pending_confirms), pydantic v2 (RouterDecision), structlog — all already in use.</Item>
+      </stack_unchanged>
+    </technology>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-route-ingest-design.md" bd_id="aisw-zd9">
+    <feature>inbox-wiki-route-ingest</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-B</phase>
+    <status>done</status>
+    <created>2026-05-12</created>
+    <discovery_ref>docs/superpowers/specs/20260512-inbox-wiki-route-ingest-discovery.md</discovery_ref>
+    <approach>After Phase-A's router.route(), for ROUTE/CREATE_WIKI intents: resolve-or-create the target &lt;Domain&gt;-WIKI (WikiLifecycleManager), write a fresh raw payload + promote any media binary into the target WIKI, run a Stage-1b librarian session there (run_wiki_session + prompts/wiki.md + prompts/domain-*.md overlay), reply with notes + the ingest summary. New pure module inbox/route.py + a runtime _LibrarianAdapter behind a narrow Librarian Protocol; the pipeline orchestrates the two-step.</approach>
+    <technology>
+      <stack>
+        <Item>
+          <name>pydantic</name>
+          <version>&gt;=2 (in project)</version>
+          <use>WikiName already; RouteTarget/IngestOutcome are plain frozen dataclasses (no new pydantic types needed).</use>
+          <context7>not needed — no library API in question; WikiLifecycleManager/run_wiki_session/promote_path_to_raw are internal, already read.</context7>
+        </Item>
+      </stack>
+      <no_new_dependencies>True</no_new_dependencies>
+      <no_new_db_table>True</no_new_db_table>
+      <new_modules>
+        <Item>src/ai_steward_wiki/inbox/route.py</Item>
+      </new_modules>
+      <changed_modules>
+        <Item>src/ai_steward_wiki/tg/pipeline.py</Item>
+        <Item>src/ai_steward_wiki/__main__.py</Item>
+      </changed_modules>
+      <decisions_ref>
+        <Item>Q&amp;A 2026-05-12 (6 decisions) — see discovery_ref §Resolved design questions</Item>
+      </decisions_ref>
+      <adr_candidates>
+        <Item>ADR — Inbox-WIKI Phase-B route+ingest: auto-create on missing ROUTE target; move-raw-before-Stage-1b (forward-only retry); dedicated Librarian adapter. (decide in Step 8 — leaning yes; it sets the Stage-1b ingest pattern Phases C–D build on, and ADR-003 already set the Stage-1a pattern.)</Item>
+      </adr_candidates>
+    </technology>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-router-design.md" bd_id="aisw-dsg">
+    <feature>inbox-wiki-router</feature>
+    <epic>aisw-t2r</epic>
+    <phase>Inbox-WIKI Phase-A</phase>
+    <status>done</status>
+    <created>2026-05-12</created>
+    <discovery_ref>docs/superpowers/specs/20260512-inbox-wiki-router-discovery.md</discovery_ref>
+    <approach>Router-Claude run in Inbox-WIKI/ with a fenced-block reply parsed into RouterDecision; wired via a dedicated _RouterAdapter behind a narrow Router Protocol; replaces the flat Stage-1 run for routable intents.</approach>
+    <technology>
+      <stack>
+        <Item>
+          <name>pydantic</name>
+          <version>&gt;=2 (already in project)</version>
+          <use>RouterDecision model (frozen, extra=forbid), RouterIntent str-enum.</use>
+          <context7>not re-verified — already used pervasively (ClassifierResult); no version change.</context7>
+        </Item>
+        <Item>
+          <name>aiogram</name>
+          <version>3.x (already in project)</version>
+          <use>unchanged — pipeline composition only.</use>
+          <context7>not needed — no aiogram API touched.</context7>
+        </Item>
+      </stack>
+      <no_new_dependencies>True</no_new_dependencies>
+      <prompt_change>
+        <file>prompts/inbox.md</file>
+        <bump>1.0.0 → 1.1.0</bump>
+        <change>add a strict response-format section requiring a single fenced ```router\ntarget_wiki: ...\nintent: ...\nnotes: ...\n``` block; ru-only notes.</change>
+      </prompt_change>
+      <new_modules>
+        <Item>src/ai_steward_wiki/inbox/router.py</Item>
+      </new_modules>
+      <changed_modules>
+        <Item>src/ai_steward_wiki/tg/pipeline.py</Item>
+        <Item>src/ai_steward_wiki/__main__.py</Item>
+      </changed_modules>
+      <decisions_ref>
+        <Item>Q&amp;A 2026-05-12 (5 decisions) — see discovery_ref §Resolved design questions</Item>
+      </decisions_ref>
+      <adr_candidates>
+        <Item>ADR — Inbox-WIKI router invocation: dedicated adapter + fenced-block contract (decide in Step 8 whether it warrants an ADR; leaning yes — it sets the Stage-1a routing pattern for Phases B–E).</Item>
+      </adr_candidates>
+    </technology>
+  </Feature>
+  <Feature source="20260512-streaming-double-reply-design.md" bd_id="aisw-x92">
+    <feature>streaming-double-reply</feature>
+    <status>approved</status>
+    <date>2026-05-12</date>
+    <approach>tg-send-flag</approach>
+    <technology_decisions>
+      <Item id="TD-1">
+        <text>Add keyword-only `tg_send: bool = True` to deliver_output (src/ai_steward_wiki/tg/output.py). When False: skip the entire size-hybrid send branch (send_message / chain-split / summary+send_document); still run _persist_to_disk and _record_run_output; emit tg.output.delivered with tg_send=False, n_messages=0, document_sent=False. Default True keeps current behaviour byte-for-byte.</text>
+      </Item>
+      <Item id="TD-2">
+        <text>Propagate tg_send through OutputDelivery Protocol (pipeline.py:187) → _OutputDeliveryAdapter.deliver (__main__.py:242). Keyword-only, default True. mypy --strict must stay green.</text>
+      </Item>
+      <Item id="TD-3">
+        <text>DefaultStreamingDelivery.run_and_deliver slow-path (pipeline.py ~968): change `await output.deliver(chat_id=..., telegram_id=..., run_id=..., text=final_text)` to `await output.deliver(..., tg_send=False)`. Fast-path call (pipeline.py ~895) and DefaultPipeline non-stream call are unchanged.</text>
+      </Item>
+      <Item id="TD-4">
+        <text>StreamEditor (stream_edit.py): add instance field `_last_sent_text: str | None = None`, set it to the exact string passed to edit_message_text after every successful edit in feed() and in the chain-split branch. In finalize(): compute final_text; if final_text == self._last_sent_text → set _finalized=True, log tg.stream.finalized with skipped=True, return WITHOUT calling edit_message_text. Otherwise edit as today (keeping the existing try/except → tg.stream.final_flush_failed warning as a real-error fallback).</text>
+      </Item>
+      <Item id="TD-5">
+        <text>Reject Variant 2 (split deliver_output into persist_and_audit + send_reply_to_tg): cleaner SoC but touches Protocol shape, DeliveryReceipt split, both call sites and more tests — disproportionate for an MVP bugfix. Revisit only if more delivery modes appear.</text>
+      </Item>
+      <Item id="TD-6">
+        <text>Test approach: (a) tests/unit/tg/test_output.py — new case: deliver_output(tg_send=False) → fake sender records 0 send_message calls, but output file exists on disk and a run_output row is recorded; tg.output.delivered logged with tg_send=False. (b) tests/unit/tg/test_stream_edit.py — feed one chunk that triggers a tick, then finalize() → no second edit call, _finalized True, tg.stream.finalized skipped=True. (c) streaming pipeline test — slow-path run → exactly one TG message reaches the chat (the placeholder edit), deliver invoked with tg_send=False.</text>
+      </Item>
+    </technology_decisions>
+  </Feature>
+  <Feature source="20260512-system-prompt-replace-design.md" bd_id="aisw-adj">
+    <feature>system-prompt-replace</feature>
+    <status>stable</status>
+    <date>2026-05-12</date>
+    <technology_stack>
+      <Item>
+        <python>3.11+</python>
+      </Item>
+      <Item>
+        <claude_cli>2.1.139 (subscription auth)</claude_cli>
+      </Item>
+    </technology_stack>
+    <approach>inline-system-prompt</approach>
+  </Feature>
+  <Feature source="20260512-wiki-runner-cli-fix-design.md" bd_id="aisw-d3i">
+    <feature>wiki-runner-cli-fix</feature>
+    <date>2026-05-12</date>
+    <status>draft</status>
+    <discovery>docs/superpowers/specs/20260512-wiki-runner-cli-fix-discovery.md</discovery>
+    <module_ids>
+      <Item>M-WIKI-RUNNER</Item>
+      <Item>M-CLASSIFIER-STAGE0</Item>
+      <Item>M-CLAUDE-CLI-COMMON</Item>
+    </module_ids>
+    <chosen_approach>shared-primitives-single-file</chosen_approach>
+    <stack>
+      <Item>
+        <python>3.11+</python>
+      </Item>
+      <Item>
+        <stdlib>shutil, pathlib, asyncio</stdlib>
+      </Item>
+      <Item>
+        <test>pytest</test>
+      </Item>
+    </stack>
+    <new_modules>
+      <Item id="M-CLAUDE-CLI-COMMON">
+        <path>src/ai_steward_wiki/claude_cli/common.py</path>
+        <purpose>Pure-function primitives shared by Stage-0 (classifier) and Stage-1 (wiki) Claude CLI backends.</purpose>
+        <exports>
+          <Item>resolve_binary</Item>
+          <Item>build_env</Item>
+          <Item>neutral_cwd</Item>
+          <Item>system_prompt_argv</Item>
+          <Item>truncate_stderr</Item>
+        </exports>
+      </Item>
+    </new_modules>
+    <changed_modules>
+      <Item id="M-CLASSIFIER-STAGE0">
+        <file>src/ai_steward_wiki/classifier/backend.py</file>
+        <change>Refactor to import shared primitives. No behaviour change. Deletes 5 inline duplicates.</change>
+      </Item>
+      <Item id="M-WIKI-RUNNER">
+        <file>src/ai_steward_wiki/wiki/runner.py</file>
+        <change>(a) replace --append-system-prompt @path with --system-prompt-file &lt;path&gt;; (b) cwd=neutral_cwd; (c) read+truncate stderr; (d) raise WikiRunnerError on rc!=0; (e) require claude_config_dir; (f) assemble_prompt also folds in per-WIKI CLAUDE.md if present.</change>
+      </Item>
+    </changed_modules>
+    <verification>
+      <Item id="V-1">
+        <text>New unit test pins argv for Stage-1 — asserts --system-prompt-file path equals assembled prompt and --append-system-prompt is absent.</text>
+      </Item>
+      <Item id="V-2">
+        <text>New unit test pins cwd for Stage-1 — equals claude_config_dir, not wiki_path.</text>
+      </Item>
+      <Item id="V-3">
+        <text>New unit test — fake Spawner returns proc with exit_code=1 + stderr=b"bad flag"; run_wiki_session raises WikiRunnerError and logs wiki.run.error with stderr truncated.</text>
+      </Item>
+      <Item id="V-4">
+        <text>Existing Stage-0 envelope unwrap test stays green after refactor (no behaviour change).</text>
+      </Item>
+      <Item id="V-5">
+        <text>New unit test for assemble_prompt — if wiki_path/CLAUDE.md exists, its contents appear after the overlay in the assembled file.</text>
+      </Item>
+    </verification>
+  </Feature>
+  <Feature source="20260512-wiki-runner-verbose-design.md" bd_id="aisw-kpb">
+    <feature>wiki-runner-verbose</feature>
+    <status>approved</status>
+    <date>2026-05-12</date>
+    <approach>add-verbose-flag</approach>
+    <technology_decisions>
+      <Item id="TD-1">
+        <text>Add the literal flag '--verbose' to the argv list in _build_argv, adjacent to '--output-format stream-json'. No new dependency, no API change.</text>
+      </Item>
+      <Item id="TD-2">
+        <text>Test strategy: extend the existing happy-path argv assertions in tests/unit/wiki/test_runner.py with `assert '--verbose' in argv` and a structural invariant check `('stream-json' in argv) implies ('--verbose' in argv)`.</text>
+      </Item>
+      <Item id="TD-3">
+        <text>Reject alternative 'switch to --output-format json': the wiki runner and run_and_deliver are built around streaming delivery (per Spec-WIKI D-decisions); changing it is out of scope for a bugfix.</text>
+      </Item>
+    </technology_decisions>
+  </Feature>
+  <Feature source="20260513-digest-actionable-cards-design.md" bd_id="aisw-163">
+    <title>Inbox-WIKI digest: actionable inline cards (±2h) — design</title>
+    <date>2026-05-13</date>
+    <phase>design</phase>
+    <status>draft</status>
+    <discovery>20260513-digest-actionable-cards-discovery.md</discovery>
+    <related_adrs>
+      <Item>ADR-025-digest-interactive-surface.md</Item>
+      <Item>ADR-026-digest-section-toggles.md</Item>
+      <Item>ADR-006-inbox-wiki-reminder-cron-bridge.md</Item>
+    </related_adrs>
+    <stack>
+      <Item>
+        <python>3.11+</python>
+      </Item>
+      <Item>
+        <aiogram>3.x — CallbackQuery handlers + InlineKeyboardBuilder</aiogram>
+      </Item>
+      <Item>
+        <sqlalchemy>2.0 async — single-row CAS UPDATE for state mutation</sqlalchemy>
+      </Item>
+      <Item>
+        <alembic>per-DB (jobs/0002, sessions/0002)</alembic>
+      </Item>
+      <Item>
+        <apscheduler>AsyncIOScheduler — DateTrigger for snooze rescheduling (existing path)</apscheduler>
+      </Item>
+    </stack>
+    <modules>
+      <new>
+        <Item>M-DIGEST-CARDS</Item>
+        <Item>M-TG-CALLBACKS</Item>
+      </new>
+      <changed>
+        <Item>M-STORAGE-JOBS</Item>
+        <Item>M-SCHEDULER-FIRING</Item>
+        <Item>M-STORAGE-SESSIONS</Item>
+        <Item>M-TG-HANDLERS-WIRING</Item>
+        <Item>M-RUNTIME-WIRING</Item>
+      </changed>
+    </modules>
+    <choice>Option A — Job row column for user_state + snooze_count</choice>
+  </Feature>
+  <Feature source="20260513-domain-prune-rename-design.md" bd_id="aisw-bgu">
+    <feature>domain-prune-rename</feature>
+    <date>2026-05-13</date>
+    <status>approved</status>
+    <approach>mechanical-rename-with-guardrail-merge</approach>
+    <references>
+      <discovery>./20260513-domain-prune-rename-discovery.md</discovery>
+    </references>
+    <stack>
+      <Item>git mv for filesystem renames (preserves history)</Item>
+      <Item>ruff + mypy + grace lint as gates</Item>
+      <Item>no new dependencies</Item>
+    </stack>
+  </Feature>
+  <Feature source="20260513-logging-coverage-chunk1-design.md" bd_id="aisw-er6">
+    <feature>logging-coverage-chunk1</feature>
+    <module_id>M-FOUNDATION-LOGGING</module_id>
+    <status>draft</status>
+    <date>2026-05-13</date>
+    <references_discovery>docs/superpowers/specs/20260513-logging-coverage-chunk1-discovery.md</references_discovery>
+    <stack>
+      <Item>structlog (existing; ≥ 24.x in pyproject)</Item>
+      <Item>aiogram 3.15 (existing)</Item>
+      <Item>python 3.11+ inspect.iscoroutinefunction, time.perf_counter_ns, contextlib</Item>
+      <Item>structlog.contextvars (bound_contextvars, clear_contextvars, bind_contextvars)</Item>
+      <Item>structlog.testing.capture_logs (existing tests pattern)</Item>
+    </stack>
+    <new_modules>
+      <Item>src/ai_steward_wiki/logging_events.py</Item>
+      <Item>src/ai_steward_wiki/tg/middleware_correlation.py</Item>
+    </new_modules>
+    <modified_modules>
+      <Item>src/ai_steward_wiki/logging_setup.py (add traced)</Item>
+      <Item>src/ai_steward_wiki/tg/bot.py (register middleware)</Item>
+      <Item>tests/conftest.py (autouse fixture)</Item>
+    </modified_modules>
+    <applied_to_existing>
+      <Item>src/ai_steward_wiki/tg/pipeline.py (1–2 public entrypoints)</Item>
+      <Item>src/ai_steward_wiki/classifier/__init__.py or stage entrypoints</Item>
+      <Item>src/ai_steward_wiki/inbox/staging.py (1 entrypoint)</Item>
+      <Item>src/ai_steward_wiki/wiki/run.py or equivalent run entrypoint</Item>
+    </applied_to_existing>
+    <adr_needed>False</adr_needed>
+  </Feature>
+  <Feature source="20260513-logging-coverage-chunk2-design.md" bd_id="aisw-nrt">
+    <feature>logging-coverage-chunk2</feature>
+    <status>draft</status>
+    <date>2026-05-13</date>
+    <risk>medium</risk>
+    <evidence>strong</evidence>
+    <approach>extend-in-place</approach>
+    <stack>
+      <Item>structlog (existing)</Item>
+      <Item>apscheduler.events (existing dependency, listener API)</Item>
+      <Item>sqlalchemy.event (existing dependency, before/after_cursor_execute)</Item>
+      <Item>asyncio (existing — perf_counter for spawn duration)</Item>
+      <Item>hashlib (stdlib — sha256 for statement_sha8)</Item>
+    </stack>
+    <adrs/>
+    <links>
+      <Item>chunk-1 logging_setup.py</Item>
+      <Item>logging_events.py SSoT</Item>
+    </links>
+  </Feature>
+  <Feature source="20260513-migrate-ai-steward-userdata-design.md" bd_id="aisw-0a5">
+    <feature>migrate-ai-steward-userdata</feature>
+    <title>Design — Миграция user-data ai-steward → ai-steward-wiki</title>
+    <date>2026-05-13</date>
+    <status>approved</status>
+    <discovery_ref>20260513-migrate-ai-steward-userdata-discovery.md</discovery_ref>
+    <risk>high</risk>
+    <risk_justification>см. Discovery</risk_justification>
+    <evidence>strong</evidence>
+    <evidence_justification>ETL-архитектура классическая (Extract-Transform-Load), все целевые API верифицированы в src/ai_steward_wiki/{auth,storage/jobs,wiki}/, Pydantic discriminated union для payload validation на boundary.</evidence_justification>
+    <open_questions/>
+    <approach>ETL-tool как новый модуль `src/ai_steward_wiki/migration/` + CLI entrypoint `python -m ai_steward_wiki.migration --dry-run | --execute`. SSH snapshot vpn-0 в /tmp/migration-snapshot/ через rsync (manual step), ETL читает оттуда, пишет в production paths vpn-gpu-1.</approach>
+    <stack>
+      <Item>
+        <python>3.11+</python>
+      </Item>
+      <Item>
+        <sqlalchemy>same as project (orm-async)</sqlalchemy>
+      </Item>
+      <Item>
+        <pydantic>v2 (validation на boundary)</pydantic>
+      </Item>
+      <Item>
+        <tomli_w>для users.toml write (новая dep — добавить)</tomli_w>
+      </Item>
+      <Item>
+        <structlog>same as project (JSON logs)</structlog>
+      </Item>
+      <Item>
+        <pytest>same as project</pytest>
+      </Item>
+    </stack>
+    <new_deps>
+      <Item>tomli_w==1.2.0 (TOML write; tomllib только для read)</Item>
+    </new_deps>
+    <modules>
+      <Item id="M-MIGRATION-CLI">
+        <file>src/ai_steward_wiki/migration/__main__.py</file>
+        <purpose>CLI entrypoint — argparse, dispatches dry-run vs execute, orchestrates phases.</purpose>
+        <depends>
+          <Item>M-MIGRATION-CONFIG</Item>
+          <Item>M-MIGRATION-EXTRACT</Item>
+          <Item>M-MIGRATION-TRANSFORM</Item>
+          <Item>M-MIGRATION-LOAD</Item>
+          <Item>M-MIGRATION-REPORT</Item>
+        </depends>
+      </Item>
+      <Item id="M-MIGRATION-CONFIG">
+        <file>src/ai_steward_wiki/migration/config.py</file>
+        <purpose>Hardcoded mapping table (telegram_id ↔ source paths ↔ target WIKIs ↔ templates) per Q3 decisions. Single SSoT.</purpose>
+        <depends/>
+      </Item>
+      <Item id="M-MIGRATION-EXTRACT">
+        <file>src/ai_steward_wiki/migration/extract.py</file>
+        <purpose>Read snapshot dir, parse planner.json, walk file trees, classify files (CSV/JSON/PDF/JPG/MD/.py/.bak). Returns SourceUserData per telegram_id.</purpose>
+        <depends>
+          <Item>M-MIGRATION-CONFIG</Item>
+        </depends>
+      </Item>
+      <Item id="M-MIGRATION-TRANSFORM">
+        <file>src/ai_steward_wiki/migration/transform.py</file>
+        <purpose>Pure functions — planner-item → Job + JobPayload (fan-out по remind_before, monthly→cron, category map), file classification → target subpath, frontmatter generation.</purpose>
+        <depends>
+          <Item>M-MIGRATION-CONFIG</Item>
+          <Item>ai_steward_wiki.storage.jobs.payloads</Item>
+          <Item>ai_steward_wiki.classifier.recurrence</Item>
+        </depends>
+      </Item>
+      <Item id="M-MIGRATION-LOAD">
+        <file>src/ai_steward_wiki/migration/load.py</file>
+        <purpose>Write users.toml (tomli_w), bootstrap WIKIs via WikiLifecycleManager, INSERT Job rows via SQLAlchemy, copy files (shutil.copy2 preserving mtime), write legacy-planner-history.md.</purpose>
+        <depends>
+          <Item>M-MIGRATION-TRANSFORM</Item>
+          <Item>ai_steward_wiki.auth.users_toml</Item>
+          <Item>ai_steward_wiki.storage.jobs</Item>
+          <Item>ai_steward_wiki.wiki.lifecycle</Item>
+        </depends>
+      </Item>
+      <Item id="M-MIGRATION-REPORT">
+        <file>src/ai_steward_wiki/migration/report.py</file>
+        <purpose>Aggregate per-user/per-project counters, generate migration_report.md.</purpose>
+        <depends/>
+      </Item>
+    </modules>
+    <ssot_artifacts>
+      <Item>.env.example — add AISW_PROFILES_DIR</Item>
+      <Item>data/users.toml — created at runtime by ETL</Item>
+      <Item>pyproject.toml — add tomli_w dep</Item>
+    </ssot_artifacts>
+    <verification>
+      <Item>
+        <Unit_tests_для_transform.py__12-15_кейсов key="Unit tests для transform.py (12-15 кейсов">fan-out, monthly cron, category, recipients-mismatch fail-fast, date filtering, edge cases)</Unit_tests_для_transform.py__12-15_кейсов>
+      </Item>
+      <Item>
+        <Integration_test key="Integration test">дам fixture-snapshot, прогон --dry-run, проверка counters в report</Integration_test>
+      </Item>
+      <Item>
+        <Integration_test key="Integration test">--execute на тестовом target (отдельный tmp dir + temp SQLite), верификация результата</Integration_test>
+      </Item>
+      <Item>Manual cutover dry-run на staging (smaller snapshot или один user)</Item>
+    </verification>
+  </Feature>
+  <Feature source="20260513-reminder-fastpath-fix-design.md" bd_id="aisw-5q5">
+    <title>Reminder fast-path broken end-to-end — Design</title>
+    <status>approved</status>
+    <risk>medium</risk>
+    <evidence>strong</evidence>
+    <date>2026-05-13</date>
+    <references>
+      <discovery>docs/superpowers/specs/20260513-reminder-fastpath-fix-discovery.md</discovery>
+    </references>
+    <modules_touched>
+      <Item>M-TG-PIPELINE</Item>
+      <Item>M-CLASSIFIER-STAGE0</Item>
+      <Item>M-CLASSIFIER-TIME</Item>
+    </modules_touched>
+    <libraries_verified/>
+    <open_questions/>
+    <adr_candidates/>
+  </Feature>
+  <Feature source="20260513-scheduler-jobstore-split-design.md" bd_id="aisw-6mi">
+    <feature>scheduler-jobstore-split</feature>
+    <module_id>M-SCHEDULER</module_id>
+    <status>stable</status>
+    <date>2026-05-13</date>
+    <stack>
+      <Item>
+        <library>apscheduler</library>
+        <version>3.x (current uv.lock)</version>
+        <used_for>AsyncIOScheduler + MemoryJobStore + SQLAlchemyJobStore</used_for>
+      </Item>
+    </stack>
+    <decisions>
+      <Item>
+        <D-local-1>Two named jobstores — "default" = SQLAlchemyJobStore (jobs.db, user reminders), "memory" = MemoryJobStore (infra cron)</D-local-1>
+      </Item>
+      <Item>
+        <D-local-2>All maintenance registrars pass jobstore="memory" to add_job</D-local-2>
+      </Item>
+      <Item>
+        <D-local-3>On boot, after build_scheduler and before register_all_retention_jobs, run a one-time cleanup that removes known maintenance job ids from the default (SQLAlchemy) jobstore</D-local-3>
+      </Item>
+      <Item>
+        <D-local-4>Cleanup pattern — exact id allowlist (PURGE_PENDING_JOB_ID, MEDIA_STAGING_SWEEP_JOB_ID, DB_SNAPSHOT_JOB_ID, retention.* via prefix on remove_all_jobs filter), not blanket purge of default store</D-local-4>
+      </Item>
+    </decisions>
+  </Feature>
+  <Feature source="20260513-start-help-manual-design.md" bd_id="aisw-s5i">
+    <feature>start-help-manual</feature>
+    <status>design</status>
+    <date>2026-05-13</date>
+    <depends_on_discovery>20260513-start-help-manual-discovery.md</depends_on_discovery>
+    <technology>
+      <stack>
+        <Item>
+          <name>aiogram</name>
+          <version>3.15</version>
+          <use>Router commands, BotCommand, set_my_commands</use>
+          <verified_in_codebase>True</verified_in_codebase>
+        </Item>
+        <Item>
+          <name>structlog</name>
+          <version>(existing)</version>
+          <use>Per-handler event logs</use>
+          <verified_in_codebase>True</verified_in_codebase>
+        </Item>
+      </stack>
+      <modules_touched>
+        <Item id="M-TG-HANDLERS">
+          <path>src/ai_steward_wiki/tg/handlers.py</path>
+          <change>add three new Command handlers; import shared template loader</change>
+        </Item>
+        <Item id="M-TG-BOT">
+          <path>src/ai_steward_wiki/tg/bot.py</path>
+          <change>add register_bot_commands(bot) helper</change>
+        </Item>
+        <Item id="M-TG-MIDDLEWARE-AUTH">
+          <path>src/ai_steward_wiki/tg/middleware_auth.py</path>
+          <change>generalise _START_COMMAND_PREFIX → _PUBLIC_COMMAND_PREFIXES frozenset</change>
+        </Item>
+        <Item id="M-TEMPLATES">
+          <path>src/ai_steward_wiki/templates.py</path>
+          <change>NEW — package-level slug-validated template loader</change>
+        </Item>
+        <Item id="M-AUTH-ONBOARDING">
+          <path>src/ai_steward_wiki/auth/onboarding.py</path>
+          <change>format_intro_message becomes thin adapter over M-TEMPLATES</change>
+        </Item>
+        <Item id="M-RUNTIME">
+          <path>src/ai_steward_wiki/__main__.py</path>
+          <change>call register_bot_commands(bot) after build_dispatcher</change>
+        </Item>
+      </modules_touched>
+      <new_files>
+        <Item>templates/start-known.ru.md</Item>
+        <Item>templates/help.ru.md</Item>
+        <Item>templates/manual.ru.md</Item>
+        <Item>tests/unit/test_templates.py</Item>
+        <Item>tests/unit/tg/test_start_help_manual_handlers.py</Item>
+        <Item>tests/unit/tg/test_register_bot_commands.py</Item>
+      </new_files>
+      <api_verifications_needed>
+        <Item>aiogram.types.BotCommand signature (Context7 — first contact in session)</Item>
+        <Item>bot.set_my_commands kwargs (Context7)</Item>
+      </api_verifications_needed>
+    </technology>
   </Feature>
 </Technology>
