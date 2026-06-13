@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Breakdown epic_slug="20260613-service-repair" epic_bd_id="aisw-8l5" target_repo="/home/bgs/ai-steward/Gena_Beeline_Local/ai-steward-wiki" budget="0.6" branch="feat/service-repair">
+  <Source>docs/superpowers/specs/20260613-service-repair-draft.md</Source>
+  <Goal>Привести поведение бота в соответствие с user-facing текстами /start и /manual: собрать недостающие фичи, которые вредят (молчаливо игнорируемые команды), и переформулировать доки для фич, которые сознательно не строим. Закрывает 6 расхождений аудита 2026-06-13.</Goal>
+
+  <RunState current_chunk="1" last_commit_sha="" total_test_status="not-run" updated_utc="2026-06-13" note="LIVE RUN — epic aisw-8l5, branch feat/service-repair. Chunks: aisw-htz, aisw-864, aisw-578, aisw-5wr."/>
+
+  <Chunks>
+    <Chunk n="1" bd_id="aisw-htz" module="docs-templates" est_window_pct="12" depends_on="">
+      <Title>Docs honesty — reword OCR / WIKI-create flow / drop WIKI-linked reminder (#1, #6, #4)</Title>
+      <Inputs>templates/manual.ru.md, templates/start-known.ru.md, templates/help.ru.md, templates/onboarding-intro.ru.md, scripts/lint_templates.py</Inputs>
+      <Outputs>templates/manual.ru.md, (if claims present) templates/start-known.ru.md, docs/superpowers/specs/20260613-service-repair/discovery-chunk1.md, design-chunk1.md, docs/superpowers/plans/20260613-service-repair/step-01-plan.md</Outputs>
+      <Verification>grep -i "OCR" templates/ -&gt; 0 hits; grep "за день до поездки" templates/ -&gt; 0 hits; grep "1–3 уточняющих" templates/ -&gt; 0 hits; uv run python scripts/lint_templates.py exit 0; make total-test exit 0.</Verification>
+    </Chunk>
+    <Chunk n="2" bd_id="aisw-864" module="M-TG-BOT" est_window_pct="10" depends_on="">
+      <Title>Expose /cron_add in the Telegram command menu + /help (#5)</Title>
+      <Inputs>src/ai_steward_wiki/tg/bot.py, templates/help.ru.md, src/ai_steward_wiki/tg/cron_add.py</Inputs>
+      <Outputs>src/ai_steward_wiki/tg/bot.py, templates/help.ru.md, tests/unit/tg/test_bot.py, docs/superpowers/specs/20260613-service-repair/discovery-chunk2.md, design-chunk2.md, docs/superpowers/plans/20260613-service-repair/step-02-plan.md</Outputs>
+      <Verification>unit asserts registered command list includes "cron_add" (7 commands); /help text mentions /cron_add; make total-test exit 0.</Verification>
+    </Chunk>
+    <Chunk n="3" bd_id="aisw-578" module="M-CLASSIFIER,M-TG-PIPELINE,M-SCHEDULER" est_window_pct="40" depends_on="">
+      <Title>NL digest control — reschedule + disable via extended digest intent (#2)</Title>
+      <Inputs>prompts/classifier.md, src/ai_steward_wiki/classifier/schema.py, src/ai_steward_wiki/tg/pipeline.py, src/ai_steward_wiki/scheduler/firing.py, src/ai_steward_wiki/storage/jobs/, tests/unit/tg/, tests/unit/scheduler/</Inputs>
+      <Outputs>prompts/classifier.md, src/ai_steward_wiki/classifier/schema.py, src/ai_steward_wiki/tg/pipeline.py, src/ai_steward_wiki/scheduler/firing.py, tests/unit/scheduler/test_firing.py, tests/unit/tg/test_pipeline_digest.py, docs/superpowers/specs/20260613-service-repair/discovery-chunk3.md, design-chunk3.md, docs/superpowers/plans/20260613-service-repair/step-03-plan.md</Outputs>
+      <Verification>unit: «выключи ежедневную сводку»-&gt;action=disable; «переноси сводку на 7:30»-&gt;action=reschedule,time=07:30; reschedule updates trigger; disable flips job status; no-job path replies politely (Ru). make total-test exit 0.</Verification>
+      <SplitNote>If post-Discovery estimate &gt;60% window: split into 3.a (classifier action field + schema + prompt + unit) and 3.b (pipeline dispatch + firing reschedule/disable + tests).</SplitNote>
+    </Chunk>
+    <Chunk n="4" bd_id="aisw-5wr" module="M-CLASSIFIER,M-TG-PIPELINE,M-SCHEDULER" est_window_pct="38" depends_on="aisw-578">
+      <Title>«за N до» — second earlier reminder at T−N (#3)</Title>
+      <Inputs>prompts/classifier.md, src/ai_steward_wiki/storage/jobs/payloads.py, src/ai_steward_wiki/tg/pipeline.py, src/ai_steward_wiki/scheduler/firing.py, tests/unit/tg/, tests/unit/scheduler/</Inputs>
+      <Outputs>prompts/classifier.md, src/ai_steward_wiki/storage/jobs/payloads.py, src/ai_steward_wiki/tg/pipeline.py, src/ai_steward_wiki/scheduler/firing.py, tests/unit/scheduler/test_firing.py, tests/unit/tg/test_pipeline_reminder.py, docs/superpowers/specs/20260613-service-repair/discovery-chunk4.md, design-chunk4.md, docs/superpowers/plans/20260613-service-repair/step-04-plan.md</Outputs>
+      <Verification>unit: «напомни в субботу в 12, а ещё за час до»-&gt;lead=60, two notifications scheduled (T and T−60min); «напомни завтра в 9 …» (no lead)-&gt;exactly one; make total-test exit 0.</Verification>
+      <SplitNote>depends_on TBD-3: both edit prompts/classifier.md and tg/pipeline.py; serialized to avoid reassess churn.</SplitNote>
+    </Chunk>
+  </Chunks>
+
+  <Approvals>
+    <Approval phase="4-breakdown" auto_approved="true" reason="user-directive: always-auto-approve (dry-run: recorded only, no execution)" ts_utc="2026-06-13"/>
+  </Approvals>
+
+  <Decisions>
+    <Decision chunk="0" id="DEC-F1a">#2 NL digest control — BUILD (chunk 3). User decision F1a.</Decision>
+    <Decision chunk="0" id="DEC-F1b">#3 «за N до» / second reminder — BUILD (chunk 4). User decision F1b.</Decision>
+    <Decision chunk="0" id="DEC-F1c">#6 WIKI-create «1–3 уточняющих вопроса» — REWORD docs to current single-confirm flow (chunk 1). User decision F1c.</Decision>
+    <Decision chunk="0" id="DEC-F2">#4 WIKI-linked relative reminder — DEFER (doc-soften only, chunk 1). Build via separate manual feature-workflow later. User decision F2.</Decision>
+    <Decision chunk="0" id="DEC-F3">#1 «OCR» wording — REWORD; vision stays, no OCR engine added (chunk 1). User decision F3.</Decision>
+    <Decision chunk="0" id="DEC-F4">#5 /cron_add — EXPOSE in set_my_commands + /help (chunk 2). User decision F4.</Decision>
+    <Decision chunk="0" id="DEC-F5">aisw-rui spec-frontmatter fix — OUT OF SCOPE for this epic. User decision F5.</Decision>
+    <Decision chunk="3" id="DEC-C3-1">Extend existing `digest` intent distilled_payload with action ∈ {create,reschedule,disable} (default create) rather than adding new top-level Intent enum members — keeps the 7-intent contract in prompts/classifier.md + classifier/schema.py:43 stable. Auto-applied (one-sided: schema stability vs new-enum churn).</Decision>
+    <Decision chunk="4" id="DEC-C4-1" note="design-step-to-confirm">Behavior fixed (two notifications: T and T−N). Mechanism (reuse existing ReminderPayload.lead_time_min at payloads.py:93 vs create a second reminder_job at T−N) chosen in chunk-4 Discovery depending on current lead_time_min semantics.</Decision>
+  </Decisions>
+
+  <ReassessLog/>
+
+  <TotalTestLog/>
+</Breakdown>
