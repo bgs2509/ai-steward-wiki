@@ -3,7 +3,7 @@
   <Source>docs/superpowers/specs/20260613-service-repair-draft.md</Source>
   <Goal>Привести поведение бота в соответствие с user-facing текстами /start и /manual: собрать недостающие фичи, которые вредят (молчаливо игнорируемые команды), и переформулировать доки для фич, которые сознательно не строим. Закрывает 6 расхождений аудита 2026-06-13.</Goal>
 
-  <RunState current_chunk="1" last_commit_sha="" total_test_status="not-run" updated_utc="2026-06-13" note="LIVE RUN — epic aisw-8l5, branch feat/service-repair. Chunks: aisw-htz, aisw-864, aisw-578, aisw-5wr."/>
+  <RunState current_chunk="done" last_commit_sha="" total_test_status="pass-after-chunk-4 (894 tests, 86.78%)" updated_utc="2026-06-13" note="EPIC COMPLETE — all 4 chunks closed; epic aisw-8l5 closed; full-audit 0 CRITICAL; follow-up aisw-358; branch feat/service-repair not pushed"/>
 
   <Chunks>
     <Chunk n="1" bd_id="aisw-htz" module="docs-templates" est_window_pct="12" depends_on="">
