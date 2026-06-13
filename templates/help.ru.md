@@ -40,6 +40,7 @@ WIKI — это твоя персональная AI-библиотека зна
 4. <code>/digest_now</code> — сделать сводку сейчас (нужен одобренный доступ и настроенный дайджест).
 5. <code>/expand &lt;раздел&gt;</code> — развернуть один раздел сводки (<code>today</code> | <code>meds</code> | <code>trackers</code> | <code>wiki</code>).
 6. <code>/digest_sections</code> — включить/выключить разделы дайджеста.
+7. <code>/cron_add</code> — повторяющийся запуск команды по расписанию (например: <code>каждый день в 9 | сделай сводку</code>).
 
 <!-- slug:next-steps -->
 <b>🚀 С чего начать</b>

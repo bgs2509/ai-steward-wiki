@@ -208,7 +208,7 @@ def build_dispatcher(
 #   INPUTS: { bot: aiogram.Bot - the running Bot instance }
 #   OUTPUTS: { None }
 #   SIDE_EFFECTS: bot.set_my_commands call (Telegram API write).
-#   LINKS: D-032 (ru-only), M-TG-HANDLERS (the 6 commands)
+#   LINKS: D-032 (ru-only), M-TG-HANDLERS (the 7 commands incl. /cron_add)
 # END_CONTRACT: register_bot_commands
 async def register_bot_commands(bot: Bot) -> None:
     # START_BLOCK_REGISTER_BOT_COMMANDS
@@ -221,6 +221,7 @@ async def register_bot_commands(bot: Bot) -> None:
         BotCommand(command="digest_now", description="Сделать сводку сейчас"),
         BotCommand(command="expand", description="Развернуть раздел сводки"),
         BotCommand(command="digest_sections", description="Настроить разделы сводки"),
+        BotCommand(command="cron_add", description="Повторяющийся запуск по расписанию"),
     ]
     _log.info("runtime.bot.commands.registered", n_commands=len(commands))
     await bot.set_my_commands(commands)

@@ -18,13 +18,22 @@ async def test_register_bot_commands_calls_set_my_commands_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_register_bot_commands_publishes_all_six_commands() -> None:
+async def test_register_bot_commands_publishes_all_commands() -> None:
     bot = AsyncMock()
     await register_bot_commands(bot)
     args, kwargs = bot.set_my_commands.call_args
     cmds = args[0] if args else kwargs["commands"]
     names = {c.command for c in cmds}
-    assert names == {"start", "help", "manual", "digest_now", "expand", "digest_sections"}
+    # /cron_add must be visible in the native ≡ menu (#5, aisw-864).
+    assert names == {
+        "start",
+        "help",
+        "manual",
+        "digest_now",
+        "expand",
+        "digest_sections",
+        "cron_add",
+    }
 
 
 @pytest.mark.asyncio
