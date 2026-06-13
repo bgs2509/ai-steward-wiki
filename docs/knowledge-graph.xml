@@ -10,7 +10,7 @@
       <depends>none</depends>
       <verification-ref>V-M-FOUNDATION-SETTINGS</verification-ref>
       <annotations>
-        <type-Settings PURPOSE="Frozen BaseSettings: log_level, workspace_root, claude_config_dir_local/_vps (resolved by env), *_db_url, default_user_tz (fallback IANA TZ for NL time, default 'Europe/Moscow', aisw-kcz)"/>
+        <type-Settings PURPOSE="Frozen BaseSettings: log_level, workspace_root, claude_config_dir (single explicit field, AISW_CLAUDE_CONFIG_DIR, decoupled from env — ADR-009), *_db_url, default_user_tz (fallback IANA TZ for NL time, default 'Europe/Moscow', aisw-kcz)"/>
         <type-LogLevel PURPOSE="Literal alias for accepted log levels"/>
         <fn-get_settings PURPOSE="lru_cached singleton accessor"/>
       </annotations>

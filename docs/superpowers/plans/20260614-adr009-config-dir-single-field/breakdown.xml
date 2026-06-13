@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Breakdown epic-slug="20260614-adr009-config-dir-single-field" epic-bd-id="aisw-cxz">
+  <Meta>
+    <source>docs/adr/ADR-009-claude-config-dir-single-field.md</source>
+    <target-repo>/home/bgs/ai-steward/Gena_Beeline_Local/ai-steward-wiki</target-repo>
+    <branch>worktree-adr-dev-life-separation</branch>
+    <goal>Replace env-resolved two-slot claude_config_dir with a single explicit field decoupled from AISW_ENV; fail-fast at startup when the dir is missing.</goal>
+    <window-budget-total>~0.25 effective window (single cohesive chunk)</window-budget-total>
+  </Meta>
+
+  <Decisions>
+    <Decision id="D1" auto_applied="true">
+      Fail-fast lives in __main__._amain (runtime), NOT a Settings model_validator —
+      Settings construction must stay filesystem-free so unit tests can build it with the
+      default path that does not exist in CI. Source: pydantic-settings purity + existing
+      test patterns (Settings(_env_file=None) used throughout tests/unit).
+    </Decision>
+    <Decision id="D2" auto_applied="true">
+      claude_config_dir is required for the bot regardless of stage0_backend, because the
+      Stage-1 wiki runner and cron consumer always spawn the Claude CLI with it
+      (__main__ guards at the wiki-runner and cron-consumer wiring were unconditional).
+      So a single global startup check is correct; per-callsite checks are removed as dead.
+    </Decision>
+  </Decisions>
+
+  <Chunks>
+    <Chunk n="1" bd-id="aisw-wt5" status="in_progress" depends_on="">
+      <title>settings.py claude_config_dir single field + fail-fast + .env/tests/graph</title>
+      <inputs>
+        src/ai_steward_wiki/settings.py,
+        src/ai_steward_wiki/__main__.py,
+        .env.example,
+        docs/knowledge-graph.xml,
+        tests/unit/classifier/test_settings_inv6.py
+      </inputs>
+      <outputs>
+        src/ai_steward_wiki/settings.py (single field, no property, INV-6 kept),
+        src/ai_steward_wiki/__main__.py (_require_claude_config_dir + 3 dead guards removed),
+        .env.example (AISW_CLAUDE_CONFIG_DIR),
+        docs/knowledge-graph.xml (Settings node),
+        tests/unit/classifier/test_settings_inv6.py (updated),
+        tests/unit/test_settings_config_dir.py (new: single-field + fail-fast)
+      </outputs>
+      <verification>make total-test exits 0 (ruff, ruff-format, mypy, grace lint, inv-lint, pytest unit + coverage>=80%)</verification>
+    </Chunk>
+  </Chunks>
+
+  <run-state>
+    <current-K>1</current-K>
+    <epic_slug>20260614-adr009-config-dir-single-field</epic_slug>
+    <total-test-status>pending</total-test-status>
+  </run-state>
+</Breakdown>

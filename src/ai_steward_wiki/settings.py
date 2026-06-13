@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/settings.py
-# VERSION: 0.0.12
+# VERSION: 0.0.13
 # START_MODULE_CONTRACT
 #   PURPOSE: Runtime configuration loaded from environment via pydantic-settings.
 #   SCOPE: Settings BaseSettings (frozen). Initial fields cover Chunk 1 only;
@@ -20,7 +20,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.12 - aisw-nrt (chunk 2 logging): storage_slow_query_threshold_ms.
+#   LAST_CHANGE: v0.0.13 - aisw-wt5 (ADR-009): claude_config_dir is now a single
+#                explicit field (AISW_CLAUDE_CONFIG_DIR), decoupled from env;
+#                dropped claude_config_dir_local/_vps slots + env-resolving property.
+#   PREVIOUS:    v0.0.12 - aisw-nrt (chunk 2 logging): storage_slow_query_threshold_ms.
 #   PREVIOUS:    v0.0.11 - aisw-12t (Phase-E.a): - media_staging_root (media staging is
 #                now per-user Inbox-WIKI; see inbox.materialize.inbox_wiki_path).
 #   PREVIOUS:    v0.0.10 - aisw-kcz: default_user_tz (fallback IANA TZ for NL time parsing).
@@ -67,11 +70,11 @@ class Settings(BaseSettings):
     log_level: LogLevel = "INFO"
     workspace_root: Path = Path("/var/lib/ai-steward-wiki/workspace")
 
-    # Claude Code CLI config dir. Two slots, picked by `env`.
-    # local: dedicated dir keeps bot's subscription auth isolated from dev's ~/.claude/.
-    # vps:   default None → CLI uses ~/.claude/ of the aisw-bot service user.
-    claude_config_dir_local: Path | None = Path("/var/lib/ai-steward-wiki/claude-code")
-    claude_config_dir_vps: Path | None = None
+    # Claude Code CLI config dir (ADR-009). Single explicit path, decoupled from
+    # `env`; override via AISW_CLAUDE_CONFIG_DIR. Holds the subscription auth
+    # (credentials.json) read by every Stage-1 CLI run. Kept separate from any
+    # human's ~/.claude/ because the bot shares the developer account (ADR-010).
+    claude_config_dir: Path = Path("/var/lib/ai-steward-wiki/claude-code")
 
     # Telegram credentials. Two slots — selected by `env`. Keeps local test bot
     # isolated from production bot so accidental writes never reach real users.
@@ -161,11 +164,6 @@ class Settings(BaseSettings):
         return self.tg_bot_token_prod if self.env == "vps" else self.tg_bot_token_local
 
     @property
-    def claude_config_dir(self) -> Path | None:
-        """Active CLAUDE_CONFIG_DIR chosen by `env`. None → CLI uses ~/.claude/."""
-        return self.claude_config_dir_vps if self.env == "vps" else self.claude_config_dir_local
-
-    @property
     def cron_user_prompt_path(self) -> Path:
         """Absolute path to the cron-user CLI system prompt (aisw-02v)."""
         return self.prompts_dir / self.cron_user_prompt_filename
@@ -189,10 +187,7 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "stage0_api_credential_path required when stage0_backend='anthropic_api' (INV-6)"
                 )
-            if (
-                self.claude_config_dir is not None
-                and self.stage0_api_credential_path == self.claude_config_dir
-            ):
+            if self.stage0_api_credential_path == self.claude_config_dir:
                 raise ValueError(
                     "stage0_api_credential_path MUST NOT equal claude_config_dir (INV-6)"
                 )

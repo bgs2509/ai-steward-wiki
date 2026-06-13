@@ -935,11 +935,6 @@ def _build_classifier_backend(settings: Settings) -> ClassifierBackend:
         return AnthropicApiBackend(
             credential_path=settings.stage0_api_credential_path,
         )
-    if settings.claude_config_dir is None:
-        raise RuntimeError(
-            "claude_config_dir is required for claude_cli backend; set "
-            "AISW_CLAUDE_CONFIG_DIR_LOCAL or AISW_CLAUDE_CONFIG_DIR_VPS"
-        )
     return ClaudeCliBackend(
         claude_config_dir=settings.claude_config_dir,
         timeout_s=settings.classifier_stage0_timeout_s,
@@ -984,6 +979,24 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop, stop: asyncio.Even
             loop.add_signal_handler(sig, _handler, name)
 
 
+def _require_claude_config_dir(settings: Settings) -> None:
+    """Fail fast at startup if the Claude CLI config dir is missing (ADR-009).
+
+    claude_config_dir holds the subscription auth (credentials.json) read by every
+    Stage-1 CLI run. A missing dir means the CLI cannot authenticate and the bot
+    would fail silently on the first classification, so we stop here with an
+    actionable message instead.
+    """
+    config_dir = settings.claude_config_dir
+    if not config_dir.is_dir():
+        raise RuntimeError(
+            f"claude_config_dir does not exist: {config_dir}. Create it and "
+            f"authenticate once: mkdir -p {config_dir} && "
+            f"CLAUDE_CONFIG_DIR={config_dir} claude login "
+            f"(override the path via AISW_CLAUDE_CONFIG_DIR)."
+        )
+
+
 async def _amain() -> None:
     # START_BLOCK_RUNTIME_BOOTSTRAP
     correlation_id = f"proc-{uuid4().hex[:8]}"
@@ -1002,6 +1015,8 @@ async def _amain() -> None:
             f"tg_bot_token missing for env={settings.env!r}; "
             f"set AISW_TG_BOT_TOKEN_LOCAL or AISW_TG_BOT_TOKEN_PROD"
         )
+
+    _require_claude_config_dir(settings)
 
     db_urls = [settings.jobs_db_url, settings.audit_db_url, settings.sessions_db_url]
     _ensure_data_dirs(db_urls)
@@ -1082,11 +1097,6 @@ async def _amain() -> None:
     runtime_dir = settings.workspace_root / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     lock_manager = WikiLockManager()
-    if settings.claude_config_dir is None:
-        raise RuntimeError(
-            "claude_config_dir is required for wiki runner; set "
-            "AISW_CLAUDE_CONFIG_DIR_LOCAL or AISW_CLAUDE_CONFIG_DIR_VPS"
-        )
     runner_adapter = _WikiRunnerAdapter(
         wiki_root=settings.wiki_root,
         base_prompt_path=settings.prompts_dir / "wiki.md",
@@ -1134,11 +1144,6 @@ async def _amain() -> None:
     # async consumer (scheduler.consumer.CronConsumer.run()).
     cron_user_queue = PriorityJobQueue()
     cron_user_mod.set_cron_user_context(scheduler, cron_user_queue, jobs_maker)
-    if settings.claude_config_dir is None:
-        raise RuntimeError(
-            "claude_config_dir is required for cron-user consumer; set "
-            "AISW_CLAUDE_CONFIG_DIR_LOCAL or AISW_CLAUDE_CONFIG_DIR_VPS"
-        )
     cron_consumer = CronConsumer(
         queue=cron_user_queue,
         bot=bot,
