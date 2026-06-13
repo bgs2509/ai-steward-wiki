@@ -1,8 +1,17 @@
 # ADR-001: Env-resolved `CLAUDE_CONFIG_DIR` (local override, VPS default)
 
-- Status: Accepted
+- Status: Superseded by [ADR-009](ADR-009-claude-config-dir-single-field.md) (2026-06-14)
 - Date: 2026-05-11
 - Deciders: @bgs
+
+> **Superseded (2026-06-14).** The `env`-resolved two-slot design below was
+> retired by [ADR-009](ADR-009-claude-config-dir-single-field.md). The
+> `AISW_ENV=vps → None → ~/.claude/` branch never worked after the
+> `aisw-d3i` / `aisw-adj` refactors (the runtime requires a concrete path), and
+> the `env`-coupling caused a silent no-reply outage on 2026-06-14.
+> `claude_config_dir` is now a single explicit field decoupled from `AISW_ENV`;
+> `AISW_ENV` governs only the Telegram token. This document is kept as the
+> historical record of the original decision.
 
 ## Context
 
