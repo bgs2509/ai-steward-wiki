@@ -2,6 +2,7 @@
 
 from ai_steward_wiki.claude_cli.common import (
     build_env,
+    default_claude_config_dir,
     neutral_cwd,
     resolve_binary,
     system_prompt_argv,
@@ -10,6 +11,7 @@ from ai_steward_wiki.claude_cli.common import (
 
 __all__ = [
     "build_env",
+    "default_claude_config_dir",
     "neutral_cwd",
     "resolve_binary",
     "system_prompt_argv",

@@ -1,5 +1,12 @@
 # Completion report — ADR-009: single explicit `CLAUDE_CONFIG_DIR`
 
+> **Superseded same day by `aisw-d3h`** — the single-explicit-field design below was
+> the first iteration. Final decision (rewritten ADR-009): **no `claude_config_dir`
+> setting at all**; the bot uses the run user's default `~/.claude`,
+> `AISW_CLAUDE_CONFIG_DIR` removed entirely. This report is kept as the record of the
+> first iteration; see `docs/adr/ADR-009-claude-config-dir-single-field.md` (final)
+> and the `aisw-d3h` commit.
+
 - Date: 2026-06-14
 - Epic: `aisw-cxz` (closed) · Chunk: `aisw-wt5` (closed)
 - Branch: `worktree-adr-dev-life-separation`

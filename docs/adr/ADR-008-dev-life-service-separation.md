@@ -47,9 +47,17 @@ ADR lifts that principle from a code detail to a deployment rule.
    workload. Its repository is a `dev`-type project only in the sense that the
    *code that runs the bot* is engineered with GRACE/feature-workflow; the
    *runtime assistant it exposes to users* is life-only.
-3. **Instruction isolation is enforced at runtime** by the existing mechanisms:
-   `neutral_cwd()` (no project `CLAUDE.md` auto-discovery) and explicit
+3. **Instruction isolation is partially enforced at runtime** by `neutral_cwd()`
+   (avoids **project-layer** `CLAUDE.md` auto-discovery) and explicit
    `--system-prompt` injection.
+   **Correction (2026-06-14):** these do **not** fully isolate instructions. The
+   **user-layer** memory file `~/.claude/CLAUDE.md` loads unconditionally on every
+   CLI run regardless of `cwd`, `CLAUDE_CONFIG_DIR`, `--system-prompt`, or
+   `--setting-sources ""` (verified, claude 2.1.175). Running the life bot under
+   `bgs`, whose global `~/.claude/CLAUDE.md` is dev-oriented (GRACE /
+   feature-workflow / beads), means those dev instructions **do** bleed into the
+   life bot's runs. A real fix (e.g. `--bare` + API key, or a life-clean global
+   `CLAUDE.md` for the run user) is tracked separately in `aisw-aqo`.
 
 This ADR is authored from the `ai-steward-wiki` repository and records a
 principle that also governs services **outside** this repo (notably

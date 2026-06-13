@@ -1,96 +1,95 @@
-# ADR-009: Single explicit `CLAUDE_CONFIG_DIR`, decoupled from `AISW_ENV`
+# ADR-009: Use the run user's default `~/.claude` — no config-dir setting
 
 - Status: Accepted
 - Date: 2026-06-14
 - Deciders: @bgs
 - Supersedes: ADR-001
 - Related: ADR-008 (dev/life separation), ADR-010 (isolation), D-013, D-038
+- Note: this decision evolved within the 2026-06-14 design session. An earlier
+  same-day draft of ADR-009 proposed a single explicit `claude_config_dir` field
+  defaulting to a dedicated `/var/lib/ai-steward-wiki/claude-code`; that draft was
+  superseded before merge by the decision recorded here.
 
 ## Context
 
-ADR-001 made `Settings.claude_config_dir` an `env`-resolved `@property` backed by
-two slots: `claude_config_dir_local` (a dedicated dir) for `AISW_ENV=local`, and
-`claude_config_dir_vps = None` for `AISW_ENV=vps`, where `None` was meant to let
-the CLI fall back to its default `~/.claude/`.
+ADR-001 made `Settings.claude_config_dir` an `env`-resolved two-slot property
+(`claude_config_dir_local` for `local`, `None`→`~/.claude` for `vps`). Two defects
+surfaced on 2026-06-14:
 
-Two problems surfaced on 2026-06-14:
+1. The `vps`/`None` branch was dead — the runtime requires a concrete path
+   (`__main__` raised on `None`; `build_env`/`neutral_cwd` take non-optional
+   `Path`). The "VPS uses `~/.claude/`" happy path never worked after the
+   `aisw-d3i`/`aisw-adj` refactors.
+2. The `env`-coupling caused a silent no-reply outage: `AISW_ENV=local` on the VPS
+   resolved a dedicated dir that was never created → `FileNotFoundError` on every
+   classification.
 
-1. **The `vps` / `None` branch is dead code.** The runtime requires a concrete
-   path: `__main__.py` raises `RuntimeError("claude_config_dir is required ...")`
-   when the resolved value is `None`, and `build_env()` / `neutral_cwd()`
-   (`claude_cli/common.py`) take a non-optional `Path` and unconditionally set
-   `CLAUDE_CONFIG_DIR=str(dir)` and `cwd=str(dir)`. So `AISW_ENV=vps` with
-   `claude_config_dir_vps=None` crashes at startup. The ADR-001 "VPS uses
-   `~/.claude/`" happy path stopped working after the `aisw-d3i` / `aisw-adj`
-   refactors and was never exercised.
-2. **The `env`-coupling caused a production outage.** On the VPS, `AISW_ENV=local`
-   resolved the dedicated-dir slot to a path that was never created. Every
-   classification then failed with `FileNotFoundError` on the CLI `cwd`, and the
-   bot silently produced no reply (the pipeline raised before sending anything).
+Decisions taken this session that frame the final choice:
 
-Why the dedicated dir is kept (the folder itself is justified; only the
-`env`-selection of it is not). The bot runs under the developer account `bgs`
-with **no dedicated service user** (ADR-010), and `bgs` already has a personal,
-actively-used `~/.claude/`. Pointing the bot at the default `~/.claude/` would
-mix the bot's subscription auth and CLI state (sessions, history,
-`~/.claude.json`) with the developer's interactive Claude usage on the same
-account — and let concurrent processes contend over the same state files. A
-dedicated `CLAUDE_CONFIG_DIR` keeps the two apart. This is exactly ADR-001's
-original *local* rationale; what was broken in ADR-001 was the `env`-coupling and
-the dead `vps=None` branch, **not** the dedicated-dir idea itself.
-
-(Were the bot ever moved to its own service user or the now-deferred `D-038`
-hardening — where `ProtectHome=tmpfs` masks `$HOME` — a fixed path would be
-required for other reasons too; that is not the current driver.)
-
-So the *folder* is justified by the shared `bgs` account; only the *two-slot
-`env`-selection of the folder* is the unnecessary, drift-prone part this ADR
-removes.
+- **ADR-010:** run under the existing `bgs` account, no dedicated service user.
+- A dedicated `CLAUDE_CONFIG_DIR` was considered as a way to keep the bot's Claude
+  state separate from the human's. But **verified** (claude-code-guide, claude
+  2.1.175, `--help` + docs): `CLAUDE_CONFIG_DIR` relocates only settings /
+  credentials / sessions — it does **not** relocate the user-layer memory file
+  `~/.claude/CLAUDE.md`, which loads unconditionally regardless of
+  `CLAUDE_CONFIG_DIR` and is not suppressed by `--system-prompt` or
+  `--setting-sources ""`. So a dedicated dir does **not** provide
+  instruction-isolation (that concern is tracked separately, see ADR-008 note and
+  `aisw-aqo`). With instruction-isolation off the table as a justification, and the
+  bot running under `bgs` whose `~/.claude` is already authenticated, a dedicated
+  dir adds a provisioning step (`mkdir` + `claude login`) for no benefit the
+  trusted single-user deployment needs.
 
 ## Decision
 
-1. `claude_config_dir` becomes a **single explicit field**:
-   `claude_config_dir: Path = Path("/var/lib/ai-steward-wiki/claude-code")`,
-   overridable via the env var `AISW_CLAUDE_CONFIG_DIR`. **Decoupled from
-   `AISW_ENV`.**
-2. Remove `claude_config_dir_local`, `claude_config_dir_vps`, and the
-   `env`-resolving `@property`.
-3. `AISW_ENV` continues to govern **only** the Telegram token
-   (`tg_bot_token_local` / `tg_bot_token_prod`) — the genuine, validator-enforced
-   test/prod boundary *within* the life service.
-4. The field is **required**; startup fails fast with an actionable message if
-   the directory is missing or unauthenticated (the bug above becomes a clear
-   error instead of a silent no-reply).
+1. **Remove the `claude_config_dir` setting entirely** — no Settings field, no
+   `AISW_CLAUDE_CONFIG_DIR` env var, no `.env.example` entry.
+2. The bot uses the **run user's default `~/.claude`**, resolved at runtime via
+   `claude_cli.common.default_claude_config_dir()` (`Path.home() / ".claude"`),
+   which is fed to the classifier backend, wiki runner, and cron consumer
+   (`build_env` / `neutral_cwd` / `systemd-run --setenv` unchanged — they still
+   receive a concrete path, now the default). Setting `CLAUDE_CONFIG_DIR` to the
+   absolute `~/.claude` keeps the restricted subprocess env (no `HOME`) working.
+3. `AISW_ENV` governs **only** the Telegram token (`tg_bot_token_local/_prod`).
+4. **Fail-fast** at startup (`_require_claude_config_dir()` in `_amain`) if
+   `~/.claude` is missing/unauthenticated, with an actionable `claude login` hint.
+5. INV-6 (API-credential isolation) compares the API credential against `~/.claude`.
 
 ## Alternatives considered
 
-1. **Keep two slots, make both explicit (no `None`).** Rejected: YAGNI / KISS —
-   on a single-purpose host both slots point at the same dedicated dir, so the
-   split carries zero behavioral difference and re-invites the same drift.
-2. **Keep `env` as a hidden default-selector for one field.** Rejected:
-   re-introduces implicit logic (a field's value depending on another field),
-   against Explicit > Implicit, for purely cosmetic continuity.
+1. **Single explicit field, dedicated `/var/lib/...` default** (the earlier
+   same-day draft). Rejected: under ADR-010 (run as `bgs`, no service user) the
+   dedicated dir only added a `mkdir` + `claude login` step; it did not isolate
+   instructions (verified above) and `~/.claude` is already authenticated.
+2. **Keep an optional `AISW_CLAUDE_CONFIG_DIR` override.** Rejected per explicit
+   user directive — remove it entirely; reintroduce only if a real need appears.
+3. **Two env-resolved slots (ADR-001).** Rejected: dead `None` branch, caused the
+   outage, zero working divergence.
 
 ## Consequences
 
 Positive:
 
-- One SSoT for the auth location; the dead `None` branch is gone; the silent
-  no-reply outage class is eliminated (fail-fast at startup instead).
-- Provisioning becomes explicit and documented: create the dir + `claude login`
-  into it once.
+- Zero config and zero setup: `bgs` is already logged in to `~/.claude`; no
+  dedicated dir to create or authenticate. Removes the outage class.
+- One less setting; `AISW_ENV` has a single, clear job (the token).
 
-Negative / migration:
+Negative / trade-offs:
 
-- One-time `.env` migration: `AISW_CLAUDE_CONFIG_DIR_LOCAL` →
-  `AISW_CLAUDE_CONFIG_DIR`.
-- `settings.py` code change (field + validator + removal of the property) plus
-  call-site review. Executed via `feature-workflow`, not in this ADR.
+- The bot shares `~/.claude` with the developer's interactive Claude usage on the
+  `bgs` account (auth, sessions, history). Same subscription/person; low risk of
+  `~/.claude.json` contention from frequent `-p` runs; accepted for this trusted,
+  single-user, hobby-scale deployment.
+- This does **not** fix dev→life instruction mixing — the bot still loads
+  `bgs`'s global `~/.claude/CLAUDE.md`. That was never solved by the config dir;
+  see ADR-008 (corrected) and `aisw-aqo`.
 
 ## Sources
 
-- ADR-001 (superseded by this ADR)
-- `src/ai_steward_wiki/settings.py` — env-resolved property and slots
-- `src/ai_steward_wiki/claude_cli/common.py` — `build_env`, `neutral_cwd`
-- `src/ai_steward_wiki/__main__.py` — `claude_config_dir is None` guards
-- D-013 (subscription auth, shared config dir), D-038 (process isolation)
+- ADR-001 (superseded), ADR-008, ADR-010
+- claude-code-guide verification (claude 2.1.175): `CLAUDE_CONFIG_DIR` does not
+  relocate `~/.claude/CLAUDE.md`; `--system-prompt` / `--setting-sources ""` do
+  not suppress it; only `--bare` disables CLAUDE.md auto-discovery (needs
+  `ANTHROPIC_API_KEY`).
+- `src/ai_steward_wiki/claude_cli/common.py` (`default_claude_config_dir`),
+  `settings.py`, `__main__.py`

@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/settings.py
-# VERSION: 0.0.13
+# VERSION: 0.0.14
 # START_MODULE_CONTRACT
 #   PURPOSE: Runtime configuration loaded from environment via pydantic-settings.
 #   SCOPE: Settings BaseSettings (frozen). Initial fields cover Chunk 1 only;
@@ -20,7 +20,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.13 - aisw-wt5 (ADR-009): claude_config_dir is now a single
+#   LAST_CHANGE: v0.0.14 - aisw-d3h (ADR-009 final): removed the claude_config_dir
+#                field + AISW_CLAUDE_CONFIG_DIR entirely; bot uses the run user's
+#                default ~/.claude. INV-6 now compares against ~/.claude.
+#   PREVIOUS:    v0.0.13 - aisw-wt5 (ADR-009): claude_config_dir is now a single
 #                explicit field (AISW_CLAUDE_CONFIG_DIR), decoupled from env;
 #                dropped claude_config_dir_local/_vps slots + env-resolving property.
 #   PREVIOUS:    v0.0.12 - aisw-nrt (chunk 2 logging): storage_slow_query_threshold_ms.
@@ -70,11 +73,10 @@ class Settings(BaseSettings):
     log_level: LogLevel = "INFO"
     workspace_root: Path = Path("/var/lib/ai-steward-wiki/workspace")
 
-    # Claude Code CLI config dir (ADR-009). Single explicit path, decoupled from
-    # `env`; override via AISW_CLAUDE_CONFIG_DIR. Holds the subscription auth
-    # (credentials.json) read by every Stage-1 CLI run. Kept separate from any
-    # human's ~/.claude/ because the bot shares the developer account (ADR-010).
-    claude_config_dir: Path = Path("/var/lib/ai-steward-wiki/claude-code")
+    # Claude Code CLI config dir (ADR-009, final): no setting. The bot uses the
+    # run user's default ~/.claude (resolved at runtime via
+    # claude_cli.common.default_claude_config_dir); there is no dedicated dir and
+    # no AISW_CLAUDE_CONFIG_DIR override.
 
     # Telegram credentials. Two slots — selected by `env`. Keeps local test bot
     # isolated from production bot so accidental writes never reach real users.
@@ -187,7 +189,7 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "stage0_api_credential_path required when stage0_backend='anthropic_api' (INV-6)"
                 )
-            if self.stage0_api_credential_path == self.claude_config_dir:
+            if self.stage0_api_credential_path == Path.home() / ".claude":
                 raise ValueError(
                     "stage0_api_credential_path MUST NOT equal claude_config_dir (INV-6)"
                 )

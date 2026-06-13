@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/claude_cli/common.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Pure-function primitives shared by Stage-0 (classifier) and Stage-1 (wiki) Claude CLI backends.
 #   SCOPE: resolve_binary, build_env, neutral_cwd, system_prompt_argv, truncate_stderr.
@@ -11,6 +11,7 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
+#   default_claude_config_dir - ~/.claude (the CLI's default subscription-auth dir)
 #   resolve_binary - shutil.which absolute-path resolver with /-path short-circuit
 #   build_env - restricted env dict (CLAUDE_CONFIG_DIR + minimal PATH) for CLI subprocess
 #   neutral_cwd - working directory that does NOT auto-discover project CLAUDE.md
@@ -19,7 +20,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-adj: switch system_prompt_argv from --system-prompt-file
+#   LAST_CHANGE: v0.0.3 - aisw-d3h: add default_claude_config_dir() = ~/.claude. The
+#                bot uses bgs's default Claude dir; the dedicated dir + AISW_CLAUDE_CONFIG_DIR
+#                were dropped (revised ADR-009).
+#   PREVIOUS:    v0.0.2 - aisw-adj: switch system_prompt_argv from --system-prompt-file
 #                         to inline --system-prompt with file content. The file form does
 #                         NOT replace the default Claude Code system prompt under
 #                         subscription auth (verified 2026-05-12, claude 2.1.139).
@@ -33,11 +37,23 @@ from pathlib import Path
 
 __all__ = [
     "build_env",
+    "default_claude_config_dir",
     "neutral_cwd",
     "resolve_binary",
     "system_prompt_argv",
     "truncate_stderr",
 ]
+
+
+def default_claude_config_dir() -> Path:
+    """The Claude CLI's default subscription-auth dir: ``~/.claude`` (ADR-009).
+
+    The bot runs under the developer account and uses that account's default
+    Claude config dir — no dedicated dir, no AISW_CLAUDE_CONFIG_DIR override.
+    Used as the explicit CLAUDE_CONFIG_DIR for the restricted subprocess env
+    (which carries no HOME) and as the neutral cwd.
+    """
+    return Path.home() / ".claude"
 
 
 def resolve_binary(binary: str) -> str:

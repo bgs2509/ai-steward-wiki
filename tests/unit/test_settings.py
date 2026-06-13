@@ -10,7 +10,7 @@ from ai_steward_wiki.settings import Settings
 
 def test_defaults_load_without_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
-    for key in ("AISW_LOG_LEVEL", "AISW_WORKSPACE_ROOT", "AISW_CLAUDE_CONFIG_DIR"):
+    for key in ("AISW_LOG_LEVEL", "AISW_WORKSPACE_ROOT"):
         monkeypatch.delenv(key, raising=False)
     s = Settings()
     assert s.log_level == "INFO"
