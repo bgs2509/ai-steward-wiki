@@ -203,7 +203,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
@@ -357,6 +357,8 @@ _RECURRING_KEYWORDS = frozenset({"кажд", "ежедневн", "еженеде
 
 REMINDER_RECAP_RU = "Поставлю напоминание на {when_local} ({tz}): «{message}». Подтверждаешь?"
 REMINDER_ACK_RU = "Готово — напомню {when_local}."
+# #3 aisw-5wr: a pre-reminder ("an hour before") sends a second, earlier ping.
+REMINDER_ACK_LEAD_RU = "Готово — напомню {when_local}, и ещё раз заранее."
 REMINDER_UNPARSEABLE_RU = "Не понял, на когда поставить напоминание — уточни время."  # noqa: RUF001
 REMINDER_PAST_RU = "Эта дата уже прошла — назови будущую."
 REMINDER_RECURRING_RU = "Регулярные сводки — скоро будет, пока могу только разовые напоминания."
@@ -435,6 +437,35 @@ def _extract_hhmm(text: str) -> str | None:
     if not (0 <= hh <= 23 and 0 <= mm <= 59):
         return None
     return f"{hh:02d}:{mm:02d}"
+
+
+# #3 aisw-5wr: a pre-reminder phrase ("an hour before") -> lead offset in minutes.
+_LEAD_RE = re.compile(
+    r"за\s+(?:(\d+)\s+)?(полчаса|минут\w*|мин|час\w*|сут\w*|дн\w*|день|дня)\s+до",
+    re.IGNORECASE,
+)
+
+
+def _extract_lead_minutes(text: str) -> int:
+    """Minutes for an «за N <unit> до» pre-reminder, or 0 if none.
+
+    «за час до» → 60, «за 30 минут до» → 30, «за полчаса до» → 30,
+    «за 2 дня до» → 2880. A bare unit with no number means 1.
+    """
+    m = _LEAD_RE.search(text)
+    if not m:
+        return 0
+    unit = m.group(2).lower()
+    if unit.startswith("полчаса"):
+        return 30
+    n = int(m.group(1)) if m.group(1) else 1
+    if unit.startswith(("мин",)):
+        return n
+    if unit.startswith("час"):
+        return n * 60
+    if unit.startswith(("сут", "дн")) or unit in ("день", "дня"):
+        return n * 1440
+    return 0
 
 
 def _with_caption(text: str, caption: str | None) -> str:
@@ -1316,7 +1347,7 @@ class DefaultPipeline:
         draft = {
             "when_utc": when_iso,
             "message": message,
-            "lead_time_min": 0,
+            "lead_time_min": _extract_lead_minutes(text),
             "user_tz": str(user_tz),
             "correlation_id": correlation_id,
         }
@@ -2126,6 +2157,11 @@ class DefaultPipeline:
         # Local import: keep the scheduler/firing dependency lazy and test-friendly.
         from ai_steward_wiki.scheduler.firing import create_reminder_job
 
+        # #3 aisw-5wr: a pre-reminder phrase schedules a SECOND, earlier reminder at
+        # (T - lead) in addition to the main one at T. The dormant ReminderPayload
+        # lead_time_min field is not a fire-time mechanism, so two real jobs are
+        # created (lead_time_min=0 on both). The early job is skipped if (T - lead)
+        # is already in the past.
         async with self._jobs_session_maker() as session:
             job_id = await create_reminder_job(
                 session,
@@ -2134,17 +2170,33 @@ class DefaultPipeline:
                 chat_id=chat_id,
                 when_utc=when_utc,
                 message=message,
-                lead_time_min=lead,
+                lead_time_min=0,
                 correlation_id=correlation_id,
             )
+            lead_job_id: int | None = None
+            early_utc = when_utc - timedelta(minutes=lead)
+            if lead > 0 and early_utc > self._clock():
+                lead_job_id = await create_reminder_job(
+                    session,
+                    self._scheduler,
+                    owner_telegram_id=telegram_id,
+                    chat_id=chat_id,
+                    when_utc=early_utc,
+                    message=message,
+                    lead_time_min=0,
+                    correlation_id=f"{correlation_id}-lead",
+                )
         when_local = when_utc.astimezone(user_tz).strftime("%d.%m %H:%M")
-        await self._sender.send_message(chat_id, REMINDER_ACK_RU.format(when_local=when_local))
+        ack = REMINDER_ACK_LEAD_RU if lead_job_id is not None else REMINDER_ACK_RU
+        await self._sender.send_message(chat_id, ack.format(when_local=when_local))
         _log.info(
             "tg.pipeline.reminder.confirm_created",
             correlation_id=correlation_id,
             telegram_id=telegram_id,
             pending_id=pending_id,
             job_id=job_id,
+            lead_job_id=lead_job_id,
+            lead_time_min=lead,
             when_utc=str(draft["when_utc"]),
         )
 

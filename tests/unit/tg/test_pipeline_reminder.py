@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,12 +23,14 @@ from ai_steward_wiki.storage.jobs.models import Job
 from ai_steward_wiki.storage.jobs.payloads import ReminderPayload, parse_job_payload
 from ai_steward_wiki.tg.confirm import build_route_confirm_keyboard
 from ai_steward_wiki.tg.pipeline import (
+    REMINDER_ACK_LEAD_RU,
     REMINDER_CONFIRM_CANCELLED_RU,
     REMINDER_CONFIRM_STALE_RU,
     REMINDER_PAST_RU,
     REMINDER_RECURRING_RU,
     REMINDER_UNPARSEABLE_RU,
     DefaultPipeline,
+    _extract_lead_minutes,
 )
 from tests.unit.tg.conftest import FakeSender
 
@@ -413,7 +415,10 @@ async def test_reminder_intent_generic_exception_emits_unparseable_ru() -> None:
 
 
 def _pending_reminder(
-    *, when_iso: str = "2026-05-13T03:00:00+00:00", message: str = "позвонить врачу"
+    *,
+    when_iso: str = "2026-05-13T03:00:00+00:00",
+    message: str = "позвонить врачу",
+    lead_time_min: int = 0,
 ) -> MagicMock:
     p = MagicMock()
     p.category = "reminder"
@@ -421,7 +426,7 @@ def _pending_reminder(
         {
             "when_utc": when_iso,
             "message": message,
-            "lead_time_min": 0,
+            "lead_time_min": lead_time_min,
             "user_tz": "Europe/Moscow",
             "correlation_id": "c",
         }
@@ -536,3 +541,71 @@ async def test_non_reminder_category_uses_generic_resolve(jobs_maker) -> None:
     )
     await pipe.on_confirm_callback(telegram_id=42, chat_id=42, pending_id=9, action="confirm")
     confirm.resolve.assert_awaited_once_with(42, 9, "confirm")
+
+
+# --- lead offset: «… а ещё за N до» (#3, aisw-5wr) -------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("напомни в субботу в 12, а ещё за час до", 60),
+        ("за 30 минут до", 30),
+        ("за полчаса до", 30),
+        ("за 2 часа до", 120),
+        ("за 2 дня до", 2880),
+        ("напомни завтра в 9", 0),
+        ("просто текст без оффсета", 0),
+    ],
+)
+def test_extract_lead_minutes(text: str, expected: int) -> None:
+    assert _extract_lead_minutes(text) == expected
+
+
+async def test_confirm_with_lead_creates_two_jobs(jobs_maker) -> None:
+    sender = FakeSender()
+    confirm = MagicMock()
+    confirm.get_pending = AsyncMock(return_value=_pending_reminder(lead_time_min=60))
+    confirm.resolve = AsyncMock(return_value="confirmed")
+    sched = _FakeScheduler()
+    pipe = _pipe(
+        sender=sender,
+        classifier=_classifier(),
+        confirmation=confirm,
+        jobs_session_maker=jobs_maker,
+        scheduler=sched,
+    )
+    await pipe.on_confirm_callback(telegram_id=42, chat_id=42, pending_id=7, action="confirm")
+
+    async with jobs_maker() as s:
+        rows = (await s.execute(Job.__table__.select())).all()
+    # main at FUTURE (03:00) + lead at FUTURE-60min (02:00)
+    assert len(rows) == 2
+    scheduled = sorted(r._mapping["scheduled_at_utc"] for r in rows)
+    assert scheduled[0] == (FUTURE - timedelta(minutes=60)).replace(tzinfo=None)
+    assert scheduled[1] == FUTURE.replace(tzinfo=None)
+    assert len(sched.calls) == 2
+    assert sender.sends[-1]["text"] == REMINDER_ACK_LEAD_RU.format(when_local="13.05 06:00")
+
+
+async def test_confirm_lead_in_past_creates_only_main(jobs_maker) -> None:
+    sender = FakeSender()
+    confirm = MagicMock()
+    # main only 30 min after NOW; a 60-min lead lands in the past → skip the early job.
+    near = "2026-05-12T18:30:00+00:00"
+    confirm.get_pending = AsyncMock(return_value=_pending_reminder(when_iso=near, lead_time_min=60))
+    confirm.resolve = AsyncMock(return_value="confirmed")
+    sched = _FakeScheduler()
+    pipe = _pipe(
+        sender=sender,
+        classifier=_classifier(),
+        confirmation=confirm,
+        jobs_session_maker=jobs_maker,
+        scheduler=sched,
+    )
+    await pipe.on_confirm_callback(telegram_id=42, chat_id=42, pending_id=7, action="confirm")
+
+    async with jobs_maker() as s:
+        rows = (await s.execute(Job.__table__.select())).all()
+    assert len(rows) == 1
+    assert len(sched.calls) == 1
