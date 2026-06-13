@@ -381,6 +381,61 @@ DIGEST_WIKI_UNKNOWN_RU = (
 )
 _WEEKDAY_RU_SHORT = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")  # noqa: RUF001
 
+# Digest control (#2, aisw-578): «выключи/переноси сводку» edit an existing job.
+DIGEST_DISABLED_RU = "Выключил ежедневную сводку."
+DIGEST_NONE_RU = "У тебя нет активной сводки."  # noqa: RUF001
+DIGEST_RESCHEDULED_RU = "Перенёс сводку на {time}."
+DIGEST_RESCHEDULE_NOTIME_RU = (
+    "Не понял, на какое время перенести сводку. Например: «переноси сводку на 7:30»."  # noqa: RUF001
+)
+# Rule-based action detection — consistent with the rule-based recurrence parser
+# (the whole digest fast-path is deterministic, no LLM round-trip here).
+_DIGEST_DISABLE_RE = re.compile(
+    r"(выключ|отключ|убер|останов|отмен|не присыла|не нужн|больше не)",  # noqa: RUF001
+    re.IGNORECASE,
+)
+_DIGEST_RESCHEDULE_RE = re.compile(
+    r"(перенес|перенёс|перенос|сдвин|поменя|измен)",
+    re.IGNORECASE,
+)
+# HH:MM («7:30», «07.30») or a bare hour after в/на («на 7», «в 9 утра»).
+_DIGEST_HHMM_RE = re.compile(r"(?<!\d)(\d{1,2})[:.](\d{2})(?!\d)")
+_DIGEST_BARE_HOUR_RE = re.compile(
+    r"(?:\bв\b|\bна\b)\s*(\d{1,2})(?!\s*[:.]?\d)",  # noqa: RUF001
+    re.IGNORECASE,
+)
+
+
+def _detect_digest_action(text: str) -> str:
+    """Classify a «сводка» message into 'disable' | 'reschedule' | 'create'.
+
+    Rule-based (deterministic, no LLM): disable keywords win over reschedule, and
+    reschedule requires both a reschedule verb and a parseable time.
+    """
+    if _DIGEST_DISABLE_RE.search(text):
+        return "disable"
+    if _DIGEST_RESCHEDULE_RE.search(text) and _extract_hhmm(text) is not None:
+        return "reschedule"
+    return "create"
+
+
+def _extract_hhmm(text: str) -> str | None:
+    """Extract a zero-padded HH:MM from free text, or None.
+
+    Accepts «7:30» / «07.30» and a bare hour after в/на («на 7» → «07:00»).
+    """
+    m = _DIGEST_HHMM_RE.search(text)
+    if m:
+        hh, mm = int(m.group(1)), int(m.group(2))
+    else:
+        m = _DIGEST_BARE_HOUR_RE.search(text)
+        if not m:
+            return None
+        hh, mm = int(m.group(1)), 0
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        return None
+    return f"{hh:02d}:{mm:02d}"
+
 
 def _with_caption(text: str, caption: str | None) -> str:
     """Prepend a user caption (if any) as context for the Stage-1 prompt."""
@@ -883,6 +938,21 @@ class DefaultPipeline:
             return
         # END_BLOCK_REMINDER_FASTPATH
 
+        # START_BLOCK_DIGEST_FASTPATH (aisw-578)
+        # A digest-classified message (create OR control: «делай/переноси/выключи
+        # сводку») reaches the same handler. Reminder-classified recurring phrasing
+        # already funnels into _handle_digest_intent via _RECURRING_KEYWORDS above;
+        # this branch covers the intent=digest case, which was previously unhandled.
+        if result.intent is Intent.DIGEST and result.confidence >= REMINDER_CONFIDENCE_THRESHOLD:
+            await self._handle_digest_intent(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                text=text,
+                correlation_id=correlation_id,
+            )
+            return
+        # END_BLOCK_DIGEST_FASTPATH
+
         # START_BLOCK_HINT_FASTPATH (aisw-5sd, Inbox-WIKI Phase-E.b)
         # Before the ~10-30s Sonnet Router-Claude run: if the sender's cached
         # '## Inbox hint' catalog points unambiguously at ONE domain WIKI for
@@ -1286,7 +1356,21 @@ class DefaultPipeline:
         a ru clarification; otherwise a category='digest' confirm draft + recap
         proposed via ConfirmationService.request_explicit with the 2-button
         keyboard. The jobs.Job row is created only on confirm.
+
+        «выключи/переноси сводку» (#2, aisw-578) edit an existing digest job
+        instead of creating one — dispatched before the create flow.
         """
+        action = _detect_digest_action(text)
+        if action == "disable":
+            await self._dispatch_digest_disable(
+                telegram_id=telegram_id, chat_id=chat_id, correlation_id=correlation_id
+            )
+            return
+        if action == "reschedule":
+            await self._dispatch_digest_reschedule(
+                telegram_id=telegram_id, chat_id=chat_id, text=text, correlation_id=correlation_id
+            )
+            return
         if self._recurrence_parser is None:
             await self._sender.send_message(chat_id, REMINDER_RECURRING_RU)
             _log.info(
@@ -1352,6 +1436,77 @@ class DefaultPipeline:
             correlation_id=correlation_id,
             telegram_id=telegram_id,
             pending_id=record.pending_id,
+        )
+
+    async def _dispatch_digest_disable(
+        self, *, telegram_id: int, chat_id: int, correlation_id: str
+    ) -> None:
+        """«выключи сводку» → disable the owner's digest job(s) (#2, aisw-578)."""
+        if self._jobs_session_maker is None or self._scheduler is None:
+            await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
+            _log.error(
+                "tg.pipeline.digest.disable_misconfigured",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+            )
+            return
+        from ai_steward_wiki.scheduler.firing import disable_digest_jobs
+
+        async with self._jobs_session_maker() as session:
+            count = await disable_digest_jobs(
+                session,
+                self._scheduler,
+                owner_telegram_id=telegram_id,
+                correlation_id=correlation_id,
+            )
+        await self._sender.send_message(chat_id, DIGEST_DISABLED_RU if count else DIGEST_NONE_RU)
+        _log.info(
+            "tg.pipeline.digest.disabled",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            count=count,
+        )
+
+    async def _dispatch_digest_reschedule(
+        self, *, telegram_id: int, chat_id: int, text: str, correlation_id: str
+    ) -> None:
+        """«переноси сводку на HH:MM» → move the owner's digest job(s) (#2, aisw-578)."""
+        hhmm = _extract_hhmm(text)
+        if hhmm is None:
+            await self._sender.send_message(chat_id, DIGEST_RESCHEDULE_NOTIME_RU)
+            _log.info(
+                "tg.pipeline.digest.reschedule_notime",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+            )
+            return
+        if self._jobs_session_maker is None or self._scheduler is None:
+            await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
+            _log.error(
+                "tg.pipeline.digest.reschedule_misconfigured",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+            )
+            return
+        from ai_steward_wiki.scheduler.firing import reschedule_digest_jobs
+
+        async with self._jobs_session_maker() as session:
+            count = await reschedule_digest_jobs(
+                session,
+                self._scheduler,
+                owner_telegram_id=telegram_id,
+                time_hhmm=hhmm,
+                correlation_id=correlation_id,
+            )
+        await self._sender.send_message(
+            chat_id, DIGEST_RESCHEDULED_RU.format(time=hhmm) if count else DIGEST_NONE_RU
+        )
+        _log.info(
+            "tg.pipeline.digest.rescheduled",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            count=count,
+            time=hhmm,
         )
 
     # END_BLOCK_DIGEST_INTENT

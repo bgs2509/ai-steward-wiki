@@ -114,7 +114,9 @@ async def test_routable_intent_goes_through_router_not_runner(intent: Intent) ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("intent", [Intent.REMINDER, Intent.DIGEST, Intent.WIKI_LINT, Intent.ADMIN])
+# Intent.DIGEST is no longer legacy — it has its own fast-path (#2, aisw-578),
+# covered in test_pipeline_digest.py.
+@pytest.mark.parametrize("intent", [Intent.REMINDER, Intent.WIKI_LINT, Intent.ADMIN])
 async def test_non_routable_intent_uses_legacy_path(intent: Intent) -> None:
     sender = FakeSender()
     router = _make_router()
