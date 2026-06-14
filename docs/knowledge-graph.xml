@@ -10,7 +10,7 @@
       <depends>none</depends>
       <verification-ref>V-M-FOUNDATION-SETTINGS</verification-ref>
       <annotations>
-        <type-Settings PURPOSE="Frozen BaseSettings: log_level, workspace_root, claude_config_dir_local/_vps (resolved by env), *_db_url, default_user_tz (fallback IANA TZ for NL time, default 'Europe/Moscow', aisw-kcz)"/>
+        <type-Settings PURPOSE="Frozen BaseSettings: log_level, workspace_root, *_db_url, default_user_tz (fallback IANA TZ for NL time, default 'Europe/Moscow', aisw-kcz). No claude_config_dir setting — the bot uses the run user's default ~/.claude via claude_cli.common.default_claude_config_dir (ADR-009 final)."/>
         <type-LogLevel PURPOSE="Literal alias for accepted log levels"/>
         <fn-get_settings PURPOSE="lru_cached singleton accessor"/>
       </annotations>
@@ -169,6 +169,7 @@
       <depends>none</depends>
       <verification-ref>V-M-CLAUDE-CLI-COMMON</verification-ref>
       <annotations>
+        <fn-default_claude_config_dir PURPOSE="~/.claude — the run user's default Claude subscription-auth dir (ADR-009 final; no dedicated dir, no AISW_CLAUDE_CONFIG_DIR)"/>
         <fn-resolve_binary PURPOSE="shutil.which absolute-path resolver with /-path short-circuit"/>
         <fn-build_env PURPOSE="restricted env dict (CLAUDE_CONFIG_DIR + minimal PATH) for CLI subprocess"/>
         <fn-neutral_cwd PURPOSE="working directory that does NOT auto-discover project CLAUDE.md"/>

@@ -162,6 +162,7 @@ from ai_steward_wiki.classifier.recurrence import RecurrenceParseResult, parse_r
 from ai_steward_wiki.classifier.schema import ClassifierResult, Intent, TimeParseResult
 from ai_steward_wiki.classifier.stage0 import PromptCache, classify
 from ai_steward_wiki.classifier.time_parse import parse_time as _parse_time_fn
+from ai_steward_wiki.claude_cli.common import default_claude_config_dir
 from ai_steward_wiki.inbox.hint_cache import InboxHintCacheRepo, get_or_refresh_hint
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
 from ai_steward_wiki.inbox.materialize import ensure_inbox_wiki
@@ -935,13 +936,8 @@ def _build_classifier_backend(settings: Settings) -> ClassifierBackend:
         return AnthropicApiBackend(
             credential_path=settings.stage0_api_credential_path,
         )
-    if settings.claude_config_dir is None:
-        raise RuntimeError(
-            "claude_config_dir is required for claude_cli backend; set "
-            "AISW_CLAUDE_CONFIG_DIR_LOCAL or AISW_CLAUDE_CONFIG_DIR_VPS"
-        )
     return ClaudeCliBackend(
-        claude_config_dir=settings.claude_config_dir,
+        claude_config_dir=default_claude_config_dir(),
         timeout_s=settings.classifier_stage0_timeout_s,
     )
 
@@ -984,6 +980,22 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop, stop: asyncio.Even
             loop.add_signal_handler(sig, _handler, name)
 
 
+def _require_claude_config_dir() -> None:
+    """Fail fast at startup if the Claude CLI config dir is missing (ADR-009).
+
+    The bot uses the run user's default ~/.claude, which holds the subscription
+    auth (credentials.json) read by every Stage-1 CLI run. A missing/unauthenticated
+    dir means the CLI cannot authenticate and the bot would fail silently on the
+    first classification, so we stop here with an actionable message instead.
+    """
+    config_dir = default_claude_config_dir()
+    if not config_dir.is_dir():
+        raise RuntimeError(
+            f"Claude config dir does not exist: {config_dir}. Authenticate the "
+            f"run user once: `claude login` (creates {config_dir})."
+        )
+
+
 async def _amain() -> None:
     # START_BLOCK_RUNTIME_BOOTSTRAP
     correlation_id = f"proc-{uuid4().hex[:8]}"
@@ -1002,6 +1014,8 @@ async def _amain() -> None:
             f"tg_bot_token missing for env={settings.env!r}; "
             f"set AISW_TG_BOT_TOKEN_LOCAL or AISW_TG_BOT_TOKEN_PROD"
         )
+
+    _require_claude_config_dir()
 
     db_urls = [settings.jobs_db_url, settings.audit_db_url, settings.sessions_db_url]
     _ensure_data_dirs(db_urls)
@@ -1082,11 +1096,6 @@ async def _amain() -> None:
     runtime_dir = settings.workspace_root / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     lock_manager = WikiLockManager()
-    if settings.claude_config_dir is None:
-        raise RuntimeError(
-            "claude_config_dir is required for wiki runner; set "
-            "AISW_CLAUDE_CONFIG_DIR_LOCAL or AISW_CLAUDE_CONFIG_DIR_VPS"
-        )
     runner_adapter = _WikiRunnerAdapter(
         wiki_root=settings.wiki_root,
         base_prompt_path=settings.prompts_dir / "wiki.md",
@@ -1098,7 +1107,7 @@ async def _amain() -> None:
             model=settings.wiki_runner_model,
             timeout_s=settings.wiki_runner_timeout_s,
             term_grace_s=settings.wiki_runner_term_grace_s,
-            claude_config_dir=settings.claude_config_dir,
+            claude_config_dir=default_claude_config_dir(),
         ),
     )
     # aisw-oqq: recurring-digest fast-path parser + digest firing context.
@@ -1114,7 +1123,7 @@ async def _amain() -> None:
             model=settings.wiki_runner_model,
             timeout_s=600.0,
             term_grace_s=settings.wiki_runner_term_grace_s,
-            claude_config_dir=settings.claude_config_dir,
+            claude_config_dir=default_claude_config_dir(),
         ),
     )
     owner_wikis_resolver = _resolve_owner_wikis_factory(settings.wiki_root)
@@ -1134,16 +1143,11 @@ async def _amain() -> None:
     # async consumer (scheduler.consumer.CronConsumer.run()).
     cron_user_queue = PriorityJobQueue()
     cron_user_mod.set_cron_user_context(scheduler, cron_user_queue, jobs_maker)
-    if settings.claude_config_dir is None:
-        raise RuntimeError(
-            "claude_config_dir is required for cron-user consumer; set "
-            "AISW_CLAUDE_CONFIG_DIR_LOCAL or AISW_CLAUDE_CONFIG_DIR_VPS"
-        )
     cron_consumer = CronConsumer(
         queue=cron_user_queue,
         bot=bot,
         claude_binary=settings.claude_cli_binary,
-        claude_config_dir=settings.claude_config_dir,
+        claude_config_dir=default_claude_config_dir(),
         prompt_path=settings.cron_user_prompt_path,
         jobs_session_maker=jobs_maker,
         timeout_s=settings.cron_user_timeout_s,
@@ -1161,7 +1165,7 @@ async def _amain() -> None:
             model=settings.wiki_runner_model,
             timeout_s=settings.wiki_runner_timeout_s,
             term_grace_s=settings.wiki_runner_term_grace_s,
-            claude_config_dir=settings.claude_config_dir,
+            claude_config_dir=default_claude_config_dir(),
         ),
     )
     librarian_adapter = _LibrarianAdapter(
@@ -1179,7 +1183,7 @@ async def _amain() -> None:
             model=settings.wiki_runner_model,
             timeout_s=settings.wiki_runner_timeout_s,
             term_grace_s=settings.wiki_runner_term_grace_s,
-            claude_config_dir=settings.claude_config_dir,
+            claude_config_dir=default_claude_config_dir(),
         ),
     )
     runs_dir = settings.workspace_root / "runs"

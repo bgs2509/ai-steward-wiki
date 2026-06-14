@@ -18,13 +18,12 @@ def test_api_backend_requires_credential() -> None:
 
 
 def test_api_credential_must_differ_from_oauth_dir() -> None:
-    shared = Path("/var/lib/ai-steward-wiki/claude-code")
+    oauth_dir = Path.home() / ".claude"
     with pytest.raises(ValueError, match="MUST NOT equal claude_config_dir"):
         Settings(  # type: ignore[call-arg]
             _env_file=None,
             stage0_backend="anthropic_api",
-            stage0_api_credential_path=shared,
-            claude_config_dir_local=shared,
+            stage0_api_credential_path=oauth_dir,
         )
 
 
