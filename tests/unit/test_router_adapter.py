@@ -103,11 +103,41 @@ async def test_route_materialises_inbox_stages_raw_and_runs_in_inbox(tmp_path: P
     assert kw["wiki_id"] == "42/Inbox-WIKI"
     assert kw["wiki_path"] == inbox_dir
     assert kw["overlay_prompt_path"] == tmp_path / "prompts" / "inbox.md"
-    assert kw["user_input"] == "вот авиабилет"
+    # user_input now carries the existing-WIKI context header (aisw-2co); none exist here
+    assert kw["user_input"].endswith("вот авиабилет")
+    assert "нет ни одной" in kw["user_input"]
 
     assert decision.intent is RouterIntent.ROUTE
     assert decision.target_wiki == "Travel-WIKI"
     assert decision.parsed_ok is True
+
+
+@pytest.mark.asyncio
+async def test_route_passes_existing_wikis_to_router(tmp_path: Path) -> None:
+    adapter, wiki_root = _make_adapter(tmp_path)
+    owner = wiki_root / "42"
+    for name in ("Medical-WIKI", "Budget-WIKI", "Inbox-WIKI"):
+        (owner / name).mkdir(parents=True)
+    block = "```router\ntarget_wiki: Medical-WIKI\nintent: route\nnotes: В Medical-WIKI.\n```"
+    with patch.object(
+        runtime, "run_wiki_session", new=AsyncMock(return_value=_fake_run_result(block))
+    ) as run_mock:
+        decision = await adapter.route(
+            text="давление 137 96 пульс 78",
+            telegram_id=42,
+            correlation_id="tg-1-42",
+            source="text",
+            media_paths=None,
+            timeout_s=None,
+        )
+
+    ui = run_mock.await_args.kwargs["user_input"]
+    assert "Medical-WIKI" in ui
+    assert "Budget-WIKI" in ui
+    assert "Inbox-WIKI" not in ui  # Inbox-WIKI is excluded from the router's existing list
+    assert "давление 137 96 пульс 78" in ui
+    assert decision.intent is RouterIntent.ROUTE
+    assert decision.target_wiki == "Medical-WIKI"
 
 
 @pytest.mark.asyncio

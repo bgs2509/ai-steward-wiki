@@ -9,8 +9,23 @@ from ai_steward_wiki.inbox.router import (
     RouterDecision,
     RouterError,
     RouterIntent,
+    build_router_input,
     parse_router_reply,
 )
+
+
+def test_build_router_input_lists_existing_wikis() -> None:
+    out = build_router_input("давление 137 96 пульс 78", ["Medical-WIKI", "Budget-WIKI"])
+    assert "Существующие WIKI" in out
+    assert "Medical-WIKI" in out
+    assert "Budget-WIKI" in out
+    assert out.endswith("давление 137 96 пульс 78")
+
+
+def test_build_router_input_empty_list() -> None:
+    out = build_router_input("привет", [])
+    assert "нет ни одной" in out
+    assert out.endswith("привет")
 
 
 def _block(target: str, intent: str, notes: str) -> str:

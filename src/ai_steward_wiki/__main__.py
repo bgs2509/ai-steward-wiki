@@ -173,7 +173,12 @@ from ai_steward_wiki.inbox.route import (
     resolve_target_wiki,
     stage_raw_into_wiki,
 )
-from ai_steward_wiki.inbox.router import RouterDecision, RouterError, parse_router_reply
+from ai_steward_wiki.inbox.router import (
+    RouterDecision,
+    RouterError,
+    build_router_input,
+    parse_router_reply,
+)
 from ai_steward_wiki.inbox.staging import promote_path_to_raw
 from ai_steward_wiki.logging_setup import configure_logging
 from ai_steward_wiki.ops.pii import PIIRedactor
@@ -672,6 +677,17 @@ class _RouterAdapter:
         self._spawner = spawner
         self._run_config = run_config
 
+    def _list_existing_wikis(self, telegram_id: int) -> list[str]:
+        """Owner's existing <Domain>-WIKI dir names (minus Inbox-WIKI) for router context (aisw-2co)."""
+        owner_dir = self._wiki_root / str(telegram_id)
+        if not owner_dir.is_dir():
+            return []
+        return [
+            entry.name
+            for entry in sorted(owner_dir.iterdir())
+            if entry.is_dir() and entry.name.endswith("-WIKI") and entry.name != "Inbox-WIKI"
+        ]
+
     async def route(
         self,
         *,
@@ -708,6 +724,14 @@ class _RouterAdapter:
             source=source,
             media_count=len(media_paths) if media_paths else 0,
         )
+        existing_wikis = self._list_existing_wikis(telegram_id)
+        router_input = build_router_input(text, existing_wikis)
+        logger.info(
+            "inbox.router.existing_wikis",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            count=len(existing_wikis),
+        )
         try:
             result = await run_wiki_session(
                 wiki_id=wiki_id,
@@ -720,7 +744,7 @@ class _RouterAdapter:
                 acquirer=self._acquirer,
                 spawner=self._spawner,
                 config=self._run_config,
-                user_input=text,
+                user_input=router_input,
                 media_paths=media_paths,
                 timeout_s=timeout_s,
             )

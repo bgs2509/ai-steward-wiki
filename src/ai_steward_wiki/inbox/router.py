@@ -1,10 +1,11 @@
 # FILE: src/ai_steward_wiki/inbox/router.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Parse the Stage-1a Inbox-WIKI Router reply (a fenced ```router block) into a RouterDecision.
-#   SCOPE: RouterIntent enum, RouterDecision model, RouterError, parse_router_reply (tolerant, fallback to CLARIFY).
+#   SCOPE: RouterIntent enum, RouterDecision model, RouterError, parse_router_reply (tolerant, fallback to CLARIFY),
+#          build_router_input (prefix user input with the owner's existing <Domain>-WIKI list).
 #   DEPENDS: pydantic, re, enum
-#   LINKS: D-004, D-016, prompts/inbox.md (>=1.1.0), M-INBOX-ROUTER, aisw-dsg
+#   LINKS: D-004, D-016, prompts/inbox.md (>=1.1.0), M-INBOX-ROUTER, aisw-dsg, aisw-2co
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -14,15 +15,20 @@
 #   RouterDecision - frozen Pydantic model (intent, target_wiki, notes, raw, parsed_ok)
 #   RouterError - raised by the runtime adapter when the Router CLI run fails unrecoverably
 #   parse_router_reply - extract the last ```router block, parse key:value, normalise, fallback to CLARIFY
+#   build_router_input - prefix the router user-input with the owner's existing <Domain>-WIKI names
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - initial Router reply model + parser (aisw-dsg, Inbox-WIKI Phase-A)
+#   LAST_CHANGE: v0.0.2 - aisw-2co: add build_router_input — surface the owner's existing
+#                <Domain>-WIKI list to the Stage-1a router so it can route to an existing
+#                WIKI (e.g. medical data -> Medical-WIKI) instead of always proposing a new one.
+#   PREVIOUS:    v0.0.1 - initial Router reply model + parser (aisw-dsg, Inbox-WIKI Phase-A)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
@@ -31,6 +37,7 @@ __all__ = [
     "RouterDecision",
     "RouterError",
     "RouterIntent",
+    "build_router_input",
     "parse_router_reply",
 ]
 
@@ -117,6 +124,29 @@ def parse_router_reply(text: str) -> RouterDecision:
         notes = _GENERIC_CLARIFY_RU if intent is RouterIntent.CLARIFY else "(без пояснения)"
     return RouterDecision(intent=intent, target_wiki=target, notes=notes, raw=raw, parsed_ok=True)
     # END_BLOCK_NORMALISE
+
+
+# START_CONTRACT: build_router_input
+#   PURPOSE: Prefix the Stage-1a router user-input with the owner's existing <Domain>-WIKI list.
+#   INPUTS: { text: str - the raw message, existing_wikis: Sequence[str] - dir names like "Medical-WIKI" }
+#   OUTPUTS: { str - a header line listing existing WIKIs, a blank line, then the text }
+#   SIDE_EFFECTS: none (pure)
+#   LINKS: prompts/inbox.md, M-INBOX-ROUTER, aisw-2co
+# END_CONTRACT: build_router_input
+def build_router_input(text: str, existing_wikis: Sequence[str]) -> str:
+    """Surface the owner's existing <Domain>-WIKI names to the router.
+
+    The Stage-1a router runs scoped to Inbox-WIKI and cannot otherwise see sibling
+    WIKIs, so without this list it can only ever propose ``create_wiki``. Listing
+    the existing WIKIs lets it return ``intent=route`` to a matching one
+    (e.g. blood-pressure text -> Medical-WIKI) instead of duplicating a domain.
+    """
+    if existing_wikis:
+        listing = ", ".join(existing_wikis)
+        header = f"[Существующие WIKI пользователя: {listing}]"
+    else:
+        header = "[У пользователя пока нет ни одной <Domain>-WIKI]"  # noqa: RUF001
+    return f"{header}\n\n{text}"
 
 
 def _fallback(raw: str, *, notes: str = "") -> RouterDecision:
