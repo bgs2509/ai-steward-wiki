@@ -1,45 +1,37 @@
-# SSoT: tech-spec §10.1 "Бот" + D-038.
-# Bot orchestrator. Runs as `aisw-bot`, holds CAP_SETUID/CAP_SETGID so it can
-# spawn per-CLI transient scopes via `systemd-run --scope --uid=aisw-<N>`.
+# ai-steward-wiki life bot — current single-user deploy unit (ADR-009 / ADR-010).
 #
-# Per-CLI hardening (MemoryMax=2G, ProtectSystem=strict, ReadOnlyPaths=...,
-# PrivateTmp, NoNewPrivileges, etc.) is applied by the bot at scope-launch
-# time as `--property=` flags, NOT here. This unit must keep
-# NoNewPrivileges=false so that systemd-run scopes can re-elevate UID.
+# Runs as `bgs` using that account's default ~/.claude (subscription auth, ADR-009)
+# and ~/.local/bin (claude + uv). This is the CURRENT model: per-user UID isolation
+# (D-038) is DEFERRED (ADR-010) for the trusted, allowlisted, single-user life
+# deployment. See aisw-bot.service.d038-deferred for the future multi-tenant unit.
+#
+# Critical differences from the D-038 unit:
+#   - No dedicated `aisw-bot` service user, no CAP_SETUID, no per-CLI scopes/slices.
+#   - NO ProtectHome — the D-038 unit's `ProtectHome=tmpfs` would hide ~/.claude
+#     and break subscription auth.
+#   - PATH must include ~/.local/bin so resolve_binary("claude") finds the CLI.
+#
+# Install (VPS): copy to /etc/systemd/system/aisw-bot.service, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now aisw-bot
+# Logs: sudo journalctl -u aisw-bot -f
 
 [Unit]
-Description=ai-steward-wiki Telegram bot (orchestrator)
+Description=ai-steward-wiki Telegram bot (life WIKI assistant)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=exec
-User=aisw-bot
-Group=aisw-bot
-SupplementaryGroups=aisw-claude
-WorkingDirectory=/opt/ai-steward-wiki
-EnvironmentFile=/etc/ai-steward-wiki/.env
-ExecStart=/opt/ai-steward-wiki/.venv/bin/python -m ai_steward_wiki
+Type=simple
+User=bgs
+Group=bgs
+WorkingDirectory=/home/bgs/works/ai-steward-wiki
+Environment=HOME=/home/bgs
+Environment=PATH=/home/bgs/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/bgs/works/ai-steward-wiki/.venv/bin/python -m ai_steward_wiki
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
-KillMode=mixed
-
-# Slice + capabilities required for systemd-run --scope --uid=...
-Slice=aisw-bot.slice
-AmbientCapabilities=CAP_SETUID CAP_SETGID
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID
-NoNewPrivileges=false
-
-# Bot-level hardening (does NOT propagate into transient scopes).
-ProtectSystem=strict
-ProtectHome=tmpfs
-PrivateTmp=yes
-PrivateDevices=yes
-ReadWritePaths=/var/lib/ai-steward-wiki /var/log/ai-steward-wiki
-ReadOnlyPaths=/opt/ai-steward-wiki/prompts /var/lib/ai-steward-wiki/claude-code
-
-# Logging: structlog → stdout → journald.
+NoNewPrivileges=true
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=aisw-bot
