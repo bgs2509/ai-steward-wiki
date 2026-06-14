@@ -18,7 +18,20 @@ from ai_steward_wiki.tg.handlers import (
     _download_bytes,
     build_router,
     parse_confirm_callback,
+    parse_wikipick_callback,
 )
+
+
+def test_parse_wikipick_callback_valid() -> None:
+    assert parse_wikipick_callback("wikipick:42:0") == (42, 0)
+    assert parse_wikipick_callback("wikipick:7:3") == (7, 3)
+
+
+def test_parse_wikipick_callback_invalid() -> None:
+    assert parse_wikipick_callback("confirm:42:0") is None  # wrong prefix
+    assert parse_wikipick_callback("wikipick:42") is None  # too few parts
+    assert parse_wikipick_callback("wikipick:x:0") is None  # non-int id
+    assert parse_wikipick_callback("wikipick:42:y") is None  # non-int idx
 
 
 def test_parse_confirm_callback_valid_confirm() -> None:

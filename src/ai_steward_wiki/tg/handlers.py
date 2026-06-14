@@ -32,10 +32,12 @@
 #   CONFIRM_CALLBACK_PREFIX - "confirm:" callback_data prefix (D-023)
 #   DIGESTSEC_CALLBACK_PREFIX - "digestsec:" callback_data prefix (ADR-026)
 #   EXPAND_SECTION_KEYS - the four /expand <section> keys (mirror D-024 headers)
+#   WIKIPICK_CALLBACK_PREFIX - "wikipick:" callback_data prefix (aisw-13h)
 #   build_router - factory wiring the slash commands + message/callback handlers
 #                  to a MessagePipeline (optional templates_dir + on_start_unknown for /start)
 #   parse_confirm_callback - parse `confirm:<pending_id>:<action>` payload
 #   parse_digestsec_callback - parse `digestsec:<section>:<0|1>` -> (section, target_enabled)
+#   parse_wikipick_callback - parse `wikipick:<pending_id>:<idx>` -> (pending_id, wiki_index)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
@@ -169,9 +171,11 @@ __all__ = [
     "CONFIRM_CALLBACK_PREFIX",
     "DIGESTSEC_CALLBACK_PREFIX",
     "EXPAND_SECTION_KEYS",
+    "WIKIPICK_CALLBACK_PREFIX",
     "build_router",
     "parse_confirm_callback",
     "parse_digestsec_callback",
+    "parse_wikipick_callback",
 ]
 
 if TYPE_CHECKING:
@@ -182,6 +186,9 @@ _log = structlog.get_logger("tg.handlers")
 
 CONFIRM_CALLBACK_PREFIX = "confirm:"
 _VALID_ACTIONS: frozenset[str] = frozenset({"confirm", "correct", "cancel"})
+
+# WIKI-picker on the route-confirm card — `wikipick:<pending_id>:<idx>` (aisw-13h).
+WIKIPICK_CALLBACK_PREFIX = "wikipick:"
 
 # /digest_sections — inline-toggle callbacks `digestsec:<section>:<0|1>` (ADR-026).
 DIGESTSEC_CALLBACK_PREFIX = "digestsec:"
@@ -274,6 +281,19 @@ def parse_confirm_callback(data: str) -> tuple[int, ConfirmKeyboardAction] | Non
     if action not in _VALID_ACTIONS:
         return None
     return pending_id, cast(ConfirmKeyboardAction, action)
+
+
+def parse_wikipick_callback(data: str) -> tuple[int, int] | None:
+    """Parse ``wikipick:<pending_id>:<idx>`` → ``(pending_id, wiki_index)`` or None (aisw-13h)."""
+    if not data.startswith(WIKIPICK_CALLBACK_PREFIX):
+        return None
+    parts = data.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        return int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
 
 
 def parse_digestsec_callback(data: str) -> tuple[str, bool] | None:
@@ -774,6 +794,28 @@ def build_router(
         )
         await callback.answer()
         # END_BLOCK_HANDLER_CONFIRM_CB
+
+    @router.callback_query(F.data.startswith(WIKIPICK_CALLBACK_PREFIX))
+    async def _on_wikipick(callback: CallbackQuery) -> None:
+        # START_BLOCK_HANDLER_WIKIPICK_CB (aisw-13h)
+        if callback.from_user is None or callback.data is None or callback.message is None:
+            _log.debug("tg.handlers.callback.skip_missing_fields")
+            await callback.answer()
+            return
+        parsed = parse_wikipick_callback(callback.data)
+        if parsed is None:
+            _log.info("tg.handlers.callback.malformed", data=callback.data)
+            await callback.answer()
+            return
+        pending_id, wiki_index = parsed
+        await pipeline.on_wikipick_callback(
+            telegram_id=callback.from_user.id,
+            chat_id=callback.message.chat.id,
+            pending_id=pending_id,
+            wiki_index=wiki_index,
+        )
+        await callback.answer()
+        # END_BLOCK_HANDLER_WIKIPICK_CB
 
     @router.callback_query(F.data.startswith(DIGESTSEC_CALLBACK_PREFIX))
     async def _on_digestsec_callback(cb: CallbackQuery) -> None:

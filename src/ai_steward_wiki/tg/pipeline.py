@@ -741,6 +741,15 @@ class MessagePipeline(Protocol):
         action: ConfirmKeyboardAction,
     ) -> None: ...
 
+    async def on_wikipick_callback(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        pending_id: int,
+        wiki_index: int,
+    ) -> None: ...
+
 
 # START_CONTRACT: _extract_pdf_text
 #   PURPOSE: Pure-python text extraction from PDF bytes via pypdf.
@@ -1142,8 +1151,12 @@ class DefaultPipeline:
                     draft=payload,
                     recap_text=build_route_recap(decision),
                 )
+                # aisw-13h: offer the owner's existing WIKIs as a 2-column picker on
+                # the confirm card so the user can redirect into an existing WIKI.
+                wiki_names = await self._list_owner_wiki_names(telegram_id)
                 rec = await self._confirm.request_explicit(
-                    confirm_draft, keyboard_factory=build_route_confirm_keyboard
+                    confirm_draft,
+                    keyboard_factory=lambda pid: build_route_confirm_keyboard(pid, wiki_names),
                 )
                 _log.info(
                     "tg.pipeline.route.confirm_requested",
@@ -2089,6 +2102,83 @@ class DefaultPipeline:
             await self._sender.send_message(chat_id, outcome.reply)
 
     # END_BLOCK_ROUTE_CONFIRM
+
+    # START_BLOCK_WIKIPICK (aisw-13h — redirect a route_ingest into an existing WIKI)
+    async def _list_owner_wiki_names(self, telegram_id: int) -> list[str]:
+        """Owner's existing <Domain>-WIKI names (sorted, minus Inbox-WIKI) or []."""
+        if self._owner_wikis_resolver is None:
+            return []
+        pairs = await self._owner_wikis_resolver(telegram_id)
+        return [name for name, _path in pairs]
+
+    async def on_wikipick_callback(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        pending_id: int,
+        wiki_index: int,
+    ) -> None:
+        """Route a pending route_ingest into the user-picked existing WIKI (aisw-13h).
+
+        The picked WIKI overrides the proposed target (intent → ROUTE), then the
+        staged item is ingested via the same Stage-1b path as a plain confirm.
+        ``wiki_index`` references the deterministic, sorted owner-WIKI list used to
+        build the keyboard; it is re-listed here and bounds-checked.
+        """
+        pending = await self._confirm.get_pending(pending_id)
+        if pending is None or getattr(pending, "category", None) != "route_ingest":
+            await self._sender.send_message(chat_id, ROUTE_CONFIRM_STALE_RU)
+            return
+        wikis = await self._list_owner_wiki_names(telegram_id)
+        if wiki_index < 0 or wiki_index >= len(wikis):
+            await self._sender.send_message(chat_id, ROUTE_CONFIRM_STALE_RU)
+            return
+        chosen = wikis[wiki_index]
+        status = await self._confirm.resolve(telegram_id, pending_id, "correct")
+        if status is None:
+            await self._sender.send_message(chat_id, ROUTE_CONFIRM_STALE_RU)
+            return
+        if status != "corrected":  # another tap already confirmed/cancelled it
+            await self._sender.send_message(chat_id, ROUTE_CONFIRM_CANCELLED_RU)
+            return
+        action_obj = route_action_from_payload(json.loads(pending.draft_json or "{}"))
+        correlation_id = action_obj.correlation_id or f"wikipick-{pending_id}-{telegram_id}"
+        decision = action_obj.decision.model_copy(
+            update={"intent": RouterIntent.ROUTE, "target_wiki": chosen}
+        )
+        await self._sender.send_message(chat_id, ROUTE_CONFIRM_ACK_RU)
+        assert self._librarian is not None
+        assert self._output is not None
+        media = [Path(p) for p in action_obj.media_paths]
+        outcome = await self._librarian.ingest(
+            decision,
+            telegram_id=telegram_id,
+            user_text=action_obj.user_text,
+            source=action_obj.source,
+            media_paths=media or None,
+            correlation_id=correlation_id,
+        )
+        _log.info(
+            "tg.pipeline.route.wikipick_executed",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=pending_id,
+            chosen_wiki=chosen,
+            status=outcome.status,
+            run_id=outcome.run_id,
+        )
+        if outcome.status == "ok":
+            await self._output.deliver(
+                chat_id=chat_id,
+                telegram_id=telegram_id,
+                run_id=outcome.run_id or "",
+                text=outcome.reply,
+            )
+        else:
+            await self._sender.send_message(chat_id, outcome.reply)
+
+    # END_BLOCK_WIKIPICK
 
     # START_BLOCK_REMINDER_CONFIRM (aisw-kcz, Inbox-WIKI Phase-D.a)
     async def _handle_reminder_confirm(

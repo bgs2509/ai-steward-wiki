@@ -15,11 +15,33 @@ from ai_steward_wiki.storage.sessions.models import PendingConfirm
 from ai_steward_wiki.tg.confirm import (
     ConfirmationService,
     PendingConfirmDraft,
+    build_route_confirm_keyboard,
     compute_payload_hash,
 )
 from tests.unit.tg.conftest import FakeSender
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_route_confirm_keyboard_no_wikis_is_confirm_cancel() -> None:
+    kb = build_route_confirm_keyboard(7)
+    cbs = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert cbs == ["confirm:7:confirm", "confirm:7:cancel"]
+
+
+def test_route_confirm_keyboard_wiki_picker_two_columns() -> None:
+    wikis = ["Medical-WIKI", "Budget-WIKI", "Career-WIKI", "Investment-WIKI", "Default-WIKI"]
+    kb = build_route_confirm_keyboard(7, wikis)
+    rows = kb.inline_keyboard
+    # 5 WIKIs → three picker rows (2,2,1) + confirm row + cancel row
+    pick_rows = rows[:-2]
+    assert [len(r) for r in pick_rows] == [2, 2, 1]  # two-column layout
+    pick_cbs = [b.callback_data for r in pick_rows for b in r]
+    assert pick_cbs == [f"wikipick:7:{i}" for i in range(5)]
+    pick_labels = [b.text for r in pick_rows for b in r]
+    assert pick_labels == wikis
+    assert rows[-2][0].callback_data == "confirm:7:confirm"
+    assert rows[-1][0].callback_data == "confirm:7:cancel"
 
 
 @pytest.fixture

@@ -9,7 +9,6 @@ import pytest
 from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
 from ai_steward_wiki.inbox.route import route_action_from_payload
 from ai_steward_wiki.inbox.router import RouterDecision, RouterIntent
-from ai_steward_wiki.tg.confirm import build_route_confirm_keyboard
 from ai_steward_wiki.tg.pipeline import DefaultPipeline, IngestOutcome
 from tests.unit.tg.conftest import FakeSender
 
@@ -133,7 +132,12 @@ async def test_routable_decision_requests_confirm_not_ingest(intent: RouterInten
     assert draft.telegram_id == 42
     assert draft.chat_id == 10
     assert draft.category == "route_ingest"
-    assert call.kwargs["keyboard_factory"] is build_route_confirm_keyboard
+    # aisw-13h: keyboard_factory is now a closure (binds the owner's WIKI list);
+    # with no owner_wikis_resolver wired it still yields the confirm/cancel keyboard.
+    kb = call.kwargs["keyboard_factory"](999)
+    cbs = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert "confirm:999:confirm" in cbs
+    assert "confirm:999:cancel" in cbs
     assert "Travel-WIKI" in draft.recap_text
     assert "Положу в Travel-WIKI." in draft.recap_text
     action = route_action_from_payload(draft.draft)
@@ -187,3 +191,95 @@ async def test_route_confirm_requested_log_marker(capsys: pytest.CaptureFixture[
 
     out = capsys.readouterr().out
     assert "tg.pipeline.route.confirm_requested" in out
+
+
+@pytest.mark.asyncio
+async def test_wikipick_routes_into_chosen_existing_wiki() -> None:
+    import json
+    from pathlib import Path
+
+    from ai_steward_wiki.inbox.route import route_action_to_payload
+
+    sender = FakeSender()
+    lib = _librarian()
+    out = _output()
+
+    # pending route_ingest that PROPOSED create_wiki (the duplicate case)
+    decision = RouterDecision(
+        intent=RouterIntent.CREATE_WIKI,
+        target_wiki="Здоровье-WIKI",
+        notes="n",
+        raw="r",
+        parsed_ok=True,
+    )
+    payload = route_action_to_payload(
+        decision,
+        user_text="давление 137 96 пульс 78",
+        source="text",
+        media_paths=None,
+        correlation_id="c1",
+    )
+    pending = MagicMock()
+    pending.category = "route_ingest"
+    pending.draft_json = json.dumps(payload)
+
+    confirm = MagicMock()
+    confirm.get_pending = AsyncMock(return_value=pending)
+    confirm.resolve = AsyncMock(return_value="corrected")
+
+    async def _resolver(_owner: int) -> list[tuple[str, Path]]:
+        return [("Budget-WIKI", Path("/x/Budget-WIKI")), ("Medical-WIKI", Path("/x/Medical-WIKI"))]
+
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_idem(),
+        confirmation=confirm,
+        classifier=_classifier(),
+        runner=_runner(),
+        output=out,
+        router=_router(),
+        librarian=lib,
+        owner_wikis_resolver=_resolver,
+    )
+
+    # index 1 → "Medical-WIKI" (resolver order: Budget, Medical)
+    await pipe.on_wikipick_callback(telegram_id=42, chat_id=10, pending_id=555, wiki_index=1)
+
+    confirm.resolve.assert_awaited_once_with(42, 555, "correct")
+    lib.ingest.assert_awaited_once()
+    routed = lib.ingest.await_args.args[0]
+    assert routed.intent is RouterIntent.ROUTE
+    assert routed.target_wiki == "Medical-WIKI"  # overrode the proposed create target
+    out.deliver.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_wikipick_out_of_range_index_is_stale() -> None:
+    sender = FakeSender()
+    lib = _librarian()
+    pending = MagicMock()
+    pending.category = "route_ingest"
+    pending.draft_json = "{}"
+    confirm = MagicMock()
+    confirm.get_pending = AsyncMock(return_value=pending)
+    confirm.resolve = AsyncMock()
+
+    async def _resolver(_owner: int) -> list[tuple[str, object]]:
+        return [("Budget-WIKI", object())]
+
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_idem(),
+        confirmation=confirm,
+        classifier=_classifier(),
+        runner=_runner(),
+        output=_output(),
+        router=_router(),
+        librarian=lib,
+        owner_wikis_resolver=_resolver,
+    )
+
+    await pipe.on_wikipick_callback(telegram_id=42, chat_id=10, pending_id=555, wiki_index=9)
+
+    confirm.resolve.assert_not_awaited()  # never resolved on a bad index
+    lib.ingest.assert_not_awaited()
