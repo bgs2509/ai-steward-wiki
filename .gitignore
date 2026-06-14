@@ -43,3 +43,9 @@ data/
 
 # full-audit skill intermediate artifacts
 .full_audit_tmp/
+
+# claude worktrees + local settings (never commit)
+.claude/
+
+# full-audit history journal (grows per run; rotate manually)
+docs/reports/.audit-history.jsonl
