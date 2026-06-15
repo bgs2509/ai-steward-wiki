@@ -1151,9 +1151,14 @@ class DefaultPipeline:
                     draft=payload,
                     recap_text=build_route_recap(decision),
                 )
-                # aisw-13h: offer the owner's existing WIKIs as a 2-column picker on
-                # the confirm card so the user can redirect into an existing WIKI.
-                wiki_names = await self._list_owner_wiki_names(telegram_id)
+                # aisw-13h: offer the owner's OTHER existing WIKIs as a 2-column picker
+                # below Confirm/Cancel (the proposed target is excluded — confirming
+                # already selects it) so the user can redirect into a different WIKI.
+                wiki_names = [
+                    w
+                    for w in await self._list_owner_wiki_names(telegram_id)
+                    if w != decision.target_wiki
+                ]
                 rec = await self._confirm.request_explicit(
                     confirm_draft,
                     keyboard_factory=lambda pid: build_route_confirm_keyboard(pid, wiki_names),
@@ -2123,18 +2128,21 @@ class DefaultPipeline:
 
         The picked WIKI overrides the proposed target (intent → ROUTE), then the
         staged item is ingested via the same Stage-1b path as a plain confirm.
-        ``wiki_index`` references the deterministic, sorted owner-WIKI list used to
-        build the keyboard; it is re-listed here and bounds-checked.
+        ``wiki_index`` references the picker list — the owner's WIKIs minus the
+        proposed target — rebuilt here identically (load draft → exclude target)
+        and bounds-checked, so it stays consistent with the rendered keyboard.
         """
         pending = await self._confirm.get_pending(pending_id)
         if pending is None or getattr(pending, "category", None) != "route_ingest":
             await self._sender.send_message(chat_id, ROUTE_CONFIRM_STALE_RU)
             return
-        wikis = await self._list_owner_wiki_names(telegram_id)
-        if wiki_index < 0 or wiki_index >= len(wikis):
+        action_obj = route_action_from_payload(json.loads(pending.draft_json or "{}"))
+        proposed = action_obj.decision.target_wiki
+        candidates = [w for w in await self._list_owner_wiki_names(telegram_id) if w != proposed]
+        if wiki_index < 0 or wiki_index >= len(candidates):
             await self._sender.send_message(chat_id, ROUTE_CONFIRM_STALE_RU)
             return
-        chosen = wikis[wiki_index]
+        chosen = candidates[wiki_index]
         status = await self._confirm.resolve(telegram_id, pending_id, "correct")
         if status is None:
             await self._sender.send_message(chat_id, ROUTE_CONFIRM_STALE_RU)
@@ -2142,7 +2150,6 @@ class DefaultPipeline:
         if status != "corrected":  # another tap already confirmed/cancelled it
             await self._sender.send_message(chat_id, ROUTE_CONFIRM_CANCELLED_RU)
             return
-        action_obj = route_action_from_payload(json.loads(pending.draft_json or "{}"))
         correlation_id = action_obj.correlation_id or f"wikipick-{pending_id}-{telegram_id}"
         decision = action_obj.decision.model_copy(
             update={"intent": RouterIntent.ROUTE, "target_wiki": chosen}

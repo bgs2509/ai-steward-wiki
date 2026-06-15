@@ -114,17 +114,23 @@ def build_explicit_keyboard(pending_id: int) -> Any:
 def build_route_confirm_keyboard(pending_id: int, existing_wikis: Sequence[str] = ()) -> Any:
     """Keyboard for Inbox-WIKI route confirms (Phase-C aisw-e45; WIKI-picker aisw-13h).
 
-    Confirm/Cancel use the existing ``confirm:<pending_id>:confirm|cancel`` prefix.
-    When ``existing_wikis`` is non-empty, the owner's WIKIs are rendered as
-    **two-column** inline buttons above them (callback ``wikipick:<pending_id>:<idx>``);
-    tapping one routes the staged item into that existing WIKI instead of
-    confirming the proposed target. ``idx`` is the position in ``existing_wikis``
-    (a deterministic, sorted list) — kept index-based to stay within Telegram's
-    64-byte callback_data limit regardless of WIKI name length.
+    Top row is ``[❌ Отмена] [✅ Подтвердить]`` (Cancel left, Confirm right) using
+    the existing ``confirm:<pending_id>:confirm|cancel`` prefix. When
+    ``existing_wikis`` is non-empty, those WIKIs are rendered **below** as
+    **two-column** inline buttons (callback ``wikipick:<pending_id>:<idx>``); tapping
+    one routes the staged item into that WIKI instead of confirming the proposed
+    target. Callers pass the OTHER WIKIs here (the proposed target is excluded, since
+    confirming already selects it). ``idx`` is the position in ``existing_wikis`` —
+    kept index-based to stay within Telegram's 64-byte callback_data limit.
     """
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-    rows: list[list[Any]] = []
+    rows: list[list[Any]] = [
+        [
+            InlineKeyboardButton(text=BTN_CANCEL, callback_data=f"confirm:{pending_id}:cancel"),
+            InlineKeyboardButton(text=BTN_CONFIRM, callback_data=f"confirm:{pending_id}:confirm"),
+        ]
+    ]
     pick_row: list[Any] = []
     for idx, name in enumerate(existing_wikis):
         pick_row.append(
@@ -135,12 +141,6 @@ def build_route_confirm_keyboard(pending_id: int, existing_wikis: Sequence[str] 
             pick_row = []
     if pick_row:
         rows.append(pick_row)
-    rows.append(
-        [InlineKeyboardButton(text=BTN_CONFIRM, callback_data=f"confirm:{pending_id}:confirm")]
-    )
-    rows.append(
-        [InlineKeyboardButton(text=BTN_CANCEL, callback_data=f"confirm:{pending_id}:cancel")]
-    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

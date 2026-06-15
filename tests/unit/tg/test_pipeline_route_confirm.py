@@ -193,44 +193,34 @@ async def test_route_confirm_requested_log_marker(capsys: pytest.CaptureFixture[
     assert "tg.pipeline.route.confirm_requested" in out
 
 
-@pytest.mark.asyncio
-async def test_wikipick_routes_into_chosen_existing_wiki() -> None:
+def _route_pending(proposed: str) -> MagicMock:
     import json
-    from pathlib import Path
 
     from ai_steward_wiki.inbox.route import route_action_to_payload
 
-    sender = FakeSender()
-    lib = _librarian()
-    out = _output()
-
-    # pending route_ingest that PROPOSED create_wiki (the duplicate case)
     decision = RouterDecision(
-        intent=RouterIntent.CREATE_WIKI,
-        target_wiki="Здоровье-WIKI",
-        notes="n",
-        raw="r",
-        parsed_ok=True,
+        intent=RouterIntent.ROUTE, target_wiki=proposed, notes="n", raw="r", parsed_ok=True
     )
     payload = route_action_to_payload(
-        decision,
-        user_text="давление 137 96 пульс 78",
-        source="text",
-        media_paths=None,
-        correlation_id="c1",
+        decision, user_text="данные", source="text", media_paths=None, correlation_id="c1"
     )
     pending = MagicMock()
     pending.category = "route_ingest"
     pending.draft_json = json.dumps(payload)
+    return pending
 
-    confirm = MagicMock()
-    confirm.get_pending = AsyncMock(return_value=pending)
-    confirm.resolve = AsyncMock(return_value="corrected")
+
+def _owner_wikis(*names: str):
+    from pathlib import Path
 
     async def _resolver(_owner: int) -> list[tuple[str, Path]]:
-        return [("Budget-WIKI", Path("/x/Budget-WIKI")), ("Medical-WIKI", Path("/x/Medical-WIKI"))]
+        return [(n, Path(f"/x/{n}")) for n in names]
 
-    pipe = DefaultPipeline(
+    return _resolver
+
+
+def _wikipick_pipe(sender, confirm, lib, out, resolver) -> DefaultPipeline:
+    return DefaultPipeline(
         sender=sender,
         idempotency=_idem(),
         confirmation=confirm,
@@ -239,45 +229,41 @@ async def test_wikipick_routes_into_chosen_existing_wiki() -> None:
         output=out,
         router=_router(),
         librarian=lib,
-        owner_wikis_resolver=_resolver,
+        owner_wikis_resolver=resolver,
     )
 
-    # index 1 → "Medical-WIKI" (resolver order: Budget, Medical)
-    await pipe.on_wikipick_callback(telegram_id=42, chat_id=10, pending_id=555, wiki_index=1)
+
+@pytest.mark.asyncio
+async def test_wikipick_routes_into_chosen_existing_wiki_excluding_proposed() -> None:
+    sender, lib, out = FakeSender(), _librarian(), _output()
+    # router proposed Budget-WIKI → it is EXCLUDED from the picker; the candidate
+    # list is [Career-WIKI, Medical-WIKI], so index 0 is Career-WIKI (would be
+    # Budget-WIKI if exclusion were broken — this distinguishes the two).
+    pending = _route_pending("Budget-WIKI")
+    confirm = MagicMock()
+    confirm.get_pending = AsyncMock(return_value=pending)
+    confirm.resolve = AsyncMock(return_value="corrected")
+    resolver = _owner_wikis("Budget-WIKI", "Career-WIKI", "Medical-WIKI")
+    pipe = _wikipick_pipe(sender, confirm, lib, out, resolver)
+
+    await pipe.on_wikipick_callback(telegram_id=42, chat_id=10, pending_id=555, wiki_index=0)
 
     confirm.resolve.assert_awaited_once_with(42, 555, "correct")
-    lib.ingest.assert_awaited_once()
     routed = lib.ingest.await_args.args[0]
     assert routed.intent is RouterIntent.ROUTE
-    assert routed.target_wiki == "Medical-WIKI"  # overrode the proposed create target
+    assert routed.target_wiki == "Career-WIKI"  # proposed Budget-WIKI was excluded
     out.deliver.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_wikipick_out_of_range_index_is_stale() -> None:
-    sender = FakeSender()
-    lib = _librarian()
-    pending = MagicMock()
-    pending.category = "route_ingest"
-    pending.draft_json = "{}"
+    sender, lib = FakeSender(), _librarian()
+    pending = _route_pending("Medical-WIKI")
     confirm = MagicMock()
     confirm.get_pending = AsyncMock(return_value=pending)
     confirm.resolve = AsyncMock()
-
-    async def _resolver(_owner: int) -> list[tuple[str, object]]:
-        return [("Budget-WIKI", object())]
-
-    pipe = DefaultPipeline(
-        sender=sender,
-        idempotency=_idem(),
-        confirmation=confirm,
-        classifier=_classifier(),
-        runner=_runner(),
-        output=_output(),
-        router=_router(),
-        librarian=lib,
-        owner_wikis_resolver=_resolver,
-    )
+    resolver = _owner_wikis("Budget-WIKI")  # candidates = [Budget-WIKI]; index 9 is out of range
+    pipe = _wikipick_pipe(sender, confirm, lib, out=_output(), resolver=resolver)
 
     await pipe.on_wikipick_callback(telegram_id=42, chat_id=10, pending_id=555, wiki_index=9)
 
