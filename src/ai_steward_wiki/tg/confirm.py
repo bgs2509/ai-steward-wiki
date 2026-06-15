@@ -114,7 +114,7 @@ def build_explicit_keyboard(pending_id: int) -> Any:
 def build_route_confirm_keyboard(pending_id: int, existing_wikis: Sequence[str] = ()) -> Any:
     """Keyboard for Inbox-WIKI route confirms (Phase-C aisw-e45; WIKI-picker aisw-13h).
 
-    Top row is ``[❌ Отмена] [✅ Подтвердить]`` (Cancel left, Confirm right) using
+    Top row is ``[✅ Подтвердить] [❌ Отмена]`` (Confirm left, Cancel right) using
     the existing ``confirm:<pending_id>:confirm|cancel`` prefix. When
     ``existing_wikis`` is non-empty, those WIKIs are rendered **below** as
     **two-column** inline buttons (callback ``wikipick:<pending_id>:<idx>``); tapping
@@ -127,8 +127,8 @@ def build_route_confirm_keyboard(pending_id: int, existing_wikis: Sequence[str] 
 
     rows: list[list[Any]] = [
         [
-            InlineKeyboardButton(text=BTN_CANCEL, callback_data=f"confirm:{pending_id}:cancel"),
             InlineKeyboardButton(text=BTN_CONFIRM, callback_data=f"confirm:{pending_id}:confirm"),
+            InlineKeyboardButton(text=BTN_CANCEL, callback_data=f"confirm:{pending_id}:cancel"),
         ]
     ]
     pick_row: list[Any] = []

@@ -23,11 +23,11 @@ from tests.unit.tg.conftest import FakeSender
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_route_confirm_keyboard_no_wikis_is_cancel_confirm_one_row() -> None:
+def test_route_confirm_keyboard_no_wikis_is_confirm_cancel_one_row() -> None:
     kb = build_route_confirm_keyboard(7)
     rows = kb.inline_keyboard
     assert len(rows) == 1  # single top row, no picker
-    assert [b.callback_data for b in rows[0]] == ["confirm:7:cancel", "confirm:7:confirm"]
+    assert [b.callback_data for b in rows[0]] == ["confirm:7:confirm", "confirm:7:cancel"]
 
 
 def test_route_confirm_keyboard_wiki_picker_two_columns() -> None:
@@ -35,8 +35,8 @@ def test_route_confirm_keyboard_wiki_picker_two_columns() -> None:
     wikis = ["Budget-WIKI", "Career-WIKI", "Default-WIKI", "Investment-WIKI"]
     kb = build_route_confirm_keyboard(7, wikis)
     rows = kb.inline_keyboard
-    # top row = [Cancel, Confirm]; below = two-column picker
-    assert [b.callback_data for b in rows[0]] == ["confirm:7:cancel", "confirm:7:confirm"]
+    # top row = [Confirm, Cancel]; below = two-column picker
+    assert [b.callback_data for b in rows[0]] == ["confirm:7:confirm", "confirm:7:cancel"]
     pick_rows = rows[1:]
     assert [len(r) for r in pick_rows] == [2, 2]  # 4 WIKIs in two columns
     pick_cbs = [b.callback_data for r in pick_rows for b in r]
@@ -216,12 +216,12 @@ def test_build_route_confirm_keyboard_has_two_buttons() -> None:
 
     kb = build_route_confirm_keyboard(77)
     rows = kb.inline_keyboard
-    # aisw-13h: Cancel + Confirm now share one top row (Cancel left, Confirm right)
+    # aisw-13h: Confirm + Cancel share one top row (Confirm left, Cancel right)
     assert len(rows) == 1
-    assert rows[0][0].text == BTN_CANCEL
-    assert rows[0][0].callback_data == "confirm:77:cancel"
-    assert rows[0][1].text == BTN_CONFIRM
-    assert rows[0][1].callback_data == "confirm:77:confirm"
+    assert rows[0][0].text == BTN_CONFIRM
+    assert rows[0][0].callback_data == "confirm:77:confirm"
+    assert rows[0][1].text == BTN_CANCEL
+    assert rows[0][1].callback_data == "confirm:77:cancel"
 
 
 @pytest.mark.asyncio
@@ -240,7 +240,7 @@ async def test_request_explicit_uses_custom_keyboard_factory(session_maker) -> N
     rec = await svc.request_explicit(draft, keyboard_factory=build_route_confirm_keyboard)
 
     kb = sender.sends[0]["reply_markup"]
-    # route keyboard: single top row [Cancel, Confirm] (no wikis passed here)
+    # route keyboard: single top row [Confirm, Cancel] (no wikis passed here)
     assert len(kb.inline_keyboard) == 1
-    assert kb.inline_keyboard[0][0].callback_data == f"confirm:{rec.pending_id}:cancel"
-    assert kb.inline_keyboard[0][1].callback_data == f"confirm:{rec.pending_id}:confirm"
+    assert kb.inline_keyboard[0][0].callback_data == f"confirm:{rec.pending_id}:confirm"
+    assert kb.inline_keyboard[0][1].callback_data == f"confirm:{rec.pending_id}:cancel"
