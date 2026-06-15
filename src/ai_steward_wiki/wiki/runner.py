@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.10
+# VERSION: 0.0.11
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -29,7 +29,13 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.10 - aisw-nrt (chunk 2): claude_cli.spawn at boundary +
+#   LAST_CHANGE: v0.0.11 - aisw-22o: run the CLI with cwd = wiki_path (was neutral
+#                claude_config_dir). The base/domain prompts use relative paths
+#                (raw/, metrics/, log.md) assuming cwd == WIKI; the neutral cwd broke
+#                that and the model asked the user where to write. wiki_path already
+#                carries the per-user <telegram_id> segment; WIKIs are outside the dev
+#                repo so no project CLAUDE.md is auto-discovered. Reverses old FR-3.
+#   PREVIOUS:    v0.0.10 - aisw-nrt (chunk 2): claude_cli.spawn at boundary +
 #                claude_cli.exit/error adjacent to wiki.run.finish/error. stdout_bytes
 #                is 0 in the wiki path because stdout is streamed into events, not
 #                retained as a byte buffer (intentional asymmetry vs classifier path).
@@ -97,7 +103,6 @@ import structlog
 
 from ai_steward_wiki.claude_cli.common import (
     build_env,
-    neutral_cwd,
     resolve_binary,
     system_prompt_argv,
     truncate_stderr,
@@ -404,7 +409,13 @@ async def run_wiki_session(
     transcript_path = wiki_path / "runs" / run_id / "transcript.jsonl"
 
     env = build_env(cfg.claude_config_dir)
-    cwd = neutral_cwd(cfg.claude_config_dir)
+    # aisw-22o: run INSIDE the WIKI dir. The base/domain prompts use relative paths
+    # (raw/, metrics/, log.md) and assume cwd == the WIKI; previously cwd was a neutral
+    # dir (claude_config_dir), so the model could not resolve them and asked the user
+    # for the path. wiki_path already includes the per-user <telegram_id> segment
+    # (<wiki_root>/<telegram_id>/<WIKI>), so this is correct for every user. WIKIs live
+    # outside the dev repo, so no project CLAUDE.md is auto-discovered up the tree.
+    cwd = wiki_path
 
     media_dirs = sorted({p.parent for p in media_paths}) if media_paths else None
     argv = _build_argv(

@@ -110,8 +110,9 @@ async def test_run_wiki_session_happy_path(
     ss = argv.index("--setting-sources")
     assert argv[ss + 1] == ""
     assert "--disable-slash-commands" in argv
-    # FR-3: cwd is the neutral claude_config_dir, not the wiki path.
-    assert spawner.calls[0]["cwd"] == str(cfg_dir)
+    # aisw-22o (reverses old FR-3): cwd IS the WIKI dir — the base/domain prompts use
+    # WIKI-relative paths (raw/, metrics/, log.md), so the model must run inside it.
+    assert spawner.calls[0]["cwd"] == str(wiki)
     # env: CLAUDE_CONFIG_DIR + minimal PATH.
     env = spawner.calls[0]["env"]
     assert isinstance(env, dict)
