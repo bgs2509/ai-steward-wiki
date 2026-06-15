@@ -379,3 +379,135 @@ async def test_run_wiki_session_extra_add_dirs_after_primary(
     assert str(finance) in argv
     assert str(cooking) in argv
     assert argv.index(str(finance)) > add_idx + 1
+
+
+# --- aisw-t6w: writing-run permissions + permission_denials surfacing ---
+
+
+def _make_lines_with_denials() -> list[bytes]:
+    """A final result event carrying non-empty permission_denials (Write+Edit)."""
+    denials = [
+        {"tool_name": "Edit", "tool_use_id": "toolu_a", "tool_input": {"file_path": "x.csv"}},
+        {"tool_name": "Write", "tool_use_id": "toolu_b", "tool_input": {"file_path": "log.md"}},
+    ]
+    return [
+        json.dumps({"type": "assistant", "text": "I need permission"}).encode() + b"\n",
+        json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "permission_denials": denials,
+            }
+        ).encode()
+        + b"\n",
+    ]
+
+
+async def test_writing_run_emits_allowedtools_flag(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    """aisw-t6w Fix 1: allowed_tools on the config surfaces as --allowedTools <tools>."""
+    from ai_steward_wiki.wiki.runner import WRITE_TOOLS
+
+    spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+    await run_wiki_session(
+        wiki_id="Medical-WIKI",
+        wiki_path=tmp_path / "Medical-WIKI",
+        base_prompt_path=prompts_dir / "wiki.md",
+        overlay_prompt_path=prompts_dir / "domain-default.md",
+        run_id="run-allow",
+        correlation_id="corr-allow",
+        runtime_dir=tmp_path / "runtime",
+        acquirer=fake_acquirer,
+        spawner=spawner,
+        config=_cfg(cfg_dir, allowed_tools=list(WRITE_TOOLS)),
+    )
+    argv = spawner.calls[0]["argv"]
+    assert "--allowedTools" in argv
+    flag_idx = argv.index("--allowedTools")
+    following = argv[flag_idx + 1 : flag_idx + 1 + len(WRITE_TOOLS)]
+    assert following == list(WRITE_TOOLS)
+    # dontAsk must remain — allowedTools is additive, not a mode switch.
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+    assert "Write" in WRITE_TOOLS
+    assert "Edit" in WRITE_TOOLS
+
+
+async def test_readonly_run_omits_allowedtools_flag(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    """aisw-t6w: read-only runs (router/classifier) keep allowed_tools=None → no flag."""
+    spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+    await run_wiki_session(
+        wiki_id="Inbox-WIKI",
+        wiki_path=tmp_path / "Inbox-WIKI",
+        base_prompt_path=prompts_dir / "wiki.md",
+        overlay_prompt_path=prompts_dir / "domain-default.md",
+        run_id="run-ro",
+        correlation_id="corr-ro",
+        runtime_dir=tmp_path / "runtime",
+        acquirer=fake_acquirer,
+        spawner=spawner,
+        config=_cfg(cfg_dir),  # allowed_tools defaults to None
+    )
+    argv = spawner.calls[0]["argv"]
+    assert "--allowedTools" not in argv
+
+
+async def test_run_captures_permission_denials(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    """aisw-t6w Fix 2: non-empty permission_denials surface on the result (not silent ok)."""
+    spawner = FakeSpawner(lines=_make_lines_with_denials(), exit_code=0)
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+    result = await run_wiki_session(
+        wiki_id="Medical-WIKI",
+        wiki_path=tmp_path / "Medical-WIKI",
+        base_prompt_path=prompts_dir / "wiki.md",
+        overlay_prompt_path=prompts_dir / "domain-default.md",
+        run_id="run-deny",
+        correlation_id="corr-deny",
+        runtime_dir=tmp_path / "runtime",
+        acquirer=fake_acquirer,
+        spawner=spawner,
+        config=_cfg(cfg_dir),
+    )
+    assert result.exit_code == 0
+    assert len(result.permission_denials) == 2
+    assert {d["tool_name"] for d in result.permission_denials} == {"Edit", "Write"}
+
+
+async def test_run_no_denials_default_empty(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    """aisw-t6w: a clean run exposes an empty permission_denials list."""
+    spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+    result = await run_wiki_session(
+        wiki_id="Medical-WIKI",
+        wiki_path=tmp_path / "Medical-WIKI",
+        base_prompt_path=prompts_dir / "wiki.md",
+        overlay_prompt_path=prompts_dir / "domain-default.md",
+        run_id="run-clean",
+        correlation_id="corr-clean",
+        runtime_dir=tmp_path / "runtime",
+        acquirer=fake_acquirer,
+        spawner=spawner,
+        config=_cfg(cfg_dir),
+    )
+    assert result.permission_denials == []

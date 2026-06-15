@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.11
+# VERSION: 0.0.12
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -23,13 +23,22 @@
 #   SpawnedProcess - Protocol; pid + stdout/stderr readers + wait/terminate/kill
 #   AsyncioSpawner - default Spawner using asyncio.create_subprocess_exec
 #   assemble_prompt - concat base+overlay (+ per-WIKI CLAUDE.md if present) → atomic write
-#   WikiRunResult - dataclass result of one run (run_id, exit_code, events, …)
+#   WRITE_TOOLS - tool names a writing run must allow (Write/Edit/MultiEdit) under dontAsk (aisw-t6w)
+#   WikiRunResult - dataclass result of one run (run_id, exit_code, events, permission_denials, …)
+#   extract_permission_denials - pull permission_denials from the CLI result event (aisw-t6w)
 #   run_wiki_session - public entrypoint orchestrating one Stage-1a/1b run; extra_add_dirs adds read-only --add-dir targets (digest multi-WIKI, aisw-oqq)
 #   aggregate_text - extract assistant text from WikiRunResult.events
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.11 - aisw-22o: run the CLI with cwd = wiki_path (was neutral
+#   LAST_CHANGE: v0.0.12 - aisw-t6w: fix ingest silent-data-loss. (1) WRITE_TOOLS
+#                allow-list so writing runs (ingest/wiki/digest/librarian) can use
+#                Write/Edit under --permission-mode dontAsk (Read/Bash unchanged;
+#                router/classifier stay read-only via allowed_tools=None). (2)
+#                extract_permission_denials + WikiRunResult.permission_denials +
+#                WARNING wiki.run.permission_denied + permission_denied_count on the
+#                finish log — rc==0 with blocked Write/Edit no longer reads as ok.
+#   PREVIOUS:    v0.0.11 - aisw-22o: run the CLI with cwd = wiki_path (was neutral
 #                claude_config_dir). The base/domain prompts use relative paths
 #                (raw/, metrics/, log.md) assuming cwd == WIKI; the neutral cwd broke
 #                that and the model asked the user where to write. wiki_path already
@@ -97,7 +106,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
@@ -119,6 +128,7 @@ from ai_steward_wiki.wiki.acquire import LockAcquirer
 from ai_steward_wiki.wiki.streaming import StreamEvent, parse_stream_json
 
 __all__ = [
+    "WRITE_TOOLS",
     "AsyncioSpawner",
     "SpawnedProcess",
     "Spawner",
@@ -129,6 +139,13 @@ __all__ = [
     "assemble_prompt",
     "run_wiki_session",
 ]
+
+# aisw-t6w: tools a *writing* run (ingest / wiki edit / digest / librarian) must be
+# allowed to use. Under `--permission-mode dontAsk` Read/Bash are allowed by default
+# but Write/Edit are denied without an explicit allow-list, which silently aborted
+# ingest (CSV/log.md never written while the run still reported success). Read-only
+# runs (router / classifier) keep allowed_tools=None and never receive these.
+WRITE_TOOLS: list[str] = ["Write", "Edit", "MultiEdit"]
 
 _log = structlog.get_logger("wiki.runner")
 _SEMVER_RE = re.compile(r"^semver:\s*(\d+\.\d+\.\d+)\s*$", re.MULTILINE)
@@ -336,6 +353,28 @@ class WikiRunResult:
     events: list[StreamEvent]
     transcript_path: Path
     latency_ms: int
+    # aisw-t6w: tool-permission denials reported by the CLI `result` event. Non-empty
+    # means the model could not complete an action (e.g. Write/Edit blocked) even though
+    # exit_code may be 0 — a silent-data-loss signal that callers MUST NOT treat as ok.
+    permission_denials: list[dict[str, Any]] = field(default_factory=list)
+
+
+def extract_permission_denials(events: list[StreamEvent]) -> list[dict[str, Any]]:
+    """Pull `permission_denials` from the CLI result (`final`) event, if any.
+
+    The claude `--output-format stream-json` result line carries a
+    `permission_denials` array (each: tool_name, tool_use_id, tool_input) listing
+    tool calls the permission layer refused. Returns the last final event's list,
+    or [] when absent. Pure — no side effects.
+    """
+    denials: list[dict[str, Any]] = []
+    for ev in events:
+        if ev.type != "final":
+            continue
+        raw = ev.payload.get("permission_denials")
+        if isinstance(raw, list):
+            denials = [d for d in raw if isinstance(d, dict)]
+    return denials
 
 
 @dataclass
@@ -536,6 +575,20 @@ async def run_wiki_session(
             reason="nonzero_exit",
         )
         raise WikiRunnerError(f"claude CLI exited rc={exit_code}; stderr={stderr_text}")
+    # aisw-t6w: rc==0 is NOT proof of success. A blocked Write/Edit surfaces as a
+    # non-empty `permission_denials` while the CLI still exits 0 — the silent
+    # data-loss that aborted ingest. Make it visible (WARNING + qualified finish log)
+    # so callers never read this as a clean ok.
+    permission_denials = extract_permission_denials(events)
+    if permission_denials:
+        _log.warning(
+            "wiki.run.permission_denied",
+            correlation_id=correlation_id,
+            wiki_id=wiki_id,
+            run_id=run_id,
+            denied_tools=sorted({str(d.get("tool_name")) for d in permission_denials}),
+            denied_count=len(permission_denials),
+        )
     _log.info(
         "wiki.run.finish",
         correlation_id=correlation_id,
@@ -544,6 +597,7 @@ async def run_wiki_session(
         exit_code=exit_code,
         n_events=len(events),
         latency_ms=latency_ms,
+        permission_denied_count=len(permission_denials),
     )
     _log.info(
         CLAUDE_CLI_EXIT,
@@ -558,6 +612,7 @@ async def run_wiki_session(
         events=events,
         transcript_path=transcript_path,
         latency_ms=latency_ms,
+        permission_denials=permission_denials,
     )
 
 

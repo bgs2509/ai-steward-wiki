@@ -216,6 +216,7 @@ from ai_steward_wiki.tg.voice import FasterWhisperTranscriber, VoiceHandler
 from ai_steward_wiki.wiki.acquire import WikiLockAdapter
 from ai_steward_wiki.wiki.lifecycle import WikiLifecycleManager
 from ai_steward_wiki.wiki.runner import (
+    WRITE_TOOLS,
     AsyncioSpawner,
     WikiRunnerError,
     _RunConfig,
@@ -1132,6 +1133,7 @@ async def _amain() -> None:
             timeout_s=settings.wiki_runner_timeout_s,
             term_grace_s=settings.wiki_runner_term_grace_s,
             claude_config_dir=default_claude_config_dir(),
+            allowed_tools=WRITE_TOOLS,  # aisw-t6w: ingest/wiki edits must write under dontAsk
         ),
     )
     # aisw-oqq: recurring-digest fast-path parser + digest firing context.
@@ -1148,6 +1150,7 @@ async def _amain() -> None:
             timeout_s=600.0,
             term_grace_s=settings.wiki_runner_term_grace_s,
             claude_config_dir=default_claude_config_dir(),
+            allowed_tools=WRITE_TOOLS,  # aisw-t6w: digest expand writes into WIKIs
         ),
     )
     owner_wikis_resolver = _resolve_owner_wikis_factory(settings.wiki_root)
@@ -1186,6 +1189,8 @@ async def _amain() -> None:
         acquirer=WikiLockAdapter(lock_manager),
         spawner=AsyncioSpawner(),
         run_config=_RunConfig(
+            # aisw-t6w: router is read-only (classify/route only) — no allowed_tools,
+            # so dontAsk keeps Write/Edit denied here by design.
             model=settings.wiki_runner_model,
             timeout_s=settings.wiki_runner_timeout_s,
             term_grace_s=settings.wiki_runner_term_grace_s,
@@ -1208,6 +1213,7 @@ async def _amain() -> None:
             timeout_s=settings.wiki_runner_timeout_s,
             term_grace_s=settings.wiki_runner_term_grace_s,
             claude_config_dir=default_claude_config_dir(),
+            allowed_tools=WRITE_TOOLS,  # aisw-t6w: librarian creates/edits WIKI files
         ),
     )
     runs_dir = settings.workspace_root / "runs"
