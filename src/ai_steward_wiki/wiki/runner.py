@@ -137,6 +137,7 @@ __all__ = [
     "WikiRunnerTimeoutError",
     "aggregate_text",
     "assemble_prompt",
+    "extract_permission_denials",
     "run_wiki_session",
 ]
 

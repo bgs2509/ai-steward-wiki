@@ -16,6 +16,7 @@
 #   MIN_TOKEN_LEN - shortest token length that counts (kills 1-2 char noise)
 #   MIN_SCORE - confidence floor: min matched-keyword count to fire the bypass
 #   MIN_MARGIN - min lead over the runner-up domain to fire the bypass
+#   MAX_FASTPATH_CHARS - max input length for the fast-path; longer → heavy router (aisw-378)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY

@@ -18,7 +18,7 @@
 #   ProcessText - Callable[[telegram_id, chat_id, update_id, text], Awaitable[None]]
 #   InboxAggregator - submit(...) buffers + debounces + flushes one combined on_text
 #   FakeLoaderControl - test double recording post/delete calls
-# END_MODULE_CONTRACT
+# END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
 #   LAST_CHANGE: v0.0.1 - aisw-378: per-chat debounce aggregation + loader lifecycle.
