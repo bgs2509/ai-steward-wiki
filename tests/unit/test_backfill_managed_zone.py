@@ -63,6 +63,19 @@ def test_backfill_dry_run_does_not_write(tree: tuple[Path, Path, Path]) -> None:
     assert claude.read_text(encoding="utf-8") == before  # but did not write
 
 
+def test_backfill_skips_file_without_frontmatter(tmp_path: Path) -> None:
+    """A non-v2 CLAUDE.md (e.g. Inbox-WIKI router prompt) is skipped, not an error."""
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    wikis = tmp_path / "wikis"
+    claude = wikis / "42" / "Inbox-WIKI" / "CLAUDE.md"
+    claude.parent.mkdir(parents=True)
+    claude.write_text("# Inbox router prompt\nno frontmatter here\n", encoding="utf-8")
+    counts = backfill_mod.backfill(wikis, templates)
+    assert counts["skipped"] == 1
+    assert counts["errors"] == 0
+
+
 def test_backfill_skips_unknown_template(tmp_path: Path) -> None:
     templates = tmp_path / "templates"
     templates.mkdir()

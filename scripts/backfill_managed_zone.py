@@ -56,9 +56,11 @@ def backfill(wiki_root: Path, templates_dir: Path, *, dry_run: bool = False) -> 
     for claude in _iter_claude_md(wiki_root):
         try:
             fm, _ = parse_frontmatter(claude.read_text(encoding="utf-8"))
-        except FrontmatterError as exc:
-            print(f"ERROR {claude}: bad frontmatter: {exc}")
-            counts["errors"] += 1
+        except FrontmatterError:
+            # Non-v2 schema files (e.g. the Inbox-WIKI router CLAUDE.md from
+            # templates/inbox-wiki/) carry no v2 frontmatter and are out of scope.
+            print(f"SKIP  {claude}: not a v2-schema CLAUDE.md (no frontmatter)")
+            counts["skipped"] += 1
             continue
         try:
             managed, sha = load_template(fm.template_id, templates_dir)
