@@ -87,3 +87,74 @@ def test_parse_frontmatter_round_trip(tmp_path: Path) -> None:
     assert fm.schema_version == 1
     assert fm.template_id == "health"
     assert body.startswith("x")
+
+
+# --- aisw-db6: repair_managed_zone (re-render managed zone on already-v2 CLAUDE.md) ---
+
+
+def _write_v2(path: Path, *, managed: str, user: str, sha: str = "old") -> None:
+    path.write_text(
+        "---\nschema_version: 2\ntemplate_id: medical\n"
+        "last_migrated_at: 2026-01-01T00:00:00Z\n"
+        f"template_sha256: {sha}\n---\n"
+        f"{MANAGED_START}\n{managed}\n{MANAGED_END}\n\n"
+        f"{USER_START}\n{user}\n{USER_END}\n",
+        encoding="utf-8",
+    )
+
+
+def test_repair_fills_empty_managed_zone(tmp_path: Path) -> None:
+    """A v2 CLAUDE.md that is frontmatter-only (no body) gets its managed zone filled."""
+    from ai_steward_wiki.wiki.migration import repair_managed_zone
+
+    p = tmp_path / "CLAUDE.md"
+    p.write_text(
+        "---\nschema_version: 2\ntemplate_id: medical\n"
+        "last_migrated_at: 2026-01-01T00:00:00Z\ntemplate_sha256: \n---\n",
+        encoding="utf-8",
+    )
+    applied = repair_managed_zone(
+        p,
+        template_managed="# Medical\n## Data layout\nmetrics/ -> CSV",
+        template_sha256="newsha",
+        now_utc=datetime(2026, 6, 16, 9, tzinfo=UTC),
+    )
+    assert applied is True
+    text = p.read_text(encoding="utf-8")
+    assert "## Data layout" in text
+    assert MANAGED_START in text
+    assert MANAGED_END in text
+    fm, _ = parse_frontmatter(text)
+    assert fm.template_sha256 == "newsha"
+
+
+def test_repair_preserves_user_zone(tmp_path: Path) -> None:
+    from ai_steward_wiki.wiki.migration import repair_managed_zone
+
+    p = tmp_path / "CLAUDE.md"
+    _write_v2(p, managed="stale managed", user="МОИ правила юзера", sha="old")
+    applied = repair_managed_zone(
+        p,
+        template_managed="fresh managed body",
+        template_sha256="freshsha",
+        now_utc=datetime(2026, 6, 16, 9, tzinfo=UTC),
+    )
+    assert applied is True
+    text = p.read_text(encoding="utf-8")
+    assert "fresh managed body" in text
+    assert "stale managed" not in text
+    assert "МОИ правила юзера" in text  # user zone preserved verbatim
+
+
+def test_repair_idempotent_when_sha_matches(tmp_path: Path) -> None:
+    from ai_steward_wiki.wiki.migration import repair_managed_zone
+
+    p = tmp_path / "CLAUDE.md"
+    _write_v2(p, managed="body v1", user="u", sha="samesha")
+    applied = repair_managed_zone(
+        p,
+        template_managed="body v1",
+        template_sha256="samesha",
+        now_utc=datetime(2026, 6, 16, 9, tzinfo=UTC),
+    )
+    assert applied is False  # already up to date -> noop

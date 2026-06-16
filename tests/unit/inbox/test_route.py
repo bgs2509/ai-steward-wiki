@@ -196,6 +196,18 @@ def test_build_ingest_prompt_mentions_media(tmp_path: Path) -> None:
     assert "raw/media/iso_ab.jpg" in prompt
 
 
+def test_build_ingest_prompt_follows_data_layout_not_page_bias(tmp_path: Path) -> None:
+    """aisw-db6: ingest must follow the WIKI's Data layout, not improvise pages/."""
+    staged = StagedRaw(sidecar_rel="raw/ts_text.md", media_rel=[], media_abs=[])
+    prompt = build_ingest_prompt("давление 137 96 пульс 78", staged)
+    # pins the model to the schema
+    assert "Data layout" in prompt
+    assert "CLAUDE.md" in prompt
+    # the page-creation bias that caused the pages/ improvisation is gone
+    assert "создай при необходимости" not in prompt
+    assert "log.md" in prompt  # still logs the action
+
+
 # ---------- RouteAction (de)serialisation (aisw-e45, Phase-C) ----------
 
 

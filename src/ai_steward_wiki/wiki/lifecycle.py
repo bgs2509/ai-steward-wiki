@@ -1,13 +1,13 @@
 # FILE: src/ai_steward_wiki/wiki/lifecycle.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: WikiLifecycleManager — owner-scoped create / lookup / soft-delete /
 #            restore with hard cap + Levenshtein <=2 anti-spam + atomic FS ops.
 #   SCOPE: WikiLifecycleManager, AntiSpamCapError, NearDuplicateMatch, TrashedWiki.
 #            INV-7 SSoT: this module is the *only* place allowed to mutate
 #            wiki directories via os.replace.
-#   DEPENDS: ai_steward_wiki.wiki.name, structlog, pydantic
-#   LINKS: M-WIKI-LIFECYCLE, D-041, D-008, tech-spec §5
+#   DEPENDS: ai_steward_wiki.wiki.name, ai_steward_wiki.wiki.migration, structlog, pydantic
+#   LINKS: M-WIKI-LIFECYCLE, D-041, D-008, aisw-db6, tech-spec §5
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -23,7 +23,12 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 8: anti-spam cap + Levenshtein + soft-delete + restore
+#   LAST_CHANGE: v0.0.2 - aisw-db6: create_wiki now renders the template body into
+#                the v2 CLAUDE.md managed zone (via load_template + render_v2) when a
+#                templates_dir is wired — previously it wrote frontmatter-only, so the
+#                model never saw the Data layout schema. Optional templates_dir keeps
+#                legacy frontmatter-only behaviour. Unknown template_id → _default.
+#   PREVIOUS:    v0.0.1 - chunk 8: anti-spam cap + Levenshtein + soft-delete + restore
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -35,6 +40,12 @@ from pathlib import Path
 import structlog
 from pydantic import BaseModel, ConfigDict
 
+from ai_steward_wiki.wiki.migration import (
+    Frontmatter,
+    TemplateNotFoundError,
+    load_template,
+    render_v2,
+)
 from ai_steward_wiki.wiki.name import WikiName, normalize_wiki_name
 
 __all__ = [
@@ -118,11 +129,17 @@ class WikiLifecycleManager:
         max_per_user: int = 20,
         retention_days: int = 30,
         levenshtein_threshold: int = 2,
+        templates_dir: Path | None = None,
     ) -> None:
         self._root = wiki_root
         self._max_per_user = max_per_user
         self._retention = timedelta(days=retention_days)
         self._lev_threshold = levenshtein_threshold
+        # aisw-db6: when set, create_wiki renders the template body into the v2
+        # CLAUDE.md managed zone so the model receives the Data layout schema.
+        # None keeps the legacy frontmatter-only write (back-compat for callers
+        # that do not wire a templates dir, e.g. some unit tests).
+        self._templates_dir = templates_dir
 
     # ---------- public API ----------
 
@@ -222,9 +239,7 @@ class WikiLifecycleManager:
         wiki_dir = owner_dir / candidate.primary
         wiki_dir.mkdir()
         (wiki_dir / "CLAUDE.md").write_text(
-            f"---\nschema_version: 2\ntemplate_id: {template_id}\n"
-            f"last_migrated_at: {datetime.now(tz=UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
-            "template_sha256: \n---\n",
+            self._render_claude_md(template_id),
             encoding="utf-8",
         )
         _log.info(
@@ -234,6 +249,34 @@ class WikiLifecycleManager:
             template_id=template_id,
         )
         return candidate
+
+    def _render_claude_md(self, template_id: str) -> str:
+        """Build the initial per-WIKI CLAUDE.md body (aisw-db6).
+
+        With a templates dir wired, the template's managed zone (Data layout +
+        Inbox hint) is rendered so the model and the hint fast-path both see the
+        schema. Unknown template_id falls back to `_default`. Without a templates
+        dir (legacy callers), a frontmatter-only stub is written.
+        """
+        now = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if self._templates_dir is None:
+            return (
+                f"---\nschema_version: 2\ntemplate_id: {template_id}\n"
+                f"last_migrated_at: {now}\ntemplate_sha256: \n---\n"
+            )
+        resolved_id = template_id
+        try:
+            managed, sha = load_template(template_id, self._templates_dir)
+        except TemplateNotFoundError:
+            resolved_id = "_default"
+            managed, sha = load_template("_default", self._templates_dir)
+        fm = Frontmatter(
+            schema_version=2,
+            template_id=resolved_id,
+            last_migrated_at=now,
+            template_sha256=sha,
+        )
+        return render_v2(fm=fm, managed=managed, user="")
 
     def soft_delete(self, owner: int, primary: str) -> TrashedWiki:
         wiki_dir = self._owner_dir(owner) / primary

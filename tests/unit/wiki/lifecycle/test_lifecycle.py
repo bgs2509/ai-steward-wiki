@@ -97,3 +97,61 @@ def test_soft_delete_missing_raises(wiki_root: Path) -> None:
     mgr = WikiLifecycleManager(wiki_root)
     with pytest.raises(WikiNotFoundError):
         mgr.soft_delete(11, "Ghost-WIKI")
+
+
+# --- aisw-db6: create_wiki must materialize the template into the managed zone ---
+
+
+def _seed_templates(tmp_path: Path) -> Path:
+    tdir = tmp_path / "templates"
+    tdir.mkdir()
+    (tdir / "medical.md").write_text(
+        "# Medical WIKI\n\n## Data layout\n1. `metrics/` — CSV: date,time,systolic,diastolic,pulse,context,flag\n",
+        encoding="utf-8",
+    )
+    return tdir
+
+
+def test_create_wiki_renders_managed_zone(wiki_root: Path, tmp_path: Path) -> None:
+    from ai_steward_wiki.wiki.migration import MANAGED_START, USER_START, parse_frontmatter
+
+    tdir = _seed_templates(tmp_path)
+    mgr = WikiLifecycleManager(wiki_root, templates_dir=tdir)
+    n = mgr.create_wiki(42, "медицина", template_id="medical")
+    claude = wiki_root / "42" / n.primary / "CLAUDE.md"
+    text = claude.read_text(encoding="utf-8")
+    # managed zone carries the template's Data layout — the model now sees it
+    assert MANAGED_START in text
+    assert "## Data layout" in text
+    assert "systolic,diastolic,pulse" in text
+    assert USER_START in text  # editable user zone present
+    fm, _ = parse_frontmatter(text)
+    assert fm.template_sha256 != ""  # real sha, not the empty-schema bug
+
+
+def test_create_wiki_without_templates_dir_is_frontmatter_only(wiki_root: Path) -> None:
+    """Back-compat: no templates_dir (legacy callers/tests) → frontmatter-only, no crash."""
+    from ai_steward_wiki.wiki.migration import parse_frontmatter
+
+    mgr = WikiLifecycleManager(wiki_root)  # no templates_dir
+    n = mgr.create_wiki(7, "Alpha", template_id="_default")
+    text = (wiki_root / "7" / n.primary / "CLAUDE.md").read_text(encoding="utf-8")
+    fm, _ = parse_frontmatter(text)
+    assert fm.template_id == "_default"
+    assert fm.schema_version == 2
+
+
+def test_create_wiki_unknown_template_falls_back_to_default(
+    wiki_root: Path, tmp_path: Path
+) -> None:
+    """Unknown template_id with a templates_dir present → _default schema, never crash."""
+    from ai_steward_wiki.wiki.migration import MANAGED_START
+
+    tdir = tmp_path / "templates"
+    tdir.mkdir()
+    (tdir / "_default.md").write_text("# Default\n\n## Format\nlists\n", encoding="utf-8")
+    mgr = WikiLifecycleManager(wiki_root, templates_dir=tdir)
+    n = mgr.create_wiki(9, "Mystery", template_id="nonexistent")
+    text = (wiki_root / "9" / n.primary / "CLAUDE.md").read_text(encoding="utf-8")
+    assert MANAGED_START in text
+    assert "## Format" in text  # fell back to _default body

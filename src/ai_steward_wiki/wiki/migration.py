@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/migration.py
-# VERSION: 0.0.1
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: CLAUDE.md frontmatter parser + managed/user-zone HTML markers +
 #            linear v1 -> v2 migration that preserves user-zone verbatim.
@@ -24,10 +24,15 @@
 #   migrate_v1_to_v2 - atomic, idempotent linear migration on disk
 #   load_template - read templates/<id>.md and return (managed_text, sha256)
 #   TemplateNotFoundError - raised by load_template when template_id is unknown
+#   repair_managed_zone - re-render managed zone on an already-v2 CLAUDE.md, preserve user zone (aisw-db6)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - chunk 15: load_template helper + sha256 computation
+#   LAST_CHANGE: v0.0.3 - aisw-db6: repair_managed_zone — re-render the managed
+#                zone on already-v2 CLAUDE.md files whose schema body is empty/stale
+#                (migrate_v1_to_v2 no-ops on v2). Preserves user zone, idempotent on
+#                matching sha. Backfills the systemic empty-schema defect.
+#   PREVIOUS:    v0.0.2 - chunk 15: load_template helper + sha256 computation
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -55,6 +60,7 @@ __all__ = [
     "parse_frontmatter",
     "render_frontmatter",
     "render_v2",
+    "repair_managed_zone",
 ]
 
 _log = structlog.get_logger(__name__)
@@ -216,5 +222,54 @@ def migrate_v1_to_v2(
         path=str(path),
         from_version=fm.schema_version,
         to_version=2,
+    )
+    return True
+
+
+def repair_managed_zone(
+    path: Path,
+    *,
+    template_managed: str,
+    template_sha256: str,
+    template_id: str | None = None,
+    now_utc: datetime | None = None,
+) -> bool:
+    """Re-render the managed zone of an already-v2 CLAUDE.md from its template.
+
+    Unlike migrate_v1_to_v2 (which no-ops on v2), this repairs v2 files whose
+    managed zone is empty or stale — the systemic aisw-db6 defect where
+    create_wiki wrote a frontmatter-only CLAUDE.md, leaving the model without a
+    Data layout schema. The user zone is preserved verbatim. Idempotent: returns
+    False when the managed zone already matches the template (same sha AND markers
+    present); True when a rewrite was applied. Atomic tmp + os.replace.
+    """
+    text = path.read_text(encoding="utf-8")
+    fm, body = parse_frontmatter(text)
+
+    has_managed = MANAGED_START in body and MANAGED_END in body
+    if fm.template_sha256 == template_sha256 and has_managed:
+        _log.info("wiki.lifecycle.repair.noop", path=str(path))
+        return False
+
+    user_zone = extract_user_zone(body)
+    if user_zone is None:
+        user_zone = ""
+
+    new_fm = Frontmatter(
+        schema_version=2,
+        template_id=template_id or fm.template_id,
+        last_migrated_at=_utc_now_iso(now_utc),
+        template_sha256=template_sha256,
+    )
+    rendered = render_v2(fm=new_fm, managed=template_managed, user=user_zone)
+
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(rendered, encoding="utf-8")
+    os.replace(tmp, path)
+    _log.info(
+        "wiki.lifecycle.repair.applied",
+        path=str(path),
+        template_id=new_fm.template_id,
+        template_sha256=template_sha256,
     )
     return True

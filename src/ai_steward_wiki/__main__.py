@@ -1204,6 +1204,7 @@ async def _amain() -> None:
             settings.wiki_root,
             max_per_user=settings.wiki_max_per_user,
             retention_days=settings.wiki_trash_retention_days,
+            templates_dir=settings.wiki_template_dir,  # aisw-db6: render schema into managed zone
         ),
         runtime_dir=runtime_dir,
         acquirer=WikiLockAdapter(lock_manager),

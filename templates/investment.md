@@ -16,6 +16,11 @@
 3. `screenshots/`, `statements/` — исходники.
 4. `portfolio.csv` — сводный портфель (SSoT).
 
+## File resolution
+
+1. Сделка → допиши строку в существующий `csv_exports/*.csv`; сводный портфель — обновляй единый `portfolio.csv` (SSoT), не создавай дубль.
+2. Не создавай структуры в обход «Data layout».
+
 ## Pre-flight
 
 Изменение `portfolio.csv` — explicit confirm. Импорт нового брокерского отчёта — implicit confirm.
