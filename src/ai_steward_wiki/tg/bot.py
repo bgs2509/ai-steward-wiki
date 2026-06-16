@@ -165,6 +165,7 @@ def build_dispatcher(
     templates_dir: Path | None = None,
     on_start_unknown: object | None = None,
     get_user_tz: object | None = None,
+    aggregator: object | None = None,
 ) -> Dispatcher:
     """Build Dispatcher with allowlist middleware and (optional) handlers router.
 
@@ -188,6 +189,7 @@ def build_dispatcher(
     dp.update.outer_middleware(mw)
 
     if pipeline is not None:
+        from ai_steward_wiki.tg.aggregator import InboxAggregator
         from ai_steward_wiki.tg.handlers import build_router
         from ai_steward_wiki.tg.pipeline import MessagePipeline
 
@@ -197,6 +199,7 @@ def build_dispatcher(
                 templates_dir=templates_dir,
                 on_start_unknown=cast("Callable[..., Awaitable[None]] | None", on_start_unknown),
                 get_user_tz=cast("Callable[[int], Awaitable[str]] | None", get_user_tz),
+                aggregator=cast("InboxAggregator | None", aggregator),
             )
         )
     return dp

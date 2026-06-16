@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     classifier_haiku_fallback_timeout_s: float = 15.0
     prompts_dir: Path = Path("/opt/ai-steward-wiki/prompts")
 
+    # aisw-378: debounce window for aggregating a burst of split text messages
+    # into one classify/route (Telegram splits a long paste across messages).
+    tg_aggregate_delay_s: float = 3.0
+
     # Chunk 7: Stage-1a/1b Sonnet runner (M-WIKI-RUNNER).
     wiki_runner_model: str = "claude-sonnet-4-5"
     wiki_runner_timeout_s: float = 300.0

@@ -100,6 +100,7 @@ from ai_steward_wiki.storage.sessions.digest_prefs import (
     DigestPrefs,
 )
 from ai_steward_wiki.templates import render_template
+from ai_steward_wiki.tg.aggregator import InboxAggregator
 from ai_steward_wiki.tg.callbacks import REMINDER_CALLBACK_PREFIX, on_reminder_card
 from ai_steward_wiki.tg.pipeline import ConfirmKeyboardAction, MessagePipeline
 
@@ -165,6 +166,31 @@ async def _slow_work_placeholder(bot: _Bot | None, chat_id: int):  # type: ignor
                 await bot_ref.delete_message(chat_id, mid)
             except TelegramAPIError as exc:
                 _log.debug("tg.handlers.placeholder.delete_failed", error=str(exc))
+
+
+class BotLoaderControl:
+    """aisw-378: real LoaderControl — posts/removes the "⏳ Думаю…" loader via the Bot.
+
+    Used by InboxAggregator to keep the loader as the chat's latest message while a
+    burst of split messages is buffered, and to remove it once processing finishes.
+    """
+
+    def __init__(self, bot: _Bot) -> None:
+        self._bot = bot
+
+    async def post(self, chat_id: int) -> int | None:
+        try:
+            msg = await self._bot.send_message(chat_id, PLACEHOLDER_TEXT_RU)
+            return int(msg.message_id)
+        except TelegramAPIError as exc:
+            _log.debug("tg.aggregator.loader.send_failed", error=str(exc))
+            return None
+
+    async def delete(self, chat_id: int, message_id: int) -> None:
+        try:
+            await self._bot.delete_message(chat_id, message_id)
+        except TelegramAPIError as exc:
+            _log.debug("tg.aggregator.loader.delete_failed", error=str(exc))
 
 
 __all__ = [
@@ -349,6 +375,7 @@ def build_router(
     templates_dir: Path | None = None,
     on_start_unknown: Callable[..., Awaitable[None]] | None = None,
     get_user_tz: Callable[[int], Awaitable[str]] | None = None,
+    aggregator: InboxAggregator | None = None,
 ) -> Router:
     """Construct an aiogram Router wired to ``pipeline``.
 
@@ -380,6 +407,18 @@ def build_router(
         # START_BLOCK_HANDLER_TEXT
         if message.from_user is None or message.text is None or message.chat is None:
             _log.debug("tg.handlers.text.skip_missing_fields")
+            return
+        # aisw-378: when an aggregator is wired, buffer the message and return — a
+        # burst of split messages is debounced into ONE classify/route, and the
+        # aggregator owns the "⏳ Думаю…" loader (so the typing/placeholder wrap is
+        # skipped here, it would fight the loader and end on return anyway).
+        if aggregator is not None:
+            await aggregator.submit(
+                telegram_id=message.from_user.id,
+                chat_id=message.chat.id,
+                update_id=message.message_id,
+                text=message.text,
+            )
             return
         # Keep Telegram's "typing…" indicator alive for the whole pipeline
         # (Stage-0 + router + answer); aiogram re-sends sendChatAction ~every 5s.

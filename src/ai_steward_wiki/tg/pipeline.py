@@ -217,6 +217,7 @@ from ai_steward_wiki.classifier.schema import (
     ClassifierResult,
     Intent,
 )
+from ai_steward_wiki.inbox.hint_match import MAX_FASTPATH_CHARS as HINT_FASTPATH_MAX_CHARS
 from ai_steward_wiki.inbox.hint_match import MIN_SCORE as HINT_MIN_SCORE
 from ai_steward_wiki.inbox.hint_match import is_confident, score_catalog
 from ai_steward_wiki.inbox.idempotency import IdempotencyService
@@ -1037,7 +1038,7 @@ class DefaultPipeline:
                     telegram_id=telegram_id,
                     n_domains=len(catalog),
                 )
-                if is_confident(hint_match):
+                if len(text) <= HINT_FASTPATH_MAX_CHARS and is_confident(hint_match):
                     decision = RouterDecision(
                         intent=RouterIntent.ROUTE,
                         target_wiki=hint_match.top_stem,

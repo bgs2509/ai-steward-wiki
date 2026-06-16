@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Final
 
 __all__ = [
+    "MAX_FASTPATH_CHARS",
     "MIN_MARGIN",
     "MIN_SCORE",
     "MIN_TOKEN_LEN",
@@ -85,6 +86,15 @@ _STOP_WORDS: Final[frozenset[str]] = frozenset(
 # settings (no env knob until the logs justify one — YAGNI / D-032).
 MIN_SCORE: Final[float] = 2.0
 MIN_MARGIN: Final[float] = 1.0
+
+# aisw-378: the keyword fast-path is reliable only for SHORT messages
+# ("давление 120/80" → Medical). On a long document, incidental keyword overlap
+# (e.g. "анализ" in a coal-industry report colliding with Medical's hint) almost
+# always clears MIN_SCORE/MIN_MARGIN by chance → false auto-route. Above this
+# length the caller skips the fast-path and lets the context-aware Sonnet router
+# decide. Caller-applied (it owns the text length); kept here with the other
+# fast-path tunables.
+MAX_FASTPATH_CHARS: Final[int] = 600
 
 _WORD_RE: Final[re.Pattern[str]] = re.compile(r"\w+", re.UNICODE)
 _STEM_SUFFIX: Final[str] = "-wiki"

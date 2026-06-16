@@ -127,6 +127,29 @@ async def test_confident_hit_bypasses_router_and_requests_route_confirm(
     assert "Health-WIKI" in events
 
 
+async def test_long_text_skips_fastpath_even_when_confident() -> None:
+    """aisw-378: a long document must NOT auto-route on incidental keyword overlap.
+
+    Same confident Medical keywords, but padded past MAX_FASTPATH_CHARS — the
+    keyword fast-path is unreliable on long text (the coal-report → Medical bug),
+    so it falls through to the context-aware Sonnet router.
+    """
+    confirm = _confirm()
+    router = _router()
+    pipe = _pipe(
+        sender=FakeSender(),
+        confirm=confirm,
+        router=router,
+        hint_catalog_resolver=AsyncMock(return_value=_CATALOG),
+    )
+    long_text = "давление анализы лекарства врач. " * 60  # > 600 chars
+
+    await pipe.on_text(telegram_id=42, chat_id=10, update_id=5, text=long_text)
+
+    router.route.assert_awaited_once()  # heavy router decides, not the fast-path
+    confirm.request_explicit.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_ambiguous_match_falls_through_to_router(
     capsys: pytest.CaptureFixture[str],

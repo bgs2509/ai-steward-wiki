@@ -196,6 +196,7 @@ from ai_steward_wiki.scheduler.queue import PriorityJobQueue
 from ai_steward_wiki.settings import Settings, get_settings
 from ai_steward_wiki.storage.audit.engine import build_engine, build_sessionmaker
 from ai_steward_wiki.storage.sessions.users import resolve_user_id
+from ai_steward_wiki.tg.aggregator import InboxAggregator
 from ai_steward_wiki.tg.bot import (
     AiogramSender,
     TgSender,
@@ -204,6 +205,7 @@ from ai_steward_wiki.tg.bot import (
     register_bot_commands,
 )
 from ai_steward_wiki.tg.confirm import ConfirmationService
+from ai_steward_wiki.tg.handlers import BotLoaderControl
 from ai_steward_wiki.tg.output import deliver_output
 from ai_steward_wiki.tg.photo import PhotoIngestor
 from ai_steward_wiki.tg.pipeline import (
@@ -1327,12 +1329,20 @@ async def _amain() -> None:
         tz = _user_tz_lookup(telegram_id)
         return tz if tz is not None else settings.default_user_tz
 
+    # aisw-378: debounce-aggregate a burst of split text messages into one
+    # classify/route (fixes Telegram splitting a long paste across messages).
+    message_aggregator = InboxAggregator(
+        process=pipeline.on_text,
+        loader=BotLoaderControl(bot),
+        delay_s=settings.tg_aggregate_delay_s,
+    )
     dp = build_dispatcher(
         allowlist,
         pipeline=pipeline,
         templates_dir=settings.wiki_template_dir,
         on_start_unknown=_on_start_unknown_cb,
         get_user_tz=_resolve_user_tz,
+        aggregator=message_aggregator,
     )
     logger.info("runtime.handlers.registered")
 
