@@ -606,7 +606,7 @@ class Router(Protocol):
 class IngestOutcome:
     """Result of a Stage-1b librarian ingest into a target WIKI (aisw-zd9)."""
 
-    status: Literal["ok", "rejected", "run_failed"]
+    status: Literal["ok", "rejected", "run_failed", "partial"]
     reply: str  # already composed: notes + summary | notes + hint
     run_id: str | None  # set when a Stage-1b run happened (ok | run_failed)
     target_wiki: str | None  # primary name when resolved

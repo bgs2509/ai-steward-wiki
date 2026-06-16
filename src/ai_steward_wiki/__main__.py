@@ -221,6 +221,7 @@ from ai_steward_wiki.wiki.runner import (
     WRITE_TOOLS,
     AsyncioSpawner,
     WikiRunnerError,
+    WikiRunnerTimeoutError,
     _RunConfig,
     aggregate_text,
     run_wiki_session,
@@ -814,6 +815,29 @@ class _RouterAdapter:
 # END_BLOCK_INBOX_ROUTER_ADAPTER
 
 
+_INGEST_META_FILES = frozenset({"CLAUDE.md", "log.md", "index.md", "README.md", ".gitkeep"})
+_INGEST_SKIP_DIRS = frozenset({"raw", "runs"})
+
+
+def _wiki_has_ingested_content(wiki_dir: Path) -> bool:
+    """True if the WIKI holds ingested data beyond scaffold/meta (aisw-zpn).
+
+    Used after an ingest timeout to tell partial-success from total failure. Ignores
+    meta files (CLAUDE.md/log.md/index.md/README.md/.gitkeep) and the raw/ + runs/
+    staging dirs — any other file means the model wrote real content before the kill.
+    """
+    for path in wiki_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(wiki_dir)
+        if rel.parts and rel.parts[0] in _INGEST_SKIP_DIRS:
+            continue
+        if path.name in _INGEST_META_FILES:
+            continue
+        return True
+    return False
+
+
 # START_BLOCK_INBOX_LIBRARIAN_ADAPTER (aisw-zd9, Inbox-WIKI Phase-B)
 class _LibrarianAdapter:
     """Inbox-WIKI Stage-1b librarian: resolve/create the target <Domain>-WIKI from a
@@ -831,6 +855,7 @@ class _LibrarianAdapter:
         spawner: AsyncioSpawner,
         run_config: _RunConfig,
         schema_generator: SchemaGenerator | None = None,
+        ingest_timeout_s: float | None = None,
     ) -> None:
         self._wiki_root = wiki_root
         self._prompts_dir = prompts_dir
@@ -842,6 +867,9 @@ class _LibrarianAdapter:
         # aisw-b50: generates a tailored schema for unknown-domain WIKIs at create.
         # None disables generation (tests / known-domain-only deployments).
         self._schema_generator = schema_generator
+        # aisw-zpn: per-run timeout for the (heavier) create+ingest path. None →
+        # fall back to run_config.timeout_s (the general 300s query budget).
+        self._ingest_timeout_s = ingest_timeout_s
 
     async def ingest(
         self,
@@ -939,7 +967,40 @@ class _LibrarianAdapter:
                 config=self._run_config,
                 user_input=prompt,
                 media_paths=staged.media_abs or None,
-                timeout_s=None,
+                timeout_s=self._ingest_timeout_s,
+            )
+        except WikiRunnerTimeoutError:
+            # aisw-zpn: a large document can exceed the ingest budget AFTER writing
+            # part of the data (Write files persist through the kill). Tell the user
+            # honestly and let a re-send complete it (soft-resume), instead of the
+            # generic "failed" that hides the partial data.
+            partial = await asyncio.to_thread(_wiki_has_ingested_content, target.wiki_dir)
+            logger.warning(
+                "inbox.route.ingest_timeout",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                wiki_id=wiki_id,
+                run_id=run_id,
+                partial=partial,
+            )
+            if partial:
+                return IngestOutcome(
+                    status="partial",
+                    reply=(
+                        f"{decision.notes}\n\n"
+                        "Документ большой — занёс частично. "
+                        "Пришли его ещё раз, чтобы дозанести остальное."  # noqa: RUF001
+                    ),
+                    run_id=run_id,
+                    target_wiki=target.wiki_name.primary,
+                    created=target.created,
+                )
+            return IngestOutcome(
+                status="run_failed",
+                reply=f"{decision.notes}\n\nНе удалось разложить по полочкам — попробую позже.",  # noqa: RUF001
+                run_id=run_id,
+                target_wiki=target.wiki_name.primary,
+                created=target.created,
             )
         except WikiRunnerError:
             logger.exception(
@@ -1247,6 +1308,7 @@ async def _amain() -> None:
             prompt_path=settings.prompts_dir / "schema-gen.md",
             model=settings.wiki_runner_model,
         ),
+        ingest_timeout_s=settings.wiki_ingest_timeout_s,  # aisw-zpn: larger budget for big docs
     )
     runs_dir = settings.workspace_root / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)

@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     wiki_runner_model: str = "claude-sonnet-4-5"
     wiki_runner_timeout_s: float = 300.0
     wiki_runner_term_grace_s: float = 10.0
+    # aisw-zpn: create+ingest of a large document is heavier than a normal query —
+    # a separate, larger budget so a big doc fits in one run (general queries keep 300s).
+    wiki_ingest_timeout_s: float = 600.0
 
     # Chunk 8: M-WIKI-LIFECYCLE.
     wiki_root: Path = Path("/var/lib/ai-steward-wiki/workspace/wikis")

@@ -277,3 +277,71 @@ async def test_known_domain_skips_schema_generation(tmp_path: Path) -> None:
     assert gen.calls == []  # known preset -> no generation
     claude = wiki_root / "42" / "Medical-WIKI" / "CLAUDE.md"
     assert "metrics" in claude.read_text(encoding="utf-8")  # medical preset applied
+
+
+# ---------- aisw-zpn: ingest timeout -> honest partial vs failed ----------
+
+
+def test_wiki_has_ingested_content_ignores_meta_and_staging(tmp_path: Path) -> None:
+    w = tmp_path / "W"
+    (w / "raw").mkdir(parents=True)
+    (w / "runs").mkdir()
+    (w / "CLAUDE.md").write_text("schema", encoding="utf-8")
+    (w / "log.md").write_text("", encoding="utf-8")
+    (w / "raw" / "doc.md").write_text("source", encoding="utf-8")
+    # only meta + staging -> no ingested content yet
+    assert runtime._wiki_has_ingested_content(w) is False
+    # a real data file under a content dir -> True
+    (w / "metrics").mkdir()
+    (w / "metrics" / "production.csv").write_text("year,vol\n2021,438\n", encoding="utf-8")
+    assert runtime._wiki_has_ingested_content(w) is True
+
+
+@pytest.mark.asyncio
+async def test_ingest_timeout_with_partial_data_reports_partial(tmp_path: Path) -> None:
+    from ai_steward_wiki.wiki.runner import WikiRunnerTimeoutError
+
+    adapter, _ = _adapter(tmp_path)
+
+    async def _timeout(**kwargs: object) -> object:
+        wp = kwargs["wiki_path"]
+        assert isinstance(wp, Path)
+        (wp / "metrics").mkdir(exist_ok=True)
+        (wp / "metrics" / "production.csv").write_text("year,vol\n2021,438\n", encoding="utf-8")
+        raise WikiRunnerTimeoutError("ingest exceeded budget")
+
+    with patch.object(runtime, "run_wiki_session", new=AsyncMock(side_effect=_timeout)):
+        outcome = await adapter.ingest(
+            _decision(RouterIntent.CREATE_WIKI, "Coal"),
+            telegram_id=42,
+            user_text="огромный документ",
+            source="text",
+            media_paths=None,
+            correlation_id="tg-1-42",
+        )
+
+    assert outcome.status == "partial"
+    assert "частично" in outcome.reply
+    assert "ещё раз" in outcome.reply
+
+
+@pytest.mark.asyncio
+async def test_ingest_timeout_with_no_data_reports_failed(tmp_path: Path) -> None:
+    from ai_steward_wiki.wiki.runner import WikiRunnerTimeoutError
+
+    adapter, _ = _adapter(tmp_path)
+
+    with patch.object(
+        runtime, "run_wiki_session", new=AsyncMock(side_effect=WikiRunnerTimeoutError("t"))
+    ):
+        outcome = await adapter.ingest(
+            _decision(RouterIntent.CREATE_WIKI, "Coal"),
+            telegram_id=42,
+            user_text="x",
+            source="text",
+            media_paths=None,
+            correlation_id="tg-1-42",
+        )
+
+    assert outcome.status == "run_failed"
+    assert "Не удалось" in outcome.reply
