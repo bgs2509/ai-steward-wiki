@@ -315,6 +315,10 @@ ACK_CLASSIFY_ERR_RU = "Не удалось распознать запрос, п
 ACK_RUNNER_ERR_RU = "Задача заняла слишком много времени, попробуйте позже."
 # DEC-L3 reject + edge-case strings (chunk 22 M-TG-DOCUMENT-FULL).
 ACK_DOC_UNSUPPORTED_RU = "Этот тип файла пока не поддерживается."
+# aisw-aca: intent=admin has no real handler — it used to fall into the generic
+# root runner (Write access to the whole user workspace), which freelance-created
+# malformed WIKIs from misclassified "создай X". Reply safely instead of running.
+ACK_ADMIN_RU = "Админ-действия пока не поддерживаю. Если хочешь что-то сохранить — пришли материал (текст, файл или фото), и я предложу, куда его занести."  # noqa: RUF001
 ACK_DOC_PDF_NO_TEXT_RU = "Не вижу текста в PDF. Попробуйте отправить страницу как фото."  # noqa: RUF001
 ACK_DOC_TOO_LARGE_RU = "Файл слишком большой (лимит 25 МБ)."
 
@@ -1177,6 +1181,19 @@ class DefaultPipeline:
             await self._sender.send_message(chat_id, decision.notes)
             return
         # END_BLOCK_ROUTABLE_BRANCH
+
+        # aisw-aca: tame intent=admin. There is no real admin handler; admin used to
+        # fall through to the generic root runner and freelance-create WIKIs (the
+        # malformed Russian-Coal-WIKI). Reply safely and never run Claude in the user
+        # root for an admin-classified message.
+        if result.intent is Intent.ADMIN:
+            _log.info(
+                "tg.pipeline.admin.declined",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+            )
+            await self._sender.send_message(chat_id, ACK_ADMIN_RU)
+            return
 
         _log.info(
             "tg.pipeline.runner.dispatched",

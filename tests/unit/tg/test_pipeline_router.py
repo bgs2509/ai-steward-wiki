@@ -115,8 +115,9 @@ async def test_routable_intent_goes_through_router_not_runner(intent: Intent) ->
 
 @pytest.mark.asyncio
 # Intent.DIGEST is no longer legacy — it has its own fast-path (#2, aisw-578),
-# covered in test_pipeline_digest.py.
-@pytest.mark.parametrize("intent", [Intent.REMINDER, Intent.WIKI_LINT, Intent.ADMIN])
+# covered in test_pipeline_digest.py. Intent.ADMIN is no longer legacy either —
+# aisw-aca tames it (see test_admin_intent_declined_safely below).
+@pytest.mark.parametrize("intent", [Intent.REMINDER, Intent.WIKI_LINT])
 async def test_non_routable_intent_uses_legacy_path(intent: Intent) -> None:
     sender = FakeSender()
     router = _make_router()
@@ -126,6 +127,23 @@ async def test_non_routable_intent_uses_legacy_path(intent: Intent) -> None:
 
     router.route.assert_not_awaited()
     runner.run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_admin_intent_declined_safely() -> None:
+    """aisw-aca: intent=admin must NOT freelance-run Claude in the user root."""
+    from ai_steward_wiki.tg.pipeline import ACK_ADMIN_RU
+
+    sender = FakeSender()
+    router = _make_router()
+    pipe, runner, output = _pipe(sender=sender, intent=Intent.ADMIN, router=router)
+
+    await pipe.on_text(telegram_id=1, chat_id=10, update_id=2, text="создай Russian-Coal-WIKI")
+
+    runner.run.assert_not_awaited()  # no generic root run -> no freelance WIKI
+    router.route.assert_not_awaited()
+    output.deliver.assert_not_awaited()
+    assert sender.sends[0]["text"] == ACK_ADMIN_RU
 
 
 @pytest.mark.asyncio
