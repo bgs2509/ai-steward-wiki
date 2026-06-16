@@ -205,3 +205,75 @@ async def test_media_is_promoted_into_target_wiki(tmp_path: Path) -> None:
     media_paths = run_mock.await_args.kwargs["media_paths"]
     assert media_paths is not None
     assert promoted[0] in media_paths
+
+
+# ---------- aisw-b50: schema generation for unknown-domain creates ----------
+
+
+def _gen_adapter(tmp_path: Path, generator: object) -> tuple[runtime._LibrarianAdapter, Path, Path]:
+    """Adapter wired with a templates_dir (so resolve_template_id works) + a generator."""
+    wiki_root = tmp_path / "wikis"
+    wiki_root.mkdir()
+    tdir = tmp_path / "templates"
+    tdir.mkdir()
+    (tdir / "_default.md").write_text("# Default\n## Data layout\ngeneric\n", encoding="utf-8")
+    (tdir / "medical.md").write_text("# Medical\n## Data layout\nmetrics\n", encoding="utf-8")
+    adapter = runtime._LibrarianAdapter(
+        wiki_root=wiki_root,
+        prompts_dir=_prompts_dir(tmp_path),
+        lifecycle=WikiLifecycleManager(wiki_root, templates_dir=tdir),
+        runtime_dir=tmp_path / "runtime",
+        acquirer=MagicMock(),
+        spawner=MagicMock(),
+        run_config=MagicMock(),
+        schema_generator=generator,
+    )
+    return adapter, wiki_root, tdir
+
+
+@pytest.mark.asyncio
+async def test_unknown_domain_triggers_schema_generation(tmp_path: Path) -> None:
+    from ai_steward_wiki.wiki.schema_gen import FakeSchemaGenerator
+
+    good = (
+        "## Data layout\n1. `pages/` md\n## File resolution\nappend\n"
+        "## Inbox hint\nintents: page_create\n## Персонажи\nкарточки\n"
+    )
+    gen = FakeSchemaGenerator(canned=good)
+    adapter, wiki_root, _ = _gen_adapter(tmp_path, gen)
+    with patch.object(
+        runtime, "run_wiki_session", new=AsyncMock(return_value=_fake_run_result("ok"))
+    ):
+        await adapter.ingest(
+            _decision(RouterIntent.CREATE_WIKI, "Anime-Maguro"),
+            telegram_id=42,
+            user_text="инфа про магуро аниме",
+            source="text",
+            media_paths=None,
+            correlation_id="tg-9-42",
+        )
+    assert len(gen.calls) == 1  # generator invoked for the unknown domain
+    claude = wiki_root / "42" / "AnimeMaguro-WIKI" / "CLAUDE.md"
+    assert "## Персонажи" in claude.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_known_domain_skips_schema_generation(tmp_path: Path) -> None:
+    from ai_steward_wiki.wiki.schema_gen import FakeSchemaGenerator
+
+    gen = FakeSchemaGenerator(canned="should not be used")
+    adapter, wiki_root, _ = _gen_adapter(tmp_path, gen)
+    with patch.object(
+        runtime, "run_wiki_session", new=AsyncMock(return_value=_fake_run_result("ok"))
+    ):
+        await adapter.ingest(
+            _decision(RouterIntent.CREATE_WIKI, "Medical"),
+            telegram_id=42,
+            user_text="давление 120 80",
+            source="text",
+            media_paths=None,
+            correlation_id="tg-10-42",
+        )
+    assert gen.calls == []  # known preset -> no generation
+    claude = wiki_root / "42" / "Medical-WIKI" / "CLAUDE.md"
+    assert "metrics" in claude.read_text(encoding="utf-8")  # medical preset applied

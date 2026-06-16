@@ -181,8 +181,12 @@ def resolve_target_wiki(
             on_route_missing()
         # fall through to create — the Router asserted it belongs there.
     existed_before = lifecycle.lookup(owner, raw_name) is not None
+    # aisw-b50: pick the matching domain preset by slug; unknown domains resolve to
+    # `default_template_id` (_default) and are upgraded by LLM schema generation in
+    # the caller after create.
+    template_id = lifecycle.resolve_template_id(raw_name, default=default_template_id)
     try:
-        name = lifecycle.create_wiki(owner, raw_name, default_template_id)
+        name = lifecycle.create_wiki(owner, raw_name, template_id)
     except AntiSpamCapError:
         return RouteRejection(reason="cap", hint=_RU_CAP_HINT)
     except WikiNameError:

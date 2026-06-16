@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/lifecycle.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: WikiLifecycleManager — owner-scoped create / lookup / soft-delete /
 #            restore with hard cap + Levenshtein <=2 anti-spam + atomic FS ops.
@@ -13,7 +13,7 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
-#   WikiLifecycleManager - create_wiki/lookup/list_active/list_trashed/soft_delete/restore
+#   WikiLifecycleManager - create_wiki/lookup/list_active/list_trashed/soft_delete/restore/resolve_template_id
 #   TrashedWiki - frozen Pydantic record of a soft-deleted wiki
 #   NearDuplicateMatch - frozen Pydantic (existing_primary, distance)
 #   AntiSpamCapError - hard cap reached
@@ -23,7 +23,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-db6: create_wiki now renders the template body into
+#   LAST_CHANGE: v0.0.3 - aisw-b50: resolve_template_id(raw_name) maps a proposed
+#                name to a domain preset slug, or "_default" for unknown domains —
+#                the signal the route flow uses to trigger LLM schema generation.
+#   PREVIOUS:    v0.0.2 - aisw-db6: create_wiki now renders the template body into
 #                the v2 CLAUDE.md managed zone (via load_template + render_v2) when a
 #                templates_dir is wired — previously it wrote frontmatter-only, so the
 #                model never saw the Data layout schema. Optional templates_dir keeps
@@ -46,7 +49,7 @@ from ai_steward_wiki.wiki.migration import (
     load_template,
     render_v2,
 )
-from ai_steward_wiki.wiki.name import WikiName, normalize_wiki_name
+from ai_steward_wiki.wiki.name import WikiName, WikiNameError, normalize_wiki_name
 
 __all__ = [
     "AntiSpamCapError",
@@ -277,6 +280,23 @@ class WikiLifecycleManager:
             template_sha256=sha,
         )
         return render_v2(fm=fm, managed=managed, user="")
+
+    def resolve_template_id(self, raw_name: str, *, default: str = "_default") -> str:
+        """Map a proposed WIKI name to a static preset slug, or `default` if none.
+
+        aisw-b50: returns the domain preset (e.g. "medical") when templates/<slug>.md
+        exists, else `default` ("_default"). The caller treats a `default` result as an
+        *unknown domain* signal — the trigger for LLM schema generation at create.
+        """
+        if self._templates_dir is None:
+            return default
+        try:
+            slug = normalize_wiki_name(raw_name).slug
+        except WikiNameError:
+            return default
+        if (self._templates_dir / f"{slug}.md").is_file():
+            return slug
+        return default
 
     def soft_delete(self, owner: int, primary: str) -> TrashedWiki:
         wiki_dir = self._owner_dir(owner) / primary

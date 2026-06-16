@@ -223,6 +223,11 @@ from ai_steward_wiki.wiki.runner import (
     aggregate_text,
     run_wiki_session,
 )
+from ai_steward_wiki.wiki.schema_gen import (
+    ClaudeCliSchemaGenerator,
+    SchemaGenerator,
+    apply_generated_schema,
+)
 from ai_steward_wiki.wiki.streaming import StreamEvent
 
 logger = structlog.get_logger("ai_steward_wiki.runtime")
@@ -823,6 +828,7 @@ class _LibrarianAdapter:
         acquirer: WikiLockAdapter,
         spawner: AsyncioSpawner,
         run_config: _RunConfig,
+        schema_generator: SchemaGenerator | None = None,
     ) -> None:
         self._wiki_root = wiki_root
         self._prompts_dir = prompts_dir
@@ -831,6 +837,9 @@ class _LibrarianAdapter:
         self._acquirer = acquirer
         self._spawner = spawner
         self._run_config = run_config
+        # aisw-b50: generates a tailored schema for unknown-domain WIKIs at create.
+        # None disables generation (tests / known-domain-only deployments).
+        self._schema_generator = schema_generator
 
     async def ingest(
         self,
@@ -879,6 +888,21 @@ class _LibrarianAdapter:
             target_wiki=target.wiki_name.primary,
             created=target.created,
         )
+        # aisw-b50: a freshly-created WIKI of an UNKNOWN domain (no static preset)
+        # gets an LLM-generated, topic-tailored schema before the ingest run reads
+        # CLAUDE.md. Known domains already carry their preset; failures keep _default.
+        if (
+            target.created
+            and self._schema_generator is not None
+            and self._lifecycle.resolve_template_id(decision.target_wiki or "") == "_default"
+        ):
+            await apply_generated_schema(
+                claude_md=target.wiki_dir / "CLAUDE.md",
+                wiki_name=target.wiki_name.primary,
+                first_content=user_text,
+                correlation_id=correlation_id,
+                generator=self._schema_generator,
+            )
         staged = await asyncio.to_thread(
             stage_raw_into_wiki,
             target.wiki_dir,
@@ -1215,6 +1239,11 @@ async def _amain() -> None:
             term_grace_s=settings.wiki_runner_term_grace_s,
             claude_config_dir=default_claude_config_dir(),
             allowed_tools=WRITE_TOOLS,  # aisw-t6w: librarian creates/edits WIKI files
+        ),
+        schema_generator=ClaudeCliSchemaGenerator(  # aisw-b50: tailored schema for unknown domains
+            claude_config_dir=default_claude_config_dir(),
+            prompt_path=settings.prompts_dir / "schema-gen.md",
+            model=settings.wiki_runner_model,
         ),
     )
     runs_dir = settings.workspace_root / "runs"

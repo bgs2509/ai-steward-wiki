@@ -155,3 +155,15 @@ def test_create_wiki_unknown_template_falls_back_to_default(
     text = (wiki_root / "9" / n.primary / "CLAUDE.md").read_text(encoding="utf-8")
     assert MANAGED_START in text
     assert "## Format" in text  # fell back to _default body
+
+
+def test_resolve_template_id_known_vs_unknown(wiki_root: Path, tmp_path: Path) -> None:
+    """aisw-b50: known slug -> preset; unknown -> default (the generation trigger)."""
+    tdir = tmp_path / "templates"
+    tdir.mkdir()
+    (tdir / "medical.md").write_text("# Medical\n", encoding="utf-8")
+    mgr = WikiLifecycleManager(wiki_root, templates_dir=tdir)
+    assert mgr.resolve_template_id("Medical") == "medical"
+    assert mgr.resolve_template_id("аниме про магуро") == "_default"
+    # no templates_dir -> always default
+    assert WikiLifecycleManager(wiki_root).resolve_template_id("Medical") == "_default"
