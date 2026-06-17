@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/scheduler/consumer.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Single async drain loop over PriorityJobQueue — spawns
 #            `systemd-run --scope --collect`-wrapped Claude CLI per cron-user
@@ -20,7 +20,7 @@
 #            ai_steward_wiki.tg.output.ChainSplitter,
 #            ai_steward_wiki.storage.jobs.models.Job
 #   LINKS: M-SCHEDULER-CONSUMER, M-SCHEDULER, M-STORAGE-JOBS, M-TG-TEXT,
-#          M-CLAUDE-CLI-COMMON, aisw-02v, D-011 §3, D-021
+#          M-CLAUDE-CLI-COMMON, aisw-02v, aisw-0j4, D-011 §3, D-021
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -31,7 +31,16 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - aisw-02v: initial PriorityJobQueue consumer (single drain
+#   LAST_CHANGE: v0.0.2 - aisw-0j4: insert a literal "--" end-of-options separator
+#                immediately before msg.command in _build_argv. The pre-existing "--"
+#                only terminates systemd-run option parsing, not claude's, so a
+#                "-"-prefixed user command was parsed as a Claude CLI flag
+#                (--dangerously-skip-permissions, --add-dir /, …), bypassing the
+#                per-job sandbox. The new separator forces msg.command to be a
+#                positional prompt. Full parity with runner argv hardening
+#                (permission-mode / allow-deny tools / setting-sources) tracked
+#                separately as a follow-up.
+#   PREVIOUS:    v0.0.1 - aisw-02v: initial PriorityJobQueue consumer (single drain
 #                loop, systemd-run --scope --collect wrapper, ChainSplitter delivery)
 # END_CHANGE_SUMMARY
 
@@ -298,6 +307,16 @@ class CronConsumer:
             "--",
             binary,
             *system_prompt_argv(self._prompt_path),
+            # aisw-0j4: literal end-of-options separator BEFORE the user command.
+            # The "--" at index ~7 only terminates systemd-run's own option parsing,
+            # not claude's. Without this separator a msg.command starting with "-"
+            # (e.g. "--dangerously-skip-permissions", "--add-dir /") is parsed by the
+            # Claude CLI as a FLAG, widening the per-job tool/permission surface and
+            # bypassing the sandbox. This "--" forces claude to treat msg.command as a
+            # positional prompt, never an option. (runner.py avoids this by routing
+            # user input via stdin under -p; the consumer path uses a positional prompt,
+            # so the separator is the correct minimal guard here.)
+            "--",
             msg.command,
         ]
         # END_BLOCK_CONSUMER_ARGV

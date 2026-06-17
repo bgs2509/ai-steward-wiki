@@ -358,6 +358,44 @@ async def test_run_loop_drains_and_cancels(session_factory, fake_prompt_file) ->
         await task
 
 
+# --- argv flag-injection guard (aisw-0j4) ----------------------------------
+
+
+def test_build_argv_separates_command_with_double_dash(session_factory, fake_prompt_file) -> None:
+    """A literal '--' MUST precede msg.command so the Claude CLI can never parse
+    a '-'-prefixed command as a flag (sandbox-bypass guard, aisw-0j4).
+    """
+    bot = _FakeBot()
+    spawner = _StubSpawner(_FakeProc(stdout=b"X", returncode=0))
+    consumer = _build_consumer(session_factory=session_factory, bot=bot, spawner=spawner)
+    consumer._prompt_path = fake_prompt_file
+
+    # A command that, without the guard, the Claude CLI would parse as a flag.
+    danger = "--dangerously-skip-permissions"
+    argv = consumer._build_argv(_msg(1, command=danger))
+
+    # The command is present and last...
+    assert argv[-1] == danger
+    # ...and immediately preceded by a literal end-of-options separator.
+    assert argv[-2] == "--"
+    # That separator is the one guarding the command, not the systemd-run one:
+    # the element directly before the command must be '--'.
+    cmd_idx = argv.index(danger)
+    assert argv[cmd_idx - 1] == "--"
+
+
+def test_build_argv_normal_command_still_present(session_factory, fake_prompt_file) -> None:
+    """The benign case keeps the command as the final positional argument."""
+    bot = _FakeBot()
+    spawner = _StubSpawner(_FakeProc(stdout=b"X", returncode=0))
+    consumer = _build_consumer(session_factory=session_factory, bot=bot, spawner=spawner)
+    consumer._prompt_path = fake_prompt_file
+
+    argv = consumer._build_argv(_msg(1, command="summarise my week"))
+    assert argv[-1] == "summarise my week"
+    assert argv[-2] == "--"
+
+
 # --- queue payload validation failure --------------------------------------
 
 
