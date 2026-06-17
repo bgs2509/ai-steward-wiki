@@ -67,13 +67,20 @@ class _FakeSender:
         return object()
 
 
-async def _insert_job(factory, *, status: str = "pending", message: str = "позвонить врачу") -> int:
+async def _insert_job(
+    factory,
+    *,
+    status: str = "pending",
+    user_state: str = "pending",
+    message: str = "позвонить врачу",
+) -> int:
     async with factory() as s:
         job = Job(
             owner_telegram_id=42,
             chat_id=42,
             kind="reminder_job",
             status=status,
+            user_state=user_state,
             priority=int(Lane.USER_WRITE),
             scheduled_at_utc=WHEN.replace(tzinfo=None),
             payload=ReminderPayload(message=message).model_dump(mode="json"),
@@ -169,6 +176,24 @@ async def test_fire_job_skips_non_pending(session_factory) -> None:
         row = await s.get(Job, job_id)
         assert row is not None
         assert row.status == "cancelled"
+
+
+@pytest.mark.parametrize("user_state", ["done", "skipped"])
+async def test_fire_job_suppressed_when_user_resolved(session_factory, user_state: str) -> None:
+    # aisw-z0s: a still-pending reminder whose card the user already resolved
+    # (user_state terminal) must NOT be delivered when its DateTrigger fires.
+    sender = _FakeSender()
+    set_firing_context(sender=sender, jobs_session_maker=session_factory)
+    job_id = await _insert_job(session_factory, status="pending", user_state=user_state)
+    await fire_job(job_id)
+    assert sender.sent == []
+    async with session_factory() as s:
+        row = await s.get(Job, job_id)
+        assert row is not None
+        # status untouched (two-lifecycle design preserved); fire was suppressed.
+        assert row.status == "pending"
+        assert row.user_state == user_state
+        assert row.started_at_utc is None
 
 
 async def test_fire_job_missing_row_is_noop(session_factory) -> None:

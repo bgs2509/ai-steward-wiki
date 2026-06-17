@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/scheduler/firing.py
-# VERSION: 0.6.0
+# VERSION: 0.6.1
 # START_MODULE_CONTRACT
 #   PURPOSE: Cron/date job firing bridge — one-shot reminder (DateTrigger → plain
 #            TG message, no Claude; aisw-kcz, Phase-D.a) and recurring digest
@@ -24,7 +24,7 @@
 #            ai_steward_wiki.tg.bot.TgSender (typing only)
 #   LINKS: M-SCHEDULER-FIRING, M-STORAGE-JOBS, M-STORAGE-SESSIONS, M-SCHEDULER, M-TG-TEXT, M-WIKI-RUNNER,
 #          M-WIKI-LIFECYCLE, M-CLASSIFIER-RECURRENCE, D-002, D-010, D-019, D-022, D-024,
-#          D-025, tech-spec §3/§6, ADR-006, ADR-007, ADR-024, ADR-025, ADR-026, aisw-kcz, aisw-oqq, aisw-w3k, aisw-269, aisw-pv8
+#          D-025, tech-spec §3/§6, ADR-006, ADR-007, ADR-024, ADR-025, ADR-026, aisw-kcz, aisw-oqq, aisw-w3k, aisw-269, aisw-pv8, aisw-z0s
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -32,7 +32,7 @@
 # START_MODULE_MAP
 #   set_firing_context - install the module-level (TgSender, jobs sessionmaker) registry for fire_job
 #   create_reminder_job - INSERT+commit a jobs.Job(kind='reminder_job') then add a DateTrigger; returns job_id
-#   fire_job - APScheduler callback (picklable int): load Job, guard status, send the reminder, mark done/failed
+#   fire_job - APScheduler callback (picklable int): load Job, guard status AND user_state (suppress card-resolved done/skipped; aisw-z0s), send the reminder, mark done/failed
 #   FiringNotInitialisedError - raised by fire_job when set_firing_context was never called
 #   DigestRunner - Protocol: async callable running one Stage-1 digest session → assistant text
 #   set_digest_context - install the digest registry (scheduler, runner, owner-WIKI resolver, jobs+audit+sessions sessionmakers, sender)
@@ -46,7 +46,15 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.6.0 - aisw-163 P5: after deliver_output success, emit ±2h
+#   LAST_CHANGE: v0.6.1 - aisw-z0s: fire_job suppresses a still-pending reminder
+#                whose card the user already resolved (Job.user_state in
+#                {'done','skipped'}). The card handler mutates only user_state via
+#                CAS and never status, so without this guard a not-yet-fired
+#                reminder would double-deliver after done/skip. Read-only check —
+#                status left untouched (two-lifecycle design preserved). New
+#                anchor: scheduler.reminder.skipped{reason='user_resolved'}. The
+#                snooze path reuses fire_job and is covered automatically.
+#   PREVIOUS:    v0.6.0 - aisw-163 P5: after deliver_output success, emit ±2h
 #                reminder cards via emit_reminder_cards when prefs.cards_enabled.
 #                Failure path degrades to skip (scheduler.digest.cards_failed);
 #                success logs scheduler.digest.cards_emitted{emitted,total}.
@@ -140,6 +148,11 @@ __all__ = [
 
 _log = structlog.get_logger("scheduler.firing")
 
+# aisw-z0s: terminal Job.user_state values written by the reminder-card handler
+# (tg/callbacks.py done→'done', skp→'skipped'). When set, fire_job suppresses a
+# still-pending reminder the user already resolved via the card.
+_USER_RESOLVED_STATES = frozenset({"done", "skipped"})
+
 # Module-level firing context: set once at startup. fire_job() must take only a
 # picklable int (SQLAlchemyJobStore persists job args), so the bot-sender and the
 # jobs sessionmaker are read from here, not passed through APScheduler.
@@ -224,6 +237,13 @@ async def fire_job(job_id: int) -> None:
     Guards on Job.status == 'pending' (idempotent against double fires / stale
     trigger rows); delivers the reminder text as a plain Telegram message; marks
     the row done / failed. One-shot — no retry, no DLQ row on a send failure.
+
+    Also suppresses delivery when the user has already resolved the surfaced
+    reminder card (Job.user_state terminal — 'done'/'skipped'; aisw-z0s). The
+    card handler (tg/callbacks.py) mutates only user_state via CAS and never
+    touches status, so a not-yet-fired reminder would otherwise still deliver
+    after the user tapped done/skip. The two lifecycles stay independent — this
+    is a read-only suppression check, status is left untouched.
     """
     if _ctx is None:
         raise FiringNotInitialisedError(
@@ -237,6 +257,15 @@ async def fire_job(job_id: int) -> None:
                 "scheduler.reminder.skipped",
                 job_id=job_id,
                 status=(job.status if job is not None else "missing"),
+            )
+            return
+        if job.user_state in _USER_RESOLVED_STATES:
+            _log.info(
+                "scheduler.reminder.skipped",
+                job_id=job_id,
+                status=job.status,
+                user_state=job.user_state,
+                reason="user_resolved",
             )
             return
         try:
