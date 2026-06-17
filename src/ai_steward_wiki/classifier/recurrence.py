@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/classifier/recurrence.py
-# VERSION: 0.0.3
+# VERSION: 0.0.4
 # START_MODULE_CONTRACT
 #   PURPOSE: NL recurrence parser for the digest fast-path (aisw-oqq).
 #   SCOPE: Recurrence value + to_cron(); RecurrenceParseResult; parse_recurrence
@@ -18,8 +18,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - aisw-r2k: typed monthly (kind=monthly + day_of_month); parser + cron
-#   PREVIOUS:    v0.0.2 - aisw-oqq: parse_recurrence rule-based ru parser + escalate
+#   LAST_CHANGE: v0.0.4 - aisw-c8p: per-part ru AM/PM mapping (fix blanket +12 on ночи/утра/дня)
+#   PREVIOUS:    v0.0.3 - aisw-r2k: typed monthly (kind=monthly + day_of_month); parser + cron
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -183,8 +183,19 @@ def _extract_time(text: str) -> str | None:
     h = int(m.group("h"))
     mm = int(m.group("m") or 0)
     part = (m.group("part") or "").lower()
-    if part in {"вечера", "ночи", "дня"} and h < 12:
+    # START_BLOCK_RU_AMPM_MAP
+    # Per-part ru AM/PM mapping (aisw-c8p). A blanket +12 was wrong: "2 ночи"
+    # is 02:00 not 14:00, "12 ночи" is midnight 00:00, "10 дня" is 10:00.
+    if part in {"ночи", "утра"} and h == 12:
+        # Night/morning: only 12 is special (midnight); 1..11 stay as-is.
+        h = 0
+    elif part == "дня" and 1 <= h <= 4:
+        # Afternoon/midday: 1..4 are PM (13..16); 12 (noon) and 5..11 stay.
         h += 12
+    elif part == "вечера" and h < 12:
+        # Evening: everything before noon is PM; 12 (noon-ish) stays.
+        h += 12
+    # END_BLOCK_RU_AMPM_MAP
     if h > 23:
         return None
     return f"{h:02d}:{mm:02d}"

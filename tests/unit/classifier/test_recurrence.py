@@ -81,6 +81,34 @@ def test_parse_no_time_escalates() -> None:
     assert res.escalate is True
 
 
+# --- ru AM/PM mapping (aisw-c8p) -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_time"),
+    [
+        # ночи: midnight 12 -> 00; early-morning 1..4 kept as-is
+        ("каждый день в 2 ночи сводка", "02:00"),
+        ("каждый день в 3 ночи сводка", "03:00"),
+        ("каждый день в 12 ночи сводка", "00:00"),
+        # утра: midnight 12 -> 00; otherwise kept
+        ("каждый день в 7 утра сводка", "07:00"),
+        ("каждый день в 12 утра сводка", "00:00"),
+        # дня: afternoon 1..4 -> +12; midday 12 stays 12; 10 дня stays 10
+        ("каждый день в 10 дня сводка", "10:00"),
+        ("каждый день в 12 дня сводка", "12:00"),
+        ("каждый день в 3 дня сводка", "15:00"),
+        # вечера: h<12 -> +12; midday-ish 12 stays 12
+        ("каждый день в 7 вечера сводка", "19:00"),
+        ("каждый день в 8 вечера сводка", "20:00"),
+        ("каждый день в 12 вечера сводка", "12:00"),
+    ],
+)
+def test_parse_daily_am_pm_mapping(text: str, expected_time: str) -> None:
+    res = parse_recurrence(text, user_tz="UTC")
+    assert res.recurrence == Recurrence(kind="daily", time_hhmm=expected_time, tz="UTC")
+
+
 # --- monthly (aisw-r2k) ----------------------------------------------------
 
 
