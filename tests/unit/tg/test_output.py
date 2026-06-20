@@ -100,6 +100,40 @@ def test_chain_splitter_balances_html_across_boundary() -> None:
 # ---------- deliver_output ----------
 
 
+class _BoomAuditMaker:
+    """audit_session_maker whose session context fails — to assert the audit anchor."""
+
+    def __call__(self):  # type: ignore[no-untyped-def]
+        return self
+
+    async def __aenter__(self):  # type: ignore[no-untyped-def]
+        raise RuntimeError("audit down")
+
+    async def __aexit__(self, *_a):  # type: ignore[no-untyped-def]
+        return False
+
+
+@pytest.mark.asyncio
+async def test_deliver_audit_write_error_is_anchored(tmp_path) -> None:
+    from structlog.testing import capture_logs
+
+    sender = FakeSender()
+    with capture_logs() as records, pytest.raises(RuntimeError):
+        await deliver_output(
+            sender=sender,
+            chat_id=100,
+            telegram_id=1001,
+            wiki_id="Medical-WIKI",
+            run_id="r-err",
+            text="x",
+            runs_dir=tmp_path / "runs",
+            audit_session_maker=_BoomAuditMaker(),  # type: ignore[arg-type]
+            tg_send=False,
+        )
+    err = [r for r in records if r["event"] == "audit.io.record_run_output.error"]
+    assert len(err) == 1
+
+
 @pytest.mark.asyncio
 async def test_deliver_inline_short_text(tmp_path, audit_session_maker) -> None:
     sender = FakeSender()

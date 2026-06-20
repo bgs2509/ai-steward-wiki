@@ -49,6 +49,8 @@ from typing import Literal, Protocol
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ai_steward_wiki.logging_events import IO_ANCHOR_AUDIT_WRITE
+from ai_steward_wiki.logging_setup import anchored
 from ai_steward_wiki.storage.audit.models import RunOutput
 from ai_steward_wiki.tg.bot import TgSender
 
@@ -337,6 +339,7 @@ async def deliver_output(
     job_id: int | None = None,
     summarizer: HaikuSummarizer | None = None,
     tg_send: bool = True,
+    audit_io_threshold_ms: int = 1000,
 ) -> DeliveryReceipt:
     """Deliver `text` to TG using D-025 hybrid policy + always-persist to disk.
 
@@ -379,20 +382,23 @@ async def deliver_output(
             document_sent = True
 
     finished = _utcnow_naive()
-    await _record_run_output(
-        audit_session_maker=audit_session_maker,
-        run_id=run_id,
-        job_id=job_id,
-        wiki_id=wiki_id,
-        owner_telegram_id=telegram_id,
-        started_at_utc=started,
-        finished_at_utc=finished,
-        output_path=output_path,
-        output_bytes=output_bytes,
-        output_sha256=sha,
-        summary_chars=summary_chars,
-        kind=kind,
-    )
+    # aisw-xbc: anchor the audit write — a slow/failing DB write here is one of the
+    # post-confirm freeze suspects; threshold-gated so the happy path stays silent.
+    async with anchored(IO_ANCHOR_AUDIT_WRITE, threshold_ms=audit_io_threshold_ms, logger=_log):
+        await _record_run_output(
+            audit_session_maker=audit_session_maker,
+            run_id=run_id,
+            job_id=job_id,
+            wiki_id=wiki_id,
+            owner_telegram_id=telegram_id,
+            started_at_utc=started,
+            finished_at_utc=finished,
+            output_path=output_path,
+            output_bytes=output_bytes,
+            output_sha256=sha,
+            summary_chars=summary_chars,
+            kind=kind,
+        )
 
     _log.info(
         "tg.output.delivered",

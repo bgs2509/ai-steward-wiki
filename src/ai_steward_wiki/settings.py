@@ -134,6 +134,21 @@ class Settings(BaseSettings):
     # measured wall-clock exceeds this value emit storage.slow_query at WARNING.
     storage_slow_query_threshold_ms: int = 200
 
+    # aisw-xbc: event-loop hang diagnostics (diagnostics-only, hybrid cost).
+    # Heartbeat ticks every interval (cheap INFO; its absence marks a freeze);
+    # everything else is threshold-gated to keep happy-path log volume near-zero.
+    obs_heartbeat_interval_s: float = 20.0
+    # lag_ms over this → runtime.loop.lag WARNING (sync-blocking detector).
+    obs_loop_lag_warn_ms: int = 500
+    # lag_ms over this → auto task/thread stack dump (higher bar than warn).
+    obs_loop_lag_dump_ms: int = 5000
+    # external I/O calls slower than this → boundary anchor .done (else silent).
+    obs_io_slow_threshold_ms: int = 1000
+    # update handler slower than this → tg.update.handler_slow WARNING.
+    obs_handler_slow_threshold_ms: int = 5000
+    # minimum spacing between auto stack dumps (rate-limit, anti log-flood).
+    obs_dump_min_interval_s: float = 60.0
+
     # Media handling (D-022). Voice → faster-whisper STT; photo → staged for vision.
     # Staging is per-sender under <wiki_root>/<telegram_id>/Inbox-WIKI/raw/media/_staging
     # (see inbox.materialize.inbox_wiki_path; aisw-12t / Phase-E.a) — no global root.

@@ -1,10 +1,10 @@
 # FILE: src/ai_steward_wiki/logging_setup.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
-#   PURPOSE: structlog JSON-lines logging with correlation_id contextvar propagation and a boundary @traced decorator.
+#   PURPOSE: structlog JSON-lines logging with correlation_id contextvar propagation, a boundary @traced decorator, and a threshold-gated anchored() I/O context manager.
 #   SCOPE: configure_logging(level), bind_correlation_id(value),
-#          get_correlation_id(), get_logger(name), traced(event_prefix, bind).
-#   DEPENDS: structlog
+#          get_correlation_id(), get_logger(name), traced(event_prefix, bind), anchored(event, threshold_ms).
+#   DEPENDS: structlog, ai_steward_wiki.logging_events
 #   LINKS: M-FOUNDATION-SETTINGS (reads log_level), M-FOUNDATION-LOGGING
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
@@ -17,25 +17,32 @@
 #   get_correlation_id - read current correlation_id (None if unset)
 #   get_logger - structlog.get_logger thin wrapper for typing
 #   traced - PII-safe boundary decorator (sync+async); emits .start/.done/.error w/ duration_ms
+#   anchored - threshold-gated I/O boundary ctx mgr; silent unless slow/failed (aisw-xbc)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - add @traced PII-safe boundary decorator (sync+async)
+#   LAST_CHANGE: v0.0.3 - aisw-xbc: add threshold-gated anchored() I/O boundary context manager
+#   PREVIOUS:    v0.0.2 - add @traced PII-safe boundary decorator (sync+async)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import functools
 import inspect
 import logging
 import time
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import AsyncIterator, Callable, Mapping, MutableMapping
 from contextvars import ContextVar, Token
 from typing import Any, ParamSpec, TypeVar, cast
 
 import structlog
 
+from ai_steward_wiki.logging_events import ANCHOR_SLOW_SUFFIX, TRACED_ERROR_SUFFIX
+
 __all__ = [
+    "anchored",
     "bind_correlation_id",
     "configure_logging",
     "get_correlation_id",
@@ -45,6 +52,9 @@ __all__ = [
 ]
 
 _correlation_id: ContextVar[str | None] = ContextVar("aisw_correlation_id", default=None)
+
+# Shared by traced() and anchored() to convert perf_counter_ns deltas to ms.
+_NS_PER_MS = 1_000_000
 
 
 def bind_correlation_id(value: str) -> Token[str | None]:
@@ -135,10 +145,10 @@ def traced(
                     try:
                         result = await cast(Any, func)(*args, **kwargs)
                     except BaseException:
-                        dur = (time.perf_counter_ns() - t0) // 1_000_000
+                        dur = (time.perf_counter_ns() - t0) // _NS_PER_MS
                         log.error(f"{prefix}.error", duration_ms=int(dur), exc_info=True)
                         raise
-                    dur = (time.perf_counter_ns() - t0) // 1_000_000
+                    dur = (time.perf_counter_ns() - t0) // _NS_PER_MS
                     log.info(f"{prefix}.done", duration_ms=int(dur))
                     return cast(_R, result)
 
@@ -152,13 +162,50 @@ def traced(
                 try:
                     result = func(*args, **kwargs)
                 except BaseException:
-                    dur = (time.perf_counter_ns() - t0) // 1_000_000
+                    dur = (time.perf_counter_ns() - t0) // _NS_PER_MS
                     log.error(f"{prefix}.error", duration_ms=int(dur), exc_info=True)
                     raise
-                dur = (time.perf_counter_ns() - t0) // 1_000_000
+                dur = (time.perf_counter_ns() - t0) // _NS_PER_MS
                 log.info(f"{prefix}.done", duration_ms=int(dur))
                 return result
 
         return sync_wrapper
 
     return decorator
+
+
+@contextlib.asynccontextmanager
+async def anchored(
+    event: str,
+    *,
+    threshold_ms: int,
+    logger: Any = None,
+    clock_ns: Callable[[], int] = time.perf_counter_ns,
+) -> AsyncIterator[None]:
+    """Threshold-gated boundary anchor for an external I/O call (aisw-xbc).
+
+    Reuses the ``traced`` timing semantics but stays SILENT on the happy path
+    (hybrid cost): emits ``f"{event}{ANCHOR_SLOW_SUFFIX}"`` (WARNING, ``duration_ms``)
+    only when the call exceeds ``threshold_ms``, and always emits
+    ``f"{event}{TRACED_ERROR_SUFFIX}"`` (ERROR, ``duration_ms`` + ``exc_info``) on
+    exception before re-raising. A call that hangs forever logs NEITHER — that case
+    is covered by the loop heartbeat gap + ``dump_asyncio_tasks`` frame.
+
+    Logs only timing and the static ``event`` name — never args or payloads (PII-safe).
+    """
+    log = logger if logger is not None else structlog.get_logger("ai_steward_wiki.anchor")
+    t0 = clock_ns()
+    try:
+        yield
+    except asyncio.CancelledError:
+        # Cancellation is normal shutdown / task teardown, NOT a request failure.
+        # Logging it as .error would flood the journal on every graceful restart
+        # and bury the genuine diagnostic events this anchor exists for.
+        raise
+    except BaseException:
+        dur = (clock_ns() - t0) // _NS_PER_MS
+        log.error(f"{event}{TRACED_ERROR_SUFFIX}", duration_ms=dur, exc_info=True)
+        raise
+    dur = (clock_ns() - t0) // _NS_PER_MS
+    if dur > threshold_ms:
+        log.warning(f"{event}{ANCHOR_SLOW_SUFFIX}", duration_ms=dur)

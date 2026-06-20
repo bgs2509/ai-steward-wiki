@@ -35,6 +35,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 from ai_steward_wiki.auth.allowlist import Allowlist
+from ai_steward_wiki.logging_events import (
+    IO_ANCHOR_TG_DOCUMENT,
+    IO_ANCHOR_TG_EDIT,
+    IO_ANCHOR_TG_SEND,
+)
+from ai_steward_wiki.logging_setup import anchored
 from ai_steward_wiki.tg.middleware_auth import AllowlistMiddleware
 from ai_steward_wiki.tg.middleware_correlation import CorrelationMiddleware
 
@@ -94,10 +100,17 @@ class TgSender(Protocol):
 
 
 class AiogramSender:
-    """Adapter — bridges aiogram.Bot into the TgSender Protocol surface."""
+    """Adapter — bridges aiogram.Bot into the TgSender Protocol surface.
 
-    def __init__(self, bot: Bot) -> None:
+    Every outbound call is wrapped in a threshold-gated ``anchored`` boundary
+    (aisw-xbc): silent on the happy path, ``*.slow`` over ``io_slow_threshold_ms``,
+    ``*.error`` on failure. This is the layer that, together with the loop
+    heartbeat, makes a stuck Telegram call diagnosable from the journal.
+    """
+
+    def __init__(self, bot: Bot, *, io_slow_threshold_ms: int = 1000) -> None:
         self._bot = bot
+        self._io_threshold_ms = io_slow_threshold_ms
 
     async def send_message(
         self,
@@ -107,12 +120,13 @@ class AiogramSender:
         parse_mode: str | None = "HTML",
         reply_markup: object | None = None,
     ) -> SentMessage:
-        msg = await self._bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode=parse_mode,
-            reply_markup=reply_markup,  # type: ignore[arg-type]
-        )
+        async with anchored(IO_ANCHOR_TG_SEND, threshold_ms=self._io_threshold_ms, logger=_log):
+            msg = await self._bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,  # type: ignore[arg-type]
+            )
         return msg  # type: ignore[return-value]
 
     async def edit_message_text(
@@ -124,13 +138,14 @@ class AiogramSender:
         parse_mode: str | None = "HTML",
         reply_markup: object | None = None,
     ) -> None:
-        await self._bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text,
-            parse_mode=parse_mode,
-            reply_markup=reply_markup,  # type: ignore[arg-type]
-        )
+        async with anchored(IO_ANCHOR_TG_EDIT, threshold_ms=self._io_threshold_ms, logger=_log):
+            await self._bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,  # type: ignore[arg-type]
+            )
 
     async def send_document(
         self,
@@ -141,11 +156,12 @@ class AiogramSender:
     ) -> SentMessage:
         from aiogram.types import FSInputFile
 
-        msg = await self._bot.send_document(
-            chat_id=chat_id,
-            document=FSInputFile(path=str(path)),
-            caption=caption,
-        )
+        async with anchored(IO_ANCHOR_TG_DOCUMENT, threshold_ms=self._io_threshold_ms, logger=_log):
+            msg = await self._bot.send_document(
+                chat_id=chat_id,
+                document=FSInputFile(path=str(path)),
+                caption=caption,
+            )
         return msg  # type: ignore[return-value]
 
 
@@ -166,6 +182,7 @@ def build_dispatcher(
     on_start_unknown: object | None = None,
     get_user_tz: object | None = None,
     aggregator: object | None = None,
+    handler_slow_threshold_ms: int = 5000,
 ) -> Dispatcher:
     """Build Dispatcher with allowlist middleware and (optional) handlers router.
 
@@ -183,7 +200,9 @@ def build_dispatcher(
     # CorrelationMiddleware MUST be registered first so downstream events
     # (including AllowlistMiddleware deny events) inherit correlation_id +
     # identity bindings via merge_contextvars.
-    dp.update.outer_middleware(CorrelationMiddleware())
+    dp.update.outer_middleware(
+        CorrelationMiddleware(handler_slow_threshold_ms=handler_slow_threshold_ms)
+    )
     mw = AllowlistMiddleware(allowlist)
     # Outer-middleware so denial happens before any router.
     dp.update.outer_middleware(mw)

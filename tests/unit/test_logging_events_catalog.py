@@ -4,7 +4,7 @@ import re
 
 from ai_steward_wiki import logging_events
 
-_KEY = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$|^\.(start|done|error)$")
+_KEY = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$|^\.(start|done|error|slow)$")
 
 
 def _public_constants() -> dict[str, object]:

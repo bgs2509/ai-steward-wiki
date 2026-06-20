@@ -181,6 +181,11 @@ from ai_steward_wiki.inbox.router import (
 )
 from ai_steward_wiki.inbox.staging import promote_path_to_raw
 from ai_steward_wiki.logging_setup import configure_logging
+from ai_steward_wiki.ops.observability import (
+    enable_faulthandler,
+    install_sigusr1,
+    run_heartbeat,
+)
 from ai_steward_wiki.ops.pii import PIIRedactor
 from ai_steward_wiki.scheduler import cron_user as cron_user_mod
 from ai_steward_wiki.scheduler import firing
@@ -601,10 +606,12 @@ class _OutputDeliveryAdapter:
         sender: TgSender,
         runs_dir: Path,
         audit_session_maker: async_sessionmaker[AsyncSession],
+        audit_io_threshold_ms: int = 1000,
     ) -> None:
         self._sender = sender
         self._runs_dir = runs_dir
         self._audit_session_maker = audit_session_maker
+        self._audit_io_threshold_ms = audit_io_threshold_ms
 
     async def deliver(
         self,
@@ -625,6 +632,7 @@ class _OutputDeliveryAdapter:
             runs_dir=self._runs_dir,
             audit_session_maker=self._audit_session_maker,
             tg_send=tg_send,
+            audit_io_threshold_ms=self._audit_io_threshold_ms,
         )
 
 
@@ -1171,7 +1179,7 @@ async def _amain() -> None:
     )
 
     bot = build_bot(settings.tg_bot_token.get_secret_value())
-    sender = AiogramSender(bot)
+    sender = AiogramSender(bot, io_slow_threshold_ms=settings.obs_io_slow_threshold_ms)
     # aisw-kcz: install the reminder-firing context (picklable int-arg fire_job
     # reads the bot-sender + jobs sessionmaker from here at fire time).
     firing.set_firing_context(sender=sender, jobs_session_maker=jobs_maker)
@@ -1316,6 +1324,7 @@ async def _amain() -> None:
         sender=sender,
         runs_dir=runs_dir,
         audit_session_maker=audit_maker,
+        audit_io_threshold_ms=settings.obs_io_slow_threshold_ms,
     )
     logger.info(
         "runtime.text_pipeline.wired",
@@ -1405,6 +1414,7 @@ async def _amain() -> None:
         on_start_unknown=_on_start_unknown_cb,
         get_user_tz=_resolve_user_tz,
         aggregator=message_aggregator,
+        handler_slow_threshold_ms=settings.obs_handler_slow_threshold_ms,
     )
     logger.info("runtime.handlers.registered")
 
@@ -1421,6 +1431,14 @@ async def _amain() -> None:
     loop = asyncio.get_running_loop()
     stop_event = _STOP_EVENT_FOR_TESTS if _STOP_EVENT_FOR_TESTS is not None else asyncio.Event()
     _install_signal_handlers(loop, stop_event)
+
+    # aisw-xbc: event-loop hang diagnostics (diagnostics-only). faulthandler gives
+    # C-level thread dumps that survive a wedged loop; SIGUSR1 dumps asyncio task
+    # frames on demand; the heartbeat task is the proof-of-life whose ABSENCE in the
+    # journal marks the freeze instant (and whose lag spike auto-triggers a dump).
+    enable_faulthandler()
+    install_sigusr1(loop)
+    heartbeat_task = asyncio.create_task(run_heartbeat(settings), name="aisw.heartbeat")
     # END_BLOCK_RUNTIME_BOOTSTRAP
 
     # START_BLOCK_RUNTIME_POLLING
@@ -1452,6 +1470,13 @@ async def _amain() -> None:
                 await polling_task
         if not stop_task.done():
             stop_task.cancel()
+        # aisw-xbc: stop the diagnostics heartbeat and drop the SIGUSR1 handler.
+        if not heartbeat_task.done():
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await heartbeat_task
+        with contextlib.suppress(Exception):
+            loop.remove_signal_handler(signal.SIGUSR1)
         # aisw-02v: cancel the cron-user consumer; CancelledError propagates
         # out of CronConsumer.run() so the await below completes cleanly.
         if not consumer_task.done():

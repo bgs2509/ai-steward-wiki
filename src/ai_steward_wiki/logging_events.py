@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/logging_events.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: SSoT catalog of stable snake_case dotted event-key constants for structured logging.
 #   SCOPE: module-level Final[str] constants only. No functions, no classes.
@@ -16,11 +16,14 @@
 #   SCHEDULER_JOB_* - APScheduler lifecycle events (chunk 2)
 #   STORAGE_SLOW_QUERY - SQLAlchemy slow-query log key (chunk 2)
 #   CLAUDE_CLI_SPAWN / CLAUDE_CLI_EXIT / CLAUDE_CLI_ERROR - subprocess invocation anchors (chunk 2)
+#   RUNTIME_LOOP_HEARTBEAT / RUNTIME_LOOP_LAG / RUNTIME_DIAG_TASK_DUMP - event-loop hang diagnostics (aisw-xbc)
+#   TG_UPDATE_HANDLED / TG_UPDATE_HANDLER_SLOW - handler lifecycle exit + slow warn (aisw-xbc)
+#   IO_ANCHOR_* - threshold-gated boundary anchors on external I/O (aisw-xbc)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - chunk 2: scheduler lifecycle, storage slow_query, claude CLI spawn/exit/error
-#   PREVIOUS:    v0.0.1 - initial SSoT catalog (chunk 1 entrypoints + correlation middleware)
+#   LAST_CHANGE: v0.0.3 - aisw-xbc: event-loop hang diagnostics (heartbeat/lag/task_dump), handler lifecycle, I/O anchors
+#   PREVIOUS:    v0.0.2 - chunk 2: scheduler lifecycle, storage slow_query, claude CLI spawn/exit/error
 # END_CHANGE_SUMMARY
 from __future__ import annotations
 
@@ -33,6 +36,9 @@ TG_UPDATE_RECEIVED: Final[str] = "tg.update.received"
 TRACED_START_SUFFIX: Final[str] = ".start"
 TRACED_DONE_SUFFIX: Final[str] = ".done"
 TRACED_ERROR_SUFFIX: Final[str] = ".error"
+
+# anchored() over-threshold suffix (aisw-xbc) — appended to an IO_ANCHOR_* prefix.
+ANCHOR_SLOW_SUFFIX: Final[str] = ".slow"
 
 # Canonical @traced prefixes for chunk-1 entrypoints
 TG_PIPELINE_DISPATCH: Final[str] = "tg.pipeline.dispatch"
@@ -53,3 +59,22 @@ STORAGE_SLOW_QUERY: Final[str] = "storage.slow_query"
 CLAUDE_CLI_SPAWN: Final[str] = "claude_cli.spawn"
 CLAUDE_CLI_EXIT: Final[str] = "claude_cli.exit"
 CLAUDE_CLI_ERROR: Final[str] = "claude_cli.error"
+
+# Event-loop hang diagnostics (aisw-xbc; M-OPS-OBSERVABILITY)
+# Heartbeat is emitted every tick (its ABSENCE marks the freeze instant); lag/dump
+# are threshold-gated to keep happy-path log volume near-zero (hybrid cost).
+RUNTIME_LOOP_HEARTBEAT: Final[str] = "runtime.loop.heartbeat"
+RUNTIME_LOOP_LAG: Final[str] = "runtime.loop.lag"
+RUNTIME_DIAG_TASK_DUMP: Final[str] = "runtime.diag.task_dump"
+
+# Handler lifecycle exit (aisw-xbc; M-FOUNDATION-LOGGING / CorrelationMiddleware).
+# 'received without handled' for an update_id now means a stuck handler.
+TG_UPDATE_HANDLED: Final[str] = "tg.update.handled"
+TG_UPDATE_HANDLER_SLOW: Final[str] = "tg.update.handler_slow"
+
+# Threshold-gated boundary anchors on external I/O (aisw-xbc). The decorator/ctx
+# appends TRACED_DONE_SUFFIX/TRACED_ERROR_SUFFIX to these prefixes.
+IO_ANCHOR_TG_SEND: Final[str] = "tg.io.send_message"
+IO_ANCHOR_TG_EDIT: Final[str] = "tg.io.edit_message_text"
+IO_ANCHOR_TG_DOCUMENT: Final[str] = "tg.io.send_document"
+IO_ANCHOR_AUDIT_WRITE: Final[str] = "audit.io.record_run_output"
