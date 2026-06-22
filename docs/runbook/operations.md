@@ -10,6 +10,7 @@
 | Stop (graceful, 30s timeout) | `sudo systemctl stop aisw-bot` |
 | Restart | `sudo systemctl restart aisw-bot` |
 | Reload allowlist (SIGHUP) | `sudo systemctl kill --signal=SIGHUP aisw-bot` |
+| Dump stacks (SIGUSR1, on-demand diagnostics) | `sudo kill -USR1 $(systemctl show aisw-bot -p MainPID --value)` |
 | Status | `systemctl status aisw-bot aisw-bot.slice aisw-stt.slice` |
 
 `SIGHUP` triggers `users.toml` hot-reload (D-031). Watchdog fallback re-reads on file mtime change.
@@ -64,6 +65,35 @@
 2. Cross-check `bd show <job_id>` — if status still `in_progress` past timeout (D-021), bot's killer should fire.
 3. Manual kill: `sudo systemctl stop cli-<job_id>.scope`. Bot emits a `[Scheduler][killed]` log line on next tick and updates Beads.
 
+### 4.6. Bot frozen / unresponsive — event-loop hang (aisw-xbc)
+
+Symptom: process is `active` but stops replying; **no log lines for minutes** (not even
+scheduler jobs). The built-in diagnostics (diagnostics-only — no auto-restart) answer
+*when / where / what* from the journal alone. Thresholds: `AISW_OBS_*` (see `.env.example`).
+
+1. **WHEN — was it actually frozen, and since when?** Find the last heartbeat:
+   ```bash
+   journalctl -u aisw-bot -o cat | grep runtime.loop.heartbeat | tail -1
+   ```
+   `runtime.loop.heartbeat` fires every ~20s. A gap from its last `ts` to now = the freeze
+   window. A preceding `runtime.loop.lag` (high `lag_ms`) flags synchronous blocking.
+2. **WHERE — which call/handler stalled?**
+   - `journalctl -u aisw-bot -o cat | grep -E '\.slow|\.error'` — boundary anchors
+     (`tg.io.send_message`, `audit.io.record_run_output`, …) that ran long or failed.
+   - A `tg.update.received` with **no matching `tg.update.handled`** for the same `update_id`
+     ⇒ that handler started and never finished.
+3. **WHAT — exact stuck frame?** Trigger an on-demand dump (also auto-fires when `lag_ms`
+   exceeds `AISW_OBS_LOOP_LAG_DUMP_MS`):
+   ```bash
+   sudo kill -USR1 $(systemctl show aisw-bot -p MainPID --value)
+   journalctl -u aisw-bot -o cat | grep runtime.diag.task_dump | tail -1 | jq .
+   ```
+   `runtime.diag.task_dump` lists every asyncio task with its suspended coroutine frames
+   (`file:line in func`, **no argument values** — PII-safe). A `faulthandler` thread dump is
+   written alongside (plain text to journald).
+4. **Recover:** `sudo systemctl restart aisw-bot` (no auto-recovery by design). Capture the
+   `task_dump` + last heartbeat ts into the incident before restarting.
+
 ## 5. Backup & restore
 
 1. State-DB snapshots — daily 03:00 UTC, `state/snapshots/<UTC-date>/{jobs,audit,sessions}.db`, retention 7d.
@@ -76,6 +106,7 @@
 | Signal | How to read | Healthy |
 |--------|-------------|---------|
 | Bot uptime | `systemctl show aisw-bot -p ActiveEnterTimestamp` | matches expected restart cadence |
+| Event loop alive | `journalctl -u aisw-bot -o cat -g runtime.loop.heartbeat -n 1` | a `lag_ms`-bearing line within the last ~20s; near-zero `lag_ms` (§4.6) |
 | TG webhook reachable | bot logs `[Bot][tg][polling][ok]` every poll cycle | continuous |
 | Scheduler tick | `journalctl -u aisw-bot -g 'scheduler.*tick'` | every minute |
 | State-DB writable | last `audit.db` insert via `journalctl -u aisw-bot -g 'audit.write'` | recent (≤ user activity) |
