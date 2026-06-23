@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.11.0
+# VERSION: 0.12.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -65,6 +65,8 @@
 #   ROUTE_CONFIRM_ACK_RU - short ack sent on confirm before the Stage-1b ingest
 #   ROUTE_CONFIRM_CANCELLED_RU - reply on cancel/correct of a route confirm
 #   ROUTE_CONFIRM_STALE_RU - reply when a route confirm was already resolved/expired
+#   ROUTE_SILENT_ACK_RU - silent auto-route ack carrying a redirect picker (aisw-2ra)
+#   ROUTE_SILENT_ACK_NOREDIR_RU - silent auto-route ack with no redirect option (aisw-2ra)
 #   ACTIVE_WIKI_DEFAULT_ROUTE_RU - notice when a bare follow-up is default-routed to the sticky WIKI (aisw-0ym)
 #   build_route_recap - build the ru recap text for a RouterDecision route confirm
 #   REMINDER_CONFIDENCE_THRESHOLD - Stage-0 confidence floor for the reminder fast-path (aisw-kcz)
@@ -103,7 +105,15 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.11.0 - aisw-5sd (Inbox-WIKI Phase-E.b): '## Inbox hint' pre-router
+#   LAST_CHANGE: v0.12.0 - aisw-2ra: confident hint fast-path now routes SILENTLY
+#                (D-023 'auto') — the confident branch ingests via the new shared
+#                _ingest_and_deliver tail (also reused by _handle_route_confirm) and
+#                acks with ROUTE_SILENT_ACK_RU + a one-tap redirect picker
+#                (build_route_redirect_keyboard / on_wikipick_callback); no other
+#                WIKI ⇒ plain auto_ack. New log anchor hint_fastpath.silent_route
+#                replaces hint_fastpath.hit. Threshold (is_confident) unchanged.
+#                Loader label (FR-2) deferred to aisw-05k.
+#   PREVIOUS:    v0.11.0 - aisw-5sd (Inbox-WIKI Phase-E.b): '## Inbox hint' pre-router
 #                fast-path — DefaultPipeline gains an optional hint_catalog_resolver;
 #                a new HINT-FASTPATH block (between the reminder fast-path and the
 #                routable branch) scores the content against the sender's cached hint
@@ -233,6 +243,7 @@ from ai_steward_wiki.tg.confirm import (
     ConfirmationService,
     PendingConfirmDraft,
     build_route_confirm_keyboard,
+    build_route_redirect_keyboard,
 )
 from ai_steward_wiki.tg.photo import PhotoIngestor
 from ai_steward_wiki.tg.voice import VoiceHandler, VoiceUnavailableError
@@ -281,6 +292,8 @@ __all__ = [
     "ROUTE_CONFIRM_RECAP_CREATE_RU",
     "ROUTE_CONFIRM_RECAP_ROUTE_RU",
     "ROUTE_CONFIRM_STALE_RU",
+    "ROUTE_SILENT_ACK_NOREDIR_RU",
+    "ROUTE_SILENT_ACK_RU",
     "SUPPORTED_IMAGE_MIMES",
     "Classifier",
     "ConfirmKeyboardAction",
@@ -356,6 +369,13 @@ ROUTE_CONFIRM_RECAP_CREATE_RU = (
 ROUTE_CONFIRM_ACK_RU = "\U0001f4dd Записываю в вики…"
 ROUTE_CONFIRM_CANCELLED_RU = "Отменено. Файл остался в Inbox — пришли заново с уточнением."  # noqa: RUF001
 ROUTE_CONFIRM_STALE_RU = "Время на подтверждение истекло — пришли заново."
+
+# aisw-2ra: silent auto-route ack (D-023 'auto' level). Shown AFTER a confident
+# hint match has been ingested without a confirm step. The redirect variant
+# carries a picker of the owner's OTHER WIKIs (build_route_redirect_keyboard); the
+# no-redirect variant is used when there is no other WIKI to redirect into.
+ROUTE_SILENT_ACK_RU = "✅ Записал в {wiki}. Не туда? Перенесу:"  # noqa: RUF001
+ROUTE_SILENT_ACK_NOREDIR_RU = "✅ Записал в {wiki}."
 
 # aisw-0ym: shown when a bare follow-up is default-routed into the user's sticky
 # last-active WIKI (instead of cold-rejecting it).
@@ -1125,12 +1145,15 @@ class DefaultPipeline:
         # START_BLOCK_HINT_FASTPATH (aisw-5sd, Inbox-WIKI Phase-E.b)
         # Before the ~10-30s Sonnet Router-Claude run: if the sender's cached
         # '## Inbox hint' catalog points unambiguously at ONE domain WIKI for
-        # this content, synthesise a ROUTE decision and feed the existing
-        # Phase-C confirm loop (tech-spec §8.3.3 fast/heavy two-tier). Strictly
-        # conservative — precision over recall (NFR-2): anything that is not a
-        # single confident match falls through to the heavy router unchanged.
-        # Never routes silently — the user still confirms via the route-confirm
-        # keyboard, exactly as on the heavy-router path.
+        # this content, synthesise a ROUTE decision (tech-spec §8.3.3 fast/heavy
+        # two-tier). Strictly conservative — precision over recall (NFR-2):
+        # anything that is not a single confident match falls through to the
+        # heavy router unchanged.
+        # aisw-2ra: on a CONFIDENT match the route is now executed SILENTLY (D-023
+        # 'auto' level) — no Confirm/Cancel keyboard. The user gets a "✅ Записал
+        # в <WIKI>" ack carrying a one-tap redirect picker (build_route_redirect_
+        # keyboard) so a rare misroute is cheaply correctable via on_wikipick_
+        # callback. Non-confident matches still fall through to the heavy router.
         if (
             result.intent in _ROUTABLE_INTENTS
             and self._router is not None
@@ -1167,40 +1190,70 @@ class DefaultPipeline:
                     n_domains=len(catalog),
                 )
                 if len(text) <= HINT_FASTPATH_MAX_CHARS and is_confident(hint_match):
+                    target = hint_match.top_stem
                     decision = RouterDecision(
                         intent=RouterIntent.ROUTE,
-                        target_wiki=hint_match.top_stem,
+                        target_wiki=target,
                         notes="Похоже по ключевым словам из подсказки этой вики.",
                         raw="",
                         parsed_ok=True,
                     )
-                    payload = route_action_to_payload(
+                    # Silent route (D-023 'auto'): ingest now via the shared tail,
+                    # then ack. No Confirm/Cancel step.
+                    ingest_outcome = await self._ingest_and_deliver(
                         decision,
+                        telegram_id=telegram_id,
+                        chat_id=chat_id,
                         user_text=text,
                         source=source,
                         media_paths=media_paths,
                         correlation_id=correlation_id,
                     )
-                    confirm_draft = PendingConfirmDraft(
-                        telegram_id=telegram_id,
-                        chat_id=chat_id,
-                        category="route_ingest",
-                        draft=payload,
-                        recap_text=build_route_recap(decision),
-                    )
-                    rec = await self._confirm.request_explicit(
-                        confirm_draft, keyboard_factory=build_route_confirm_keyboard
-                    )
                     _log.info(
-                        "tg.pipeline.hint_fastpath.hit",
+                        "tg.pipeline.hint_fastpath.silent_route",
                         correlation_id=correlation_id,
                         telegram_id=telegram_id,
-                        target_wiki=hint_match.top_stem,
+                        target_wiki=target,
                         score=hint_match.top_score,
                         margin=hint_match.margin,
-                        pending_id=rec.pending_id,
+                        status=ingest_outcome.status,
+                        run_id=ingest_outcome.run_id,
                         source=source,
                     )
+                    if ingest_outcome.status == "ok":
+                        # Offer a one-tap redirect into the owner's OTHER WIKIs so a
+                        # rare misroute is cheaply correctable (aisw-2ra). The pending
+                        # row carries the same payload; tapping reuses on_wikipick_
+                        # callback. With no other WIKI there is nothing to redirect
+                        # into → a plain ack (D-023 'auto') with no keyboard.
+                        others = [
+                            w for w in await self._list_owner_wiki_names(telegram_id) if w != target
+                        ]
+                        if others:
+                            payload = route_action_to_payload(
+                                decision,
+                                user_text=text,
+                                source=source,
+                                media_paths=media_paths,
+                                correlation_id=correlation_id,
+                            )
+                            redirect_draft = PendingConfirmDraft(
+                                telegram_id=telegram_id,
+                                chat_id=chat_id,
+                                category="route_ingest",
+                                draft=payload,
+                                recap_text=ROUTE_SILENT_ACK_RU.format(wiki=target),
+                            )
+                            await self._confirm.request_explicit(
+                                redirect_draft,
+                                keyboard_factory=lambda pid: build_route_redirect_keyboard(
+                                    pid, others
+                                ),
+                            )
+                        else:
+                            await self._confirm.auto_ack(
+                                chat_id, ROUTE_SILENT_ACK_NOREDIR_RU.format(wiki=target)
+                            )
                     return
                 _log.info(
                     "tg.pipeline.hint_fastpath.miss",
@@ -2252,13 +2305,11 @@ class DefaultPipeline:
         action_obj = route_action_from_payload(json.loads(draft_json or "{}"))
         correlation_id = action_obj.correlation_id or f"confirm-{pending_id}-{telegram_id}"
         await self._sender.send_message(chat_id, ROUTE_CONFIRM_ACK_RU)
-        # route_ingest rows are only created when a librarian + output are wired.
-        assert self._librarian is not None
-        assert self._output is not None
         media = [Path(p) for p in action_obj.media_paths]
-        outcome = await self._librarian.ingest(
+        outcome = await self._ingest_and_deliver(
             action_obj.decision,
             telegram_id=telegram_id,
+            chat_id=chat_id,
             user_text=action_obj.user_text,
             source=action_obj.source,
             media_paths=media or None,
@@ -2274,8 +2325,41 @@ class DefaultPipeline:
             created=outcome.created,
             run_id=outcome.run_id,
         )
+
+    # END_BLOCK_ROUTE_CONFIRM
+
+    # START_BLOCK_INGEST_AND_DELIVER (aisw-2ra — shared Stage-1b ingest + deliver tail)
+    async def _ingest_and_deliver(
+        self,
+        decision: RouterDecision,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        user_text: str,
+        source: Literal["text", "voice", "document", "photo"],
+        media_paths: list[Path] | None,
+        correlation_id: str,
+    ) -> IngestOutcome:
+        """Run the Stage-1b librarian ingest and deliver the result.
+
+        Single ingest path shared by the confirmed-route gate (_handle_route_confirm)
+        and the confident silent auto-route branch (aisw-2ra). On status=='ok' the
+        sticky active-WIKI pointer is updated (aisw-0ym) and the reply is delivered
+        via OutputDelivery; otherwise the (already-composed) reply is sent as-is.
+        Callers log their own context-specific anchor around this call.
+        """
+        # Only invoked on paths that require a wired librarian + output.
+        assert self._librarian is not None
+        assert self._output is not None
+        outcome = await self._librarian.ingest(
+            decision,
+            telegram_id=telegram_id,
+            user_text=user_text,
+            source=source,
+            media_paths=media_paths or None,
+            correlation_id=correlation_id,
+        )
         if outcome.status == "ok":
-            # aisw-0ym: a confirmed ingest into a concrete WIKI updates the sticky pointer.
             await self._active_wiki_set(telegram_id, outcome.target_wiki)
             await self._output.deliver(
                 chat_id=chat_id,
@@ -2285,8 +2369,9 @@ class DefaultPipeline:
             )
         else:
             await self._sender.send_message(chat_id, outcome.reply)
+        return outcome
 
-    # END_BLOCK_ROUTE_CONFIRM
+    # END_BLOCK_INGEST_AND_DELIVER
 
     # START_BLOCK_WIKIPICK (aisw-13h — redirect a route_ingest into an existing WIKI)
     async def _list_owner_wiki_names(self, telegram_id: int) -> list[str]:

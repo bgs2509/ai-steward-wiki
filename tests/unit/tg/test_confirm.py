@@ -45,6 +45,24 @@ def test_route_confirm_keyboard_wiki_picker_two_columns() -> None:
     assert pick_labels == wikis
 
 
+def test_build_route_redirect_keyboard_is_picker_only() -> None:
+    # aisw-2ra: silent-route redirect keyboard = picker only, NO confirm/cancel row.
+    from ai_steward_wiki.tg.confirm import build_route_redirect_keyboard
+
+    kb = build_route_redirect_keyboard(7, ["Career-WIKI", "Investment-WIKI", "Budget-WIKI"])
+    rows = kb.inline_keyboard
+    cbs = [b.callback_data for r in rows for b in r]
+    assert cbs == ["wikipick:7:0", "wikipick:7:1", "wikipick:7:2"]
+    assert all(not c.startswith("confirm:") for c in cbs)
+    assert [len(r) for r in rows] == [2, 1]  # two-column layout
+
+
+def test_build_route_redirect_keyboard_empty_when_no_other_wikis() -> None:
+    from ai_steward_wiki.tg.confirm import build_route_redirect_keyboard
+
+    assert build_route_redirect_keyboard(7).inline_keyboard == []
+
+
 @pytest.fixture
 async def session_maker(tmp_path, monkeypatch):
     db_path = tmp_path / "sessions.db"

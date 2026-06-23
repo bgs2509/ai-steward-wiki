@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/confirm.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Graduated 3-tier confirmation flow (D-023) — auto / implicit /
 #            explicit. Explicit-level draft is persisted in
@@ -29,12 +29,13 @@
 #   compute_payload_hash - canonical-json sha256 of draft dict
 #   build_explicit_keyboard - 3-button InlineKeyboardMarkup
 #   build_route_confirm_keyboard - 2-button route-confirm keyboard (Phase-C, aisw-e45)
+#   build_route_redirect_keyboard - picker-only redirect keyboard for silent auto-route (aisw-2ra)
 #   ConfirmationService - main facade
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-e45 (Phase-C): build_route_confirm_keyboard + request_explicit keyboard_factory
-#   PREVIOUS:    v0.0.1 - chunk 10: D-023 graduated confirmation flow
+#   LAST_CHANGE: v0.0.3 - aisw-2ra: build_route_redirect_keyboard (picker-only) for silent auto-route redirect
+#   PREVIOUS:    v0.0.2 - aisw-e45 (Phase-C): build_route_confirm_keyboard + request_explicit keyboard_factory
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -66,6 +67,7 @@ __all__ = [
     "PendingConfirmDraft",
     "build_explicit_keyboard",
     "build_route_confirm_keyboard",
+    "build_route_redirect_keyboard",
     "compute_payload_hash",
 ]
 
@@ -133,6 +135,34 @@ def build_route_confirm_keyboard(pending_id: int, existing_wikis: Sequence[str] 
     ]
     pick_row: list[Any] = []
     for idx, name in enumerate(existing_wikis):
+        pick_row.append(
+            InlineKeyboardButton(text=name, callback_data=f"wikipick:{pending_id}:{idx}")
+        )
+        if len(pick_row) == 2:
+            rows.append(pick_row)
+            pick_row = []
+    if pick_row:
+        rows.append(pick_row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_route_redirect_keyboard(pending_id: int, other_wikis: Sequence[str] = ()) -> Any:
+    """Picker-only keyboard for the silent auto-route redirect (aisw-2ra).
+
+    Identical to ``build_route_confirm_keyboard`` but WITHOUT the
+    ``[✅ Подтвердить] [❌ Отмена]`` top row — the item was already ingested
+    silently, so there is nothing to confirm/cancel; only the two-column
+    ``wikipick:<pending_id>:<idx>`` picker of the owner's OTHER WIKIs is shown,
+    letting the user redirect a misroute in one tap. Tapping reuses the existing
+    ``on_wikipick_callback`` path. ``other_wikis`` excludes the just-routed
+    target; an empty sequence yields an empty keyboard (caller should fall back
+    to a plain ack with no markup).
+    """
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows: list[list[Any]] = []
+    pick_row: list[Any] = []
+    for idx, name in enumerate(other_wikis):
         pick_row.append(
             InlineKeyboardButton(text=name, callback_data=f"wikipick:{pending_id}:{idx}")
         )
