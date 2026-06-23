@@ -74,6 +74,104 @@
       <Item>actual TG admin-alert delivery (callback stub here; real wiring in chunk 10/12)</Item>
     </scope_out>
   </Feature>
+  <Feature source="20260510-classifier-stage0-discovery.md" bd_id="aisw-5">
+    <feature>classifier-stage0-and-nl-time</feature>
+    <epic>aisw-fm0</epic>
+    <chunk>5</chunk>
+    <module_id>M-CLASSIFIER-STAGE0</module_id>
+    <status>stable</status>
+    <date>2026-05-10</date>
+    <fr>
+      <Item>
+        <FR-1>Stage-0 classifier — invoke `claude-haiku-4-5` headless CLI with `--output-format json`, `--json-schema &lt;classifier-schema&gt;`, `--max-turns 1`, `--disallowedTools Bash Read Write Edit Glob Grep WebFetch`, `--permission-mode dontAsk`</FR-1>
+      </Item>
+      <Item>
+        <FR-2>Backend abstraction — `ClassifierBackend` Protocol with two implementations: `ClaudeCliBackend` (default, subscription auth) and `AnthropicApiBackend` (optional, gated by env `STAGE0_BACKEND=anthropic_api` + separate credential)</FR-2>
+      </Item>
+      <Item>
+        <FR-3>Backend-independent prompt — `prompts/classifier.md` consumed by CLI via `--append-system-prompt @file` and by API via system instructions</FR-3>
+      </Item>
+      <Item>
+        <FR-4>Output schema — `ClassifierResult{intent, confidence: float ∈ [0,1], distilled_payload: dict}` validated via Pydantic v2; intent enum drawn from spec §3 job-kinds taxonomy</FR-4>
+      </Item>
+      <Item>
+        <FR-5>`FakeClaudeRunner` Protocol implementation for unit tests — deterministic, no subprocess</FR-5>
+      </Item>
+      <Item>
+        <FR-6>Prompt versioning — semver + sha256 of every prompt file used in a call recorded into `audit.db.prompt_versions` per D-015</FR-6>
+      </Item>
+      <Item>
+        <FR-7>NL time parser — two-stage: `dateparser` (rule-based, ru/en, user-TZ from users.toml per D-042) → on miss, Haiku-fallback with narrow system prompt → on still-ambiguous, escalate=True signal for caller (Stage-1a)</FR-7>
+      </Item>
+      <Item>
+        <FR-8>All datetime persisted as **UTC** in jobs.db; user-TZ applied only at parse-input and render-output boundaries</FR-8>
+      </Item>
+      <Item>
+        <FR-9>Public API — `classify(text: str, *, correlation_id: str) -&gt; ClassifierResult` and `parse_time(text: str, *, user_tz: ZoneInfo, now_utc: datetime) -&gt; TimeParseResult`</FR-9>
+      </Item>
+      <Item>
+        <FR-10>structlog event on every call: `classifier.stage0.call`, `classifier.time.parse`, with backend, model, prompt_semver, prompt_sha8, latency_ms, intent, confidence</FR-10>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>Stage-0 p95 latency ≤ 1500ms (CLI subprocess including auth handshake); SLA enforced via timeout (D-019 transient class)</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>dateparser p95 ≤ 50ms; Haiku-fallback p95 ≤ 1500ms</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>Subprocess invocation MUST set `CLAUDE_CONFIG_DIR=/var/lib/ai-steward-wiki/claude-code` (RO mount, D-013)</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4>API backend credential MUST come from systemd-credentials (`LoadCredential=`) — never `.env`, never re-using OAuth token (INV-6)</NFR-4>
+      </Item>
+      <Item>
+        <NFR-5>Prompt-file read once at startup + on SIGHUP (cached with sha256); no per-call disk read</NFR-5>
+      </Item>
+      <Item>
+        <NFR-6>Pydantic strict-validation on CLI JSON output; on schema-violation → `ClassifierError` (Permanent class per failure taxonomy of chunk 4)</NFR-6>
+      </Item>
+      <Item>
+        <NFR-7>≥80% line coverage on `classifier/` core via FakeClaudeRunner</NFR-7>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>INV-6 — API backend credential is separate from Claude Code OAuth (audit trail)</Item>
+      <Item>D-009 confidence threshold = 0.85 (fast-path gate for reminder_job)</Item>
+      <Item>
+        <D-010_NL_parser_order_is_fixed key="D-010 NL parser order is fixed">dateparser → Haiku-fallback → escalate</D-010_NL_parser_order_is_fixed>
+      </Item>
+      <Item>D-015 prompt semver+sha256 logged per call; prompt files RO mounted</Item>
+      <Item>D-042 user_tz lookup keyed by telegram_id only</Item>
+      <Item>No FK from audit.prompt_versions to users (audit isolation invariant)</Item>
+      <Item>intent enum closed list — extension requires schema migration + new D-decision</Item>
+    </constraints>
+    <risks>
+      <Item>Claude CLI JSON-mode schema-violation → handled by Pydantic strict + Permanent classification (no auto-retry, surfaces to operator)</Item>
+      <Item>dateparser locale drift between versions → pinned via uv.lock; integration nightly catches regression</Item>
+      <Item>Haiku-fallback hallucinates time on ambiguous text → mitigated by `escalate=True` signal to Stage-1a (D-010), never auto-write to jobs.db</Item>
+      <Item>prompt_versions table unbounded growth → out of scope (retention §10.4 says indefinite — compact, full-replay)</Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/classifier/__init__.py — barrel</Item>
+      <Item>src/ai_steward_wiki/classifier/schema.py — Pydantic intent enum + ClassifierResult + TimeParseResult</Item>
+      <Item>src/ai_steward_wiki/classifier/backend.py — ClassifierBackend Protocol; ClaudeCliBackend; AnthropicApiBackend; FakeClaudeRunner</Item>
+      <Item>src/ai_steward_wiki/classifier/stage0.py — public classify() orchestrator + prompt loader + audit write</Item>
+      <Item>src/ai_steward_wiki/classifier/time_parse.py — dateparser + Haiku-fallback chain</Item>
+      <Item>prompts/classifier.md — backend-independent system prompt (versioned, semver header)</Item>
+      <Item>alembic/audit/versions/&lt;rev&gt;_prompt_versions.py — table prompt_versions(id, sha256, semver, file_name, first_seen_utc) if not yet present</Item>
+      <Item>tests/unit/classifier/{test_schema.py,test_stage0.py,test_time_parse.py,test_fake_runner.py}</Item>
+      <Item>tests/integration/classifier/test_real_cli.py (gated by RUN_INTEGRATION=1)</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Stage-1a / Stage-1b runners (chunk 7)</Item>
+      <Item>Inbox-WIKI hint cache consumption (chunk 6)</Item>
+      <Item>Fast-path reminder_job dispatch — chunk 5 only emits intent+confidence; scheduler consumption is in chunk 7</Item>
+      <Item>prompt_versions retention purge — out of MVP per §10.4</Item>
+      <Item>i18n beyond ru/en in dateparser (D-032)</Item>
+    </scope_out>
+  </Feature>
   <Feature source="20260510-foundation-scaffold-discovery.md" bd_id="aisw-u99">
     <title>Foundation scaffold — Discovery</title>
     <feature>foundation-scaffold</feature>
@@ -177,6 +275,18 @@
       <Item>bind_correlation_id('xyz') propagates through async tasks (asserted in test)</Item>
       <Item>pre-commit run --all-files exits 0 (after install)</Item>
     </verification>
+  </Feature>
+  <Feature source="20260510-wiki-lifecycle-discovery.md" bd_id="aisw-9s4">
+    <feature>wiki-lifecycle</feature>
+    <module_id>M-WIKI-LIFECYCLE</module_id>
+    <status>stable</status>
+    <date>2026-05-10</date>
+  </Feature>
+  <Feature source="20260510-wiki-runner-discovery.md" bd_id="aisw-x30">
+    <feature>wiki-runner</feature>
+    <module_id>M-WIKI-RUNNER</module_id>
+    <status>stable</status>
+    <date>2026-05-10</date>
   </Feature>
   <Feature source="20260511-chunk10-tg-text-discovery.md" bd_id="aisw-187">
     <feature>M-TG-TEXT</feature>
@@ -313,7 +423,7 @@
         <text>Branch else (unsupported mime): reply ACK_DOC_UNSUPPORTED_RU ru-only, no audit error, log tg.pipeline.document.rejected.</text>
       </Item>
       <Item id="FR-6">
-        <text>L2 dedup on doc_sha256 (raw bytes) via IdempotencyService.check_content(kind="file") BEFORE mime branching; on hit emit ACK_DEDUP_RU and record_dedup_choice.</text>
+        <text>L2 dedup on doc_sha256 (raw bytes) via IdempotencyService.check_content(kind=&quot;file&quot;) BEFORE mime branching; on hit emit ACK_DEDUP_RU and record_dedup_choice.</text>
       </Item>
       <Item id="FR-7">
         <text>Filename PII tier-2 hash via PIIRedactor.hash_token(normalized_filename) for all log lines — never log raw filename.</text>
@@ -403,6 +513,123 @@
       <sentrux>not_onboarded (no .sentrux/rules.toml)</sentrux>
     </preflight>
   </Feature>
+  <Feature source="20260511-tg-pipeline-classifier-discovery.md" bd_id="aisw-96y">
+    <feature>tg-pipeline-classifier</feature>
+    <chunk_id>20</chunk_id>
+    <module_id>M-TG-PIPELINE-CLASSIFIER</module_id>
+    <status>approved</status>
+    <created_utc>2026-05-11</created_utc>
+    <predecessors>
+      <Item>aisw-ps8 (chunk 19 M-TG-HANDLERS-WIRING)</Item>
+    </predecessors>
+    <ssot_breakdown>docs/superpowers/plans/20260511-ai-steward-wiki-launch/breakdown.xml#chunk-20</ssot_breakdown>
+    <requirements>
+      <functional>
+        <Item>
+          <FR-1>DefaultPipeline.on_text invokes Classifier→Inbox L2 dedup→WikiRunner→deliver_output once per unique text turn.</FR-1>
+        </Item>
+        <Item>
+          <FR-2>DefaultPipeline.on_voice runs VoiceHandler (STT), then classifier+runner+deliver on the transcript with L2 dedup on transcript-sha256.</FR-2>
+        </Item>
+        <Item>
+          <FR-3>L2 dedup hit at Inbox (existing IdempotencyService.check_content for kind=&quot;text&quot;) short-circuits the pipeline before WikiRunner is dispatched; user receives a ru-only &quot;уже видел такое&quot; reply (no second spawn).</FR-3>
+        </Item>
+        <Item>
+          <FR-4>Classifier/WikiRunner/OutputDelivery are injected as Protocols into DefaultPipeline; passing None for any of them falls back to the current ack behavior (back-compat for tests and partial deployments).</FR-4>
+        </Item>
+        <Item>
+          <FR-5>__main__.py constructs concrete Classifier/WikiRunner/OutputDelivery adapters from existing low-level functions (classify, run_wiki_session, deliver_output) and passes them to DefaultPipeline.</FR-5>
+        </Item>
+        <Item>
+          <FR-6>Emit log markers tg.pipeline.classify.begin, tg.pipeline.classify.done, tg.pipeline.inbox.l2_dedup_hit, tg.pipeline.runner.dispatched, tg.pipeline.deliver.sent — each carrying correlation_id, telegram_id, chat_id, intent (when known).</FR-6>
+        </Item>
+        <Item>
+          <FR-7>Classifier error → audit log + ru-only safe ack (&quot;не удалось распознать запрос, попробуйте ещё раз&quot;). No exception propagates to aiogram.</FR-7>
+        </Item>
+        <Item>
+          <FR-8>WikiRunner timeout/error → audit log + ru-only safe ack (&quot;задача заняла слишком много времени&quot;). No exception propagates to aiogram.</FR-8>
+        </Item>
+      </functional>
+      <non_functional>
+        <Item>
+          <NFR-1>Test coverage ≥80% on tg/pipeline.py for new branches; ≥10 unit tests added.</NFR-1>
+        </Item>
+        <Item>
+          <NFR-2>mypy --strict clean, ruff/ruff-format clean, grace-lint 0 errors / 0 warnings, INV 14/14.</NFR-2>
+        </Item>
+        <Item>
+          <NFR-3>One nightly integration test (RUN_INTEGRATION=1) drives DefaultPipeline against real Claude CLI and asserts non-empty reply within 60s.</NFR-3>
+        </Item>
+        <Item>
+          <NFR-4>All datetime in DB UTC; user-facing strings ru-only (D-032).</NFR-4>
+        </Item>
+        <Item>
+          <NFR-5>structlog events carry correlation_id, telegram_id, intent fields where available.</NFR-5>
+        </Item>
+      </non_functional>
+      <constraints>
+        <Item>
+          <CONS-1>No external library additions beyond existing pyproject deps.</CONS-1>
+        </Item>
+        <Item>
+          <CONS-2>Streaming edits (StreamEditor wrapping) are deferred to chunk-21 per DEC-L2 (&gt;5s threshold).</CONS-2>
+        </Item>
+        <Item>
+          <CONS-3>Document mime-routing is deferred to chunk-22 per DEC-L3 (on_document body left as today's ack).</CONS-3>
+        </Item>
+        <Item>
+          <CONS-4>WikiRunner public Protocol must accept aggregated `text` output, hiding the raw events list from DefaultPipeline.</CONS-4>
+        </Item>
+      </constraints>
+      <risks>
+        <Item>
+          <R-1>WikiRunResult exposes events: list[StreamEvent], not aggregated text. Mitigation: concrete WikiRunner adapter extracts assistant text from `assistant_chunk` payload events; covered by unit test on extraction helper.</R-1>
+        </Item>
+        <Item>
+          <R-2>run_wiki_session requires wiki_path/prompt paths/acquirer/spawner — DefaultPipeline must not see these. Mitigation: hide them behind a thin Protocol/adapter constructed in __main__.py.</R-2>
+        </Item>
+        <Item>
+          <R-3>Classifier prompt_path + backend wiring is non-trivial. Mitigation: ClassifierAdapter wraps classify(...) with pre-bound prompt_path + backend + audit_session, exposes only `classify(text, *, correlation_id)`.</R-3>
+        </Item>
+        <Item>
+          <R-4>deliver_output needs runs_dir + audit_session_maker per call. Mitigation: OutputDeliveryAdapter pre-binds these.</R-4>
+        </Item>
+        <Item>
+          <R-5>L2 dedup on voice transcript uses transcript text (already-normalized via classifier consumer); identical re-uploads of the same audio file may produce slightly different transcripts. Acceptable for MVP — text L2 covers identical text, voice bytes L2 (kind=&quot;voice&quot;) could be added later.</R-5>
+        </Item>
+      </risks>
+      <scope_in>
+        <Item>
+          <tg_pipeline.py key="tg/pipeline.py">add Classifier/WikiRunner/OutputDelivery Protocols + DefaultPipeline ctor params + new on_text/on_voice bodies.</tg_pipeline.py>
+        </Item>
+        <Item>
+          <__main__.py>build adapters and pass to DefaultPipeline.</__main__.py>
+        </Item>
+        <Item>
+          <tests_unit_test_pipeline_classifier_wiring.py key="tests/unit/test_pipeline_classifier_wiring.py">≥10 new tests (happy path, L1 dedup, L2 dedup hit, classifier error, runner error, voice happy, voice classifier error, intent UNKNOWN handling, idempotent same-text twice, log marker emission).</tests_unit_test_pipeline_classifier_wiring.py>
+        </Item>
+        <Item>
+          <tests_integration_test_pipeline_classifier_e2e.py key="tests/integration/test_pipeline_classifier_e2e.py">RUN_INTEGRATION=1 gate, one happy-path text turn against real Claude CLI.</tests_integration_test_pipeline_classifier_e2e.py>
+        </Item>
+        <Item>
+          <prompts_classifier.md key="prompts/classifier.md">ensure exists (already in repo).</prompts_classifier.md>
+        </Item>
+        <Item>MODULE_CONTRACT updates in tg/pipeline.py + __main__.py.</Item>
+      </scope_in>
+      <scope_out>
+        <Item>Streaming edits (chunk 21).</Item>
+        <Item>Document mime routing (chunk 22).</Item>
+        <Item>Integration suite covering all categories (chunk 23).</Item>
+        <Item>Changes to classify(), run_wiki_session(), deliver_output() internals — wrap only.</Item>
+      </scope_out>
+      <open_questions/>
+    </requirements>
+    <preflight>
+      <pre_commit_hooks>ok (.git/hooks/pre-commit exists, hooksPath=.beads/hooks; .pre-commit-config.yaml present)</pre_commit_hooks>
+      <lint_baseline>green (ruff check + ruff format + mypy clean, all 64 src files)</lint_baseline>
+      <sentrux>not applicable (.sentrux/rules.toml absent — project not onboarded)</sentrux>
+    </preflight>
+  </Feature>
   <Feature source="20260511-tg-pipeline-streaming-discovery.md" bd_id="aisw-a3z">
     <id>20260511-tg-pipeline-streaming</id>
     <chunk>21</chunk>
@@ -420,7 +647,7 @@
         <text>Pipeline launches WikiRunner and starts a 5s timer; if runner completes in ≤5s use single deliver (fast path, no streaming).</text>
       </Item>
       <Item id="FR-2">
-        <text>If runner exceeds 5s, send a placeholder "⏳ Думаю…" message and begin streaming assistant chunks into it via StreamEditor (1.5s tick / Δ50 / chain-split 4000).</text>
+        <text>If runner exceeds 5s, send a placeholder &quot;⏳ Думаю…&quot; message and begin streaming assistant chunks into it via StreamEditor (1.5s tick / Δ50 / chain-split 4000).</text>
       </Item>
       <Item id="FR-3">
         <text>Final flush always emits full balanced text, even on runner exception (D-026 guarantee).</text>
@@ -465,7 +692,7 @@
     </constraints>
     <risks>
       <Item id="R-1">
-        <text>Race between runner finishing and 5s timer firing — could double-send (placeholder + final). Mitigation - latch "streaming_started" flag; placeholder only sent if latch held when timer fires.</text>
+        <text>Race between runner finishing and 5s timer firing — could double-send (placeholder + final). Mitigation - latch &quot;streaming_started&quot; flag; placeholder only sent if latch held when timer fires.</text>
       </Item>
       <Item id="R-2">
         <text>on_event callback may raise and break the runner. Mitigation - try/except around callback; runner continues, marker tg.pipeline.stream.error logged.</text>
@@ -760,6 +987,87 @@
       <Item>FR-5 (actionable cards)</Item>
       <Item>FR-8 (per-user section toggles)</Item>
     </deferred_from_parent>
+  </Feature>
+  <Feature source="20260512-inbox-wiki-digest-job-discovery.md" bd_id="aisw-oqq">
+    <feature>inbox-wiki-digest-job</feature>
+    <epic>aisw-t2r</epic>
+    <parent>aisw-19o</parent>
+    <status>stable</status>
+    <date>2026-05-12</date>
+    <follows>aisw-kcz</follows>
+    <functional_requirements>
+      <Item>
+        <FR-1>NL recurrence parsing — given ru text like «каждый день в 9 утра сводка», «присылай дайджест по будням в 19:00», «еженедельная сводка по понедельникам в 8» → produce a structured `Recurrence` (kind daily|weekly, time HH:MM in the owner's TZ, optional weekday set) and an `apscheduler.triggers.cron.CronTrigger(timezone=&lt;owner TZ&gt;)`. Ambiguous / unparseable → escalate (clarify). MVP supports daily and weekly-by-weekdays only; monthly / interval / raw-cron-string → &quot;пока не умею&quot; or escalate.</FR-1>
+      </Item>
+      <Item>
+        <FR-2>`DigestPayload` (discriminated-union member `kind='digest'`) widened — gains a WIKI scope (`wiki_ids: list[str]` or a `wiki_scope: Literal['all']` sentinel), a serialised `recurrence`, retains `window_hours`, optional `prompt_hint`. `extra='forbid'` + `frozen=True` kept. No Alembic migration (JSON payload only).</FR-2>
+      </Item>
+      <Item>
+        <FR-3>`create_digest_job(session, scheduler, *, owner_telegram_id, chat_id, recurrence, wiki_scope, window_hours, correlation_id) -&gt; int` — INSERT+commit a `jobs.Job(kind='digest_job', status enabled, priority=Lane.DIGEST, payload=DigestPayload(...))`, then `scheduler.add_job(fire_digest_job, trigger=CronTrigger(...), args=[job_id], id=f'digest:{job_id}', replace_existing=True)`; log `scheduler.digest.scheduled`. Commit-before-add_job ordering (crash in the gap → a pending row with no trigger; no MVP reconciler).</FR-3>
+      </Item>
+      <Item>
+        <FR-4>`fire_digest_job(job_id: int)` — picklable APScheduler callback. Load the `Job`, guard it's enabled (else `scheduler.digest.skipped`), resolve the owner's WIKI set (all sibling `&lt;Name&gt;-WIKI/` dirs under the owner's workspace root, excluding `Inbox-WIKI`), pick a primary `wiki_path` + `extra_add_dirs` for the rest, build a digest prompt overlay (`prompts/digest.md`) with planner-semantics context (the owner's pending/recurring `jobs` rows in the window), `await run_wiki_session(...)` under `Semaphore(MAX_CONCURRENT_CLI)` + `WikiLockManager` (MVP: lock the primary WIKI only), extract assistant text, deliver to TG via the existing `tg/output` policy (`ChainSplitter` / `send_document` fallback), mark `done`/`failed`, enforce the 600s timeout (→ kill-sequence), on failure → DLQ + 3-strike auto-disable via the existing `FailureCounter`. Log `scheduler.digest.fired|delivered|failed`.</FR-4>
+      </Item>
+      <Item>
+        <FR-5>`run_wiki_session(...)` gains `extra_add_dirs: list[Path] | None` appended to the CLI argv `--add-dir` list (alongside the existing `media_dirs`).</FR-5>
+      </Item>
+      <Item>
+        <FR-6>TG pipeline — the recurring-digest keyword branch in `_handle_reminder_intent` (currently → `REMINDER_RECURRING_RU` &quot;not yet&quot;) becomes `_handle_digest_intent`: parse recurrence (FR-1); unparseable → clarify; else build a `category='digest'` `PendingConfirmDraft` (recap «Буду присылать сводку &lt;recurrence-human&gt; по WIKI: &lt;list&gt;. Подтверждаешь?») → `request_explicit` with the existing 2-button keyboard; `on_confirm_callback` dispatches `category=='digest'` → `_handle_digest_confirm` → on `confirmed`: `create_digest_job(...)` → ru ack «Готово — буду присылать сводку &lt;recurrence-human&gt;.». Stale / cancelled mirror the reminder paths.</FR-6>
+      </Item>
+      <Item>
+        <FR-7>`__main__.py` wiring — extend the firing context registry (or a parallel one) with whatever `fire_digest_job` needs (owner workspace-root / WIKI-set resolver, runner adapter, `Semaphore`, `WikiLockManager`, jobs session maker, `TgSender`); pass the new `DefaultPipeline` kwargs (recurrence parser, jobs session maker, scheduler — several already wired for aisw-kcz).</FR-7>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item>NFR-1 (observability): structlog anchors `scheduler.digest.scheduled|fired|delivered|failed|skipped` and `tg.pipeline.digest.detected|confirm_requested|confirm_created|confirm_cancelled|confirm_stale`, each with `correlation_id`, `owner_telegram_id`, `job_id`.</Item>
+      <Item>NFR-2 (concurrency): concurrent digest CLI runs never exceed `MAX_CONCURRENT_CLI`; the per-WIKI flock prevents concurrent writes to the same WIKI.</Item>
+      <Item>NFR-3 (failure isolation): a digest run failure never crashes the scheduler / event loop; 3 consecutive failures auto-disable the job (D-019); a 600s timeout counts as a strike.</Item>
+      <Item>NFR-4 (TZ correctness): recurrence cron triggers fire in the owner's TZ (`UserRecord.tz` | `Settings.default_user_tz`); all DB datetimes UTC.</Item>
+      <Item>NFR-5 (ordering): the `jobs` row is committed before `scheduler.add_job` (same invariant as aisw-kcz).</Item>
+      <Item>NFR-6 (idempotency): boot re-scheduling uses `replace_existing=True`; double-confirm is race-safe via `ConfirmationService.resolve`.</Item>
+    </non_functional_requirements>
+    <risks>
+      <Item>
+        <R-1>widening `DigestPayload` breaking an existing producer/consumer. Mitigation — verified 2026-05-12: no producer exists (only the bare schema + `OutputKind`/`classifier.schema` `digest` literals + queue test); safe to widen freely.</R-1>
+      </Item>
+      <Item>
+        <R-2>`fire_digest_job` must be picklable for `SQLAlchemyJobStore` → module-level callable taking only a picklable int + a module-level context registry (mirrors `firing.fire_job` / `set_firing_context`); the runner adapter / semaphore / lock manager are reached via the registry, not closed over.</R-2>
+      </Item>
+      <Item>
+        <R-3>ru NL recurrence-parsing accuracy — `dateparser` does not do recurrence. Rule-based regex (daily / weekly-by-weekdays) + optional Haiku fallback; conservative match, escalate on anything else; unit tests over a phrasing corpus.</R-3>
+      </Item>
+      <Item>
+        <R-4>WIKI-set resolution — &quot;owner's relevant WIKIs&quot; = MVP all `&lt;Name&gt;-WIKI/` sibling dirs under the owner's workspace root excluding `Inbox-WIKI`. `wiki/lifecycle.py` already lists `-WIKI` dirs; reuse / extend it. Verified the listing logic exists 2026-05-12.</R-4>
+      </Item>
+      <Item>
+        <R-5>oversized digest output (&gt;4096) — `tg/output.py` already implements the D-025 hybrid policy (`ChainSplitter` with `(i/M)` footers, `send_document`, Haiku-summary fallback); reuse it. No new split logic needed in this phase (the section-boundary `&lt;b&gt;`-header split is aisw-w3k).</R-5>
+      </Item>
+      <Item>
+        <R-6>context-window budget — this slice is ~6 source files + tests + a new prompt + GRACE; if Writing Plans estimates overflow, split further (recurrence parsing → its own micro-phase before the digest machinery).</R-6>
+      </Item>
+    </risks>
+    <scope>
+      <in>
+        <Item>FR-1..FR-7, NFR-1..NFR-6.</Item>
+        <Item>
+          <Recurrence>daily + weekly-by-weekdays only.</Recurrence>
+        </Item>
+        <Item>
+          <WIKI_scope key="WIKI scope">an `'all'` sentinel (all the owner's `&lt;Name&gt;-WIKI` dirs minus `Inbox-WIKI`).</WIKI_scope>
+        </Item>
+        <Item>
+          <Digest_delivery key="Digest delivery">the raw Stage-1 assistant text (the prompt asks for a scan-friendly summary), routed through the existing `tg/output` policy.</Digest_delivery>
+        </Item>
+        <Item>Confirm UX reusing the Phase-C `PendingConfirmDraft` / `request_explicit` / 2-button keyboard machinery; firing reusing the Phase-D.a `firing` registry pattern.</Item>
+        <Item>Failure / DLQ / 3-strike auto-disable wiring via the existing `FailureCounter`; 600s timeout + kill-sequence.</Item>
+        <Item>`__main__` wiring; GRACE (knowledge-graph, verification-plan, development-plan) updates; ADR; `prompts/digest.md`.</Item>
+      </in>
+      <out>
+        <Item>→ aisw-w3k (Phase-D.b.2): D-024 actionable inline cards for ±2h items; TL;DR-as-a-distinct-section formatting contract; section-boundary 4096 split with (n/m) continuity markers; /expand &lt;section&gt;; /digest_now; per-user section toggles; rich jobs.db planner-semantics querying beyond a simple window list.</Item>
+        <Item>→ separate future issue: the asyncio.PriorityQueue worker-loop consumer (tech-spec §3 producer/consumer) — bundled into the aisw-19o description but has no consumer today (/cron_add wiki_job not built; interactive needs streaming and is not a fit for a deferred queue) → building it now is YAGNI; digest_job MVP uses direct-fire under Semaphore+WikiLockManager like maintenance jobs already do. Also: /cron_add wiki_job; monthly/interval recurrence; reminder/digest management UX (/jobs_list, cancel/snooze/edit); admin shadow channel (D-020); tracker_* jobs.</Item>
+        <Item>LATER: startup jobs.jobs ↔ APScheduler reconciliation.</Item>
+      </out>
+    </scope>
   </Feature>
   <Feature source="20260512-inbox-wiki-digest-presentation-discovery.md" bd_id="aisw-w3k">
     <feature>inbox-wiki-digest-presentation</feature>
@@ -1519,6 +1827,53 @@
       </later>
     </scope>
   </Feature>
+  <Feature source="20260512-system-prompt-replace-discovery.md" bd_id="aisw-adj">
+    <feature>system-prompt-replace</feature>
+    <status>stable</status>
+    <date>2026-05-12</date>
+    <functional_requirements>
+      <Item>
+        <FR-1>Stage-0 classifier CLI invocation MUST cause Claude to follow `prompts/classifier.md` as the sole system prompt (no default Claude Code persona).</FR-1>
+      </Item>
+      <Item>
+        <FR-2>Stage-1 wiki runner CLI invocation MUST cause Claude to follow `prompts/wiki.md` (+ domain prompt) as the sole system prompt.</FR-2>
+      </Item>
+      <Item>
+        <FR-3>Both invocations MUST continue to work under subscription auth (CLAUDE_CONFIG_DIR), not require ANTHROPIC_API_KEY.</FR-3>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item>
+        <NFR-1>No additional subprocess overhead (no extra file reads per call beyond what already happens).</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>Backwards-compatible signature for `system_prompt_argv(prompt_path: Path)` — callers stay unchanged.</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>Argv MUST NOT leak prompt text into process listings beyond what `--system-prompt` already does (acceptable: same as inline prompts elsewhere).</NFR-3>
+      </Item>
+    </non_functional_requirements>
+    <risks>
+      <Item>
+        <R-1>Very large prompts → command-line ARG_MAX. Mitigation: prompts/classifier.md ≈ 2 KB, prompts/wiki.md similar — well below ARG_MAX (typically 128 KB+). Document limit; fail loud if exceeded.</R-1>
+      </Item>
+      <Item>
+        <R-2>Future CLI version may make `--system-prompt-file` replace properly. Mitigation: leave a `# WHY:` comment pointing at this bd_id so a future cleanup is intentional.</R-2>
+      </Item>
+    </risks>
+    <scope>
+      <in>
+        <Item>Edit `system_prompt_argv` in `src/ai_steward_wiki/claude_cli/common.py`.</Item>
+        <Item>Bump VERSION + CHANGE_SUMMARY in the affected module.</Item>
+        <Item>Tests covering the new argv shape.</Item>
+      </in>
+      <out>
+        <Item>Refactor of broader CLI invocation primitives.</Item>
+        <Item>Migration to Anthropic SDK / `--bare` mode.</Item>
+        <Item>Tests against the real Claude CLI (covered by integration suite, off by default).</Item>
+      </out>
+    </scope>
+  </Feature>
   <Feature source="20260512-wiki-runner-cli-fix-discovery.md" bd_id="aisw-d3i">
     <feature>wiki-runner-cli-fix</feature>
     <date>2026-05-12</date>
@@ -1539,7 +1894,7 @@
         <text>Stage-1 wiki runner MUST spawn `claude` with a neutral cwd (the read-only `claude_config_dir`) so that Claude Code's automatic CLAUDE.md walk-up does not inject the project's CLAUDE.md or global ~/.claude/CLAUDE.md into the model context; the wiki tree MUST be exposed solely via the explicit `--add-dir &lt;wiki_path&gt;` argument.</text>
       </Item>
       <Item id="FR-4">
-        <text>On non-zero CLI exit, the Stage-1 wiki runner MUST capture and log stderr (truncated, e.g. first 512 bytes) on `wiki.run.finish` (or a dedicated `wiki.run.error`) and propagate a `WikiRunnerError` upward instead of silently returning `WikiRunResult` with `exit_code != 0` and empty events — current behaviour masks failures as the user-facing fallback `"Принято."`.</text>
+        <text>On non-zero CLI exit, the Stage-1 wiki runner MUST capture and log stderr (truncated, e.g. first 512 bytes) on `wiki.run.finish` (or a dedicated `wiki.run.error`) and propagate a `WikiRunnerError` upward instead of silently returning `WikiRunResult` with `exit_code != 0` and empty events — current behaviour masks failures as the user-facing fallback `&quot;Принято.&quot;`.</text>
       </Item>
       <Item id="FR-5">
         <text>Shared Claude CLI invocation primitives MUST live in a single module (`M-CLAUDE-CLI-COMMON`, e.g. `src/ai_steward_wiki/claude_cli/`) and be reused by both Stage-0 (`classifier/backend.py`) and Stage-1 (`wiki/runner.py`). Primitives in scope (strong DRY) - binary resolution (`shutil.which`), env builder (`PATH=/usr/bin:/bin` + `CLAUDE_CONFIG_DIR`), neutral-cwd resolution, the `--system-prompt-file &lt;path&gt;` + `--permission-mode dontAsk` flag fragment, and stderr-truncation helper for error logging. Stage-specific concerns (JSON envelope unwrap, stream-json parsing, allowed/disallowed tools, max-turns, output-format) remain in their respective backends.</text>
@@ -1561,7 +1916,7 @@
     </non_functional_requirements>
     <risks>
       <Item id="R-1">
-        <text>Extracting common primitives can over-generalise (premature abstraction). Mitigation — limit shared API to functions already duplicated verbatim (binary resolve, env, cwd, system-prompt-file fragment, stderr truncation). No "ClaudeInvocationBuilder" class.</text>
+        <text>Extracting common primitives can over-generalise (premature abstraction). Mitigation — limit shared API to functions already duplicated verbatim (binary resolve, env, cwd, system-prompt-file fragment, stderr truncation). No &quot;ClaudeInvocationBuilder&quot; class.</text>
       </Item>
       <Item id="R-2">
         <text>Stage-1 currently uses different spawn semantics than Stage-0 (asyncio.create_subprocess_exec with `stdin=DEVNULL` + stream parse; Stage-0 uses `communicate(stdin=text)`). Shared module MUST NOT try to unify spawn — each stage keeps its own Spawner Protocol; only argv/env/cwd helpers are shared.</text>
@@ -1773,6 +2128,556 @@
       <adr_025_status>accepted</adr_025_status>
     </preflight>
   </Feature>
+  <Feature source="20260513-domain-prune-rename-discovery.md" bd_id="aisw-bgu">
+    <feature>domain-prune-rename</feature>
+    <date>2026-05-13</date>
+    <status>approved</status>
+    <type>refactor</type>
+    <requirements>
+      <functional>
+        <Item>
+          <FR-1>Remove WIKI domain slugs `health-lite`, `home`, `hobby` from all SSoT artifacts and code surfaces.</FR-1>
+        </Item>
+        <Item>
+          <FR-2>Rename WIKI domain slug `recipes` → `cooking` across all artifacts.</FR-2>
+        </Item>
+        <Item>
+          <FR-3>Rename WIKI domain slug `health` → `medical` across all artifacts.</FR-3>
+        </Item>
+        <Item>
+          <FR-4>Final canonical domain set (D-008) MUST equal exactly `{_default, medical, investment, budget, family, study, career, cooking}` (7 + _default).</FR-4>
+        </Item>
+        <Item>
+          <FR-5>`medical.md` template MUST contain an explicit non-interpretation guardrail (do not interpret symptoms unsolicited; on doubt redirect to a doctor).</FR-5>
+        </Item>
+        <Item>
+          <FR-6>All tests that previously used `health-lite` to exercise hyphen-in-slug normalization MUST be replaced with a synthetic hyphen slug, preserving normalization coverage in `wiki/name.py`.</FR-6>
+        </Item>
+        <Item>
+          <FR-7>Record the change as `ADR-NNN-prune-and-rename-domains` (alternatives, decision, consequences).</FR-7>
+        </Item>
+        <Item>
+          <FR-8>Update `tech-spec-draft.md` (status=stable) D-008 and D-032 sections with the new slug list; XML SSoT (`requirements.xml`, `technology.xml`, `knowledge-graph.xml`) regenerated via `grace-refresh`.</FR-8>
+        </Item>
+      </functional>
+      <non_functional>
+        <Item>
+          <NFR-1>`make total-test` MUST exit 0 (lint + grace + coverage ≥80% + integration).</NFR-1>
+        </Item>
+        <Item>
+          <NFR-2>No data migration code paths introduced (pre-deploy, zero live `&lt;Domain&gt;-WIKI/` directories).</NFR-2>
+        </Item>
+        <Item>
+          <NFR-3>No backwards-compat aliases (no `health → medical` redirect, no `recipes → cooking` alias).</NFR-3>
+        </Item>
+        <Item>
+          <NFR-4>`docs/reports/*` MUST remain untouched (immutable snapshots).</NFR-4>
+        </Item>
+        <Item>
+          <NFR-5>Hyphen-normalization branch in `wiki/name.py:~113` MUST remain covered.</NFR-5>
+        </Item>
+      </non_functional>
+      <constraints>
+        <Item>
+          <C-1>Scope strictly limited to domain prune+rename; no bundling with other refactors.</C-1>
+        </Item>
+        <Item>
+          <C-2>Onboarding-intro prompt MUST NOT mention removed/renamed slugs after the change.</C-2>
+        </Item>
+      </constraints>
+      <risks>
+        <Item>
+          <R-1>Hidden references to `health` as a substring of `health-lite` may be left dangling (e.g. test fixtures, log strings) — mitigation: word-boundary grep + per-file review.</R-1>
+        </Item>
+        <Item>
+          <R-2>`health` is a generic English word; naive `s/health/medical/g` risks corrupting unrelated prose (e.g. `health.md` template content, log examples). Mitigation: edits scoped to slug occurrences (templates filename, REQUIRED_TEMPLATES list, D-008 list, test fixtures), with manual review of prose mentions.</R-2>
+        </Item>
+        <Item>
+          <R-3>`home` and `hobby` are very common English words — same false-positive risk. Mitigation: rely on the user-provided surface enumeration (10 surface zones) rather than blanket replace.</R-3>
+        </Item>
+        <Item>
+          <R-4>`prompts/domain-health.md` rename must update any include/reference. Mitigation: grep for the filename before rename.</R-4>
+        </Item>
+      </risks>
+      <scope>
+        <in>
+          <Item>Filesystem renames in `templates/inbox-wiki/` and `prompts/`.</Item>
+          <Item>Update of `scripts/lint_templates.py` REQUIRED_TEMPLATES.</Item>
+          <Item>Update of `src/ai_steward_wiki/wiki/name.py` docstring example only (logic unchanged).</Item>
+          <Item>Update of `tests/unit/wiki/lifecycle/test_name.py` (replace `health-lite` test case with synthetic hyphen slug).</Item>
+          <Item>Update of all other tests that hard-code removed/renamed slugs.</Item>
+          <Item>Update of `docs/Spec-WIKI/research/tech-spec-draft.md` (D-008, D-032, plus any list references).</Item>
+          <Item>Update of `docs/Spec-WIKI/decisions/D-017-*.md`, `D-038-*.md`, `Q-B-10-*.md`, `Spec-WIKI/CLAUDE.md`, `Spec-WIKI/log.md`.</Item>
+          <Item>Update of `docs/superpowers/specs/*` and `plans/*/breakdown.xml` that enumerate the 10 domains.</Item>
+          <Item>Update of `/home/bgs/ai-steward/CLAUDE.md` &quot;Шаблоны типов проектов&quot; section.</Item>
+          <Item>Strengthening of non-interpretation guardrail in the new `medical.md`.</Item>
+          <Item>ADR creation.</Item>
+          <Item>`grace-refresh` to regenerate `requirements.xml`, `technology.xml`, `knowledge-graph.xml`.</Item>
+        </in>
+        <out>
+          <Item>DB migrations (jobs.db / audit.db / sessions.db).</Item>
+          <Item>Backwards-compat aliases / redirects.</Item>
+          <Item>Rewriting hyphen-normalization logic in `name.py`.</Item>
+          <Item>Touching `docs/reports/*`.</Item>
+          <Item>Bundling with unrelated refactors.</Item>
+        </out>
+        <later/>
+      </scope>
+      <dependencies>
+        <Item>`grace lint` rules (semantic markup integrity unchanged — refactor is doc/template-heavy).</Item>
+        <Item>`make total-test` infrastructure.</Item>
+      </dependencies>
+    </requirements>
+  </Feature>
+  <Feature source="20260513-l2-dedup-ttl-discovery.md" bd_id="aisw-5hy">
+    <feature>l2-dedup-ttl</feature>
+    <module_id>M-INGEST-IDEM</module_id>
+    <status>stable</status>
+    <date>2026-05-13</date>
+    <fr>
+      <Item>
+        <FR-1>Daily-repeat text messages with identical normalized payload (e.g. &quot;я спал 8 часов&quot;) MUST pass through L2 on subsequent days and reach the classifier/WIKI runner</FR-1>
+      </Item>
+      <Item>
+        <FR-2>L2 still suppresses near-instant retry-storms for text/voice (TG webhook retry, double-tap) within a short configurable window</FR-2>
+      </Item>
+      <Item>
+        <FR-3>Photo/file with identical bytes MUST keep current behaviour — silently skipped for the full retention window (30 days) — these are genuine artifact duplicates</FR-3>
+      </Item>
+      <Item>
+        <FR-4>Two different owners (telegram_id) sending identical content MUST NOT collide — each owner has independent dedup space</FR-4>
+      </Item>
+      <Item>
+        <FR-5>L2 dedup window is per-kind and externally configurable via .env (AISW_L2_TTL_TEXT_SECONDS, AISW_L2_TTL_BINARY_SECONDS) with sane defaults (60s text/voice, 30d photo/file)</FR-5>
+      </Item>
+      <Item>
+        <FR-6>Existing dedup_hits audit semantics preserved — when L2 fires we still write a row with action=&quot;auto_skip&quot;</FR-6>
+      </Item>
+      <Item>
+        <FR-7>One-shot Alembic migration converts seen_files PK from (content_sha256) to composite (owner_telegram_id, content_sha256), backfilling no data (purge can re-fill within 30d)</FR-7>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>check_content latency stays O(1) per call — must keep unique index, no full-table scan</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>structlog event inbox.idempotency.l2_duplicate gains within_ttl=True|False field</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>mypy --strict + ruff + grace lint clean; no new ignores</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4>Unit tests cover: legit repeat after TTL (text), retry-storm within TTL (text), photo dedup at 1h still hits, cross-owner same-text passes for both</NFR-4>
+      </Item>
+      <Item>
+        <NFR-5>Backward compatibility — existing seen_files rows MAY be dropped during migration (audit-only data, no business loss)</NFR-5>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>SQLite + Alembic per-DB (audit.db has its own alembic env)</Item>
+      <Item>SeenFile PK is part of the public DB schema — index/PK change requires explicit Alembic revision</Item>
+      <Item>D-018 spec says &quot;TTL 30d&quot; globally — this feature amends D-018 with per-kind TTL (will be reflected via ADR + D-018 amendment note)</Item>
+      <Item>Pipeline still uses fast-path L2 BEFORE classifier (no Stage-0 Haiku before dedup — cost preservation)</Item>
+    </constraints>
+    <risks>
+      <Item>R-1 (data loss on migration): dropping seen_files rows loses 30d of retry-protection state; mitigated by short TTL=60s for text — replays naturally within 60s window, photo/file replays from scratch (acceptable, retention is forensic not load-bearing)</Item>
+      <Item>R-2 (TTL too short): 60s may miss legit retries beyond 1 min (rare TG webhook backoff); mitigated by .env config — operator can raise</Item>
+      <Item>R-3 (TTL too long): &gt;60s starts hitting daily-log repeats; mitigated by per-kind split — daily logs are text, photo/file keep 30d</Item>
+      <Item>R-4 (clock skew): first_seen_at_utc is server UTC, no client clock involved — non-issue</Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/storage/audit/models.py (SeenFile PK → composite)</Item>
+      <Item>src/ai_steward_wiki/inbox/idempotency.py (per-kind TTL filter in check_content)</Item>
+      <Item>src/ai_steward_wiki/config/settings.py (or wherever Settings lives — add 2 fields)</Item>
+      <Item>alembic/audit/versions/000X_seen_files_owner_pk_ttl.py (new revision)</Item>
+      <Item>tests/unit/inbox/test_idempotency.py (extend with TTL + owner-scope cases)</Item>
+      <Item>docs/Spec-WIKI/decisions/D-018-ingest-idempotency.md (amendment 2026-05-13)</Item>
+      <Item>docs/adr/ADR-NNN-l2-dedup-per-kind-ttl.md (new ADR)</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Soft-confirm (inline-buttons &quot;записать снова?&quot;) — deferred, Variant 3 from /best-approach</Item>
+      <Item>Domain-aware dedup (Variant 4) — deferred</Item>
+      <Item>L1 dedup changes (tg_updates TTL=24h stays)</Item>
+      <Item>dedup_hits retention (already 90d, unchanged)</Item>
+    </scope_out>
+  </Feature>
+  <Feature source="20260513-logging-coverage-chunk1-discovery.md" bd_id="aisw-er6">
+    <feature>logging-coverage-chunk1</feature>
+    <module_id>M-FOUNDATION-LOGGING</module_id>
+    <status>draft</status>
+    <date>2026-05-13</date>
+    <fr>
+      <Item>
+        <FR-1>A reusable @traced decorator wraps async and sync callables, emitting one INFO event on entry (event=&quot;&lt;module&gt;.&lt;func&gt;.start&quot;), one INFO on success (event=&quot;&lt;module&gt;.&lt;func&gt;.done&quot;, duration_ms=int), and one ERROR on exception (event=&quot;&lt;module&gt;.&lt;func&gt;.error&quot;, duration_ms=int, exc_info=True), then re-raises.</FR-1>
+      </Item>
+      <Item>
+        <FR-2>The decorator MUST NOT log function arguments or return values automatically (PII safety). Caller may pass an optional `bind={&quot;key&quot;: &quot;value&quot;, ...}` parameter at call site via structlog.contextvars.bound_contextvars for non-PII fields only.</FR-2>
+      </Item>
+      <Item>
+        <FR-3>A logging_events.py module exposes a stable catalog of canonical event-key constants (snake_case dotted), at minimum covering the events emitted by @traced, by aiogram middleware, and by AllowlistMiddleware (existing 3 events). All other modules MAY adopt constants incrementally — Chunk 1 does NOT mass-rename existing string literals.</FR-3>
+      </Item>
+      <Item>
+        <FR-4>A new aiogram BaseMiddleware (CorrelationMiddleware) runs BEFORE AllowlistMiddleware on every Update; it generates a fresh correlation_id (uuid4), binds correlation_id + telegram_id + chat_id + update_id into structlog.contextvars.bound_contextvars for the lifetime of one update, and clears the binding on exit (even on exception).</FR-4>
+      </Item>
+      <Item>
+        <FR-5>@traced is applied to public entrypoints of currently-covered modules where boundary observability is missing: tg/pipeline.py top-level pipeline function(s), classifier stage entrypoints, inbox staging entrypoints, wiki run entrypoints. Internal helpers, getters, pure functions are NOT decorated.</FR-5>
+      </Item>
+      <Item>
+        <FR-6>Tests using structlog.testing.capture_logs assert that for at least one representative @traced callable (one async, one sync, one raising) the three lifecycle events appear with stable event keys, duration_ms is an int ≥ 0, correlation_id flows through from CorrelationMiddleware, and arguments do NOT appear in event_dict.</FR-6>
+      </Item>
+      <Item>
+        <FR-7>CorrelationMiddleware integration test: one TG Update flow emits records whose correlation_id matches across CorrelationMiddleware, AllowlistMiddleware, and a representative downstream @traced function.</FR-7>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>PII safety — @traced does not introspect args/kwargs/return; no positional argument values logged; only call-site explicit `bind` accepted, and bind values are caller-responsibility (documented in docstring).</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>Cardinality — event keys are bounded constants from logging_events.py; high-cardinality values (user_id, update_id) ride as structured fields, never as part of event string.</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>Performance — @traced overhead &lt; 200 µs per call for sync no-op (measured informally; not a benchmark gate). No allocation in hot path beyond one perf_counter pair + one log call on success.</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4>Test isolation — tests bind/clear contextvars cleanly (use structlog.contextvars.clear_contextvars in fixture teardown) to prevent cross-test correlation_id leakage.</NFR-4>
+      </Item>
+      <Item>
+        <NFR-5>mypy --strict on src/, ruff check, ruff format clean. Pre-existing mypy error in tg/handlers.py:139 is NOT addressed in this chunk (out-of-scope; tracked separately).</NFR-5>
+      </Item>
+      <Item>
+        <NFR-6>Zero regression in existing event keys — Chunk 1 ADDS catalog constants, does NOT rewrite literal strings already emitted by storage/scheduler/inbox/etc.</NFR-6>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>structlog ≥ 24.x already configured in logging_setup.py with merge_contextvars + _inject_correlation_id processors; reuse, do not duplicate.</Item>
+      <Item>aiogram 3.15 middleware API (BaseMiddleware.__call__(handler, event, data)); middleware order is registration order on Dispatcher.</Item>
+      <Item>correlation_id ContextVar in logging_setup.py is separate from structlog.contextvars binding — the explicit ContextVar predates the contextvars processor. Chunk 1 keeps both (no breakage of legacy bind_correlation_id callers), but the new middleware uses structlog.contextvars.bound_contextvars as the primary mechanism going forward.</Item>
+      <Item>Conventional Commits + GRACE MODULE_ID scope — commits use feat(M-FOUNDATION-LOGGING): or feat(M-TG-MIDDLEWARE):.</Item>
+      <Item>
+        <No_timeline-blocking key="No timeline-blocking">this is a foundation feature; downstream chunks (APScheduler listener, SQLAlchemy events, Claude CLI subprocess wrapper) depend on @traced + events catalog being in place first.</No_timeline-blocking>
+      </Item>
+    </constraints>
+    <risks>
+      <Item>R-1 — Double correlation_id sources: legacy ContextVar (logging_setup._correlation_id, injected by _inject_correlation_id processor) AND new structlog.contextvars binding from CorrelationMiddleware. If both set different values, _inject_correlation_id wins because it runs AFTER merge_contextvars in processor order. → Mitigation: CorrelationMiddleware also calls bind_correlation_id(uuid) so both paths agree. Test asserts equality.</Item>
+      <Item>R-2 — @traced on coroutines vs sync: a single @overload pair (or runtime inspect.iscoroutinefunction) decorator must dispatch correctly. → Mitigation: write both paths, test both, type with ParamSpec + TypeVar.</Item>
+      <Item>R-3 — Test cross-contamination via contextvars — failing test leaves correlation_id bound. → Mitigation: autouse fixture in conftest clears structlog contextvars between tests.</Item>
+      <Item>R-4 — Cardinality blow-up if developers later embed user_id inside event keys (event=f&quot;user.{id}.action&quot;). → Mitigation: logging_events.py docstring + ADR-light note (decision can stay in design.md, not a full ADR for Chunk 1).</Item>
+      <Item>R-5 — aiogram middleware ordering — if CorrelationMiddleware registered AFTER AllowlistMiddleware, allowlist deny events lose correlation_id binding. → Mitigation: explicit ordering in tg/bot.py register block + integration test asserting order.</Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/logging_setup.py — add traced decorator (sync + async dispatch) + helper context manager for bound fields</Item>
+      <Item>src/ai_steward_wiki/logging_events.py — NEW module, SSoT catalog of stable event-key constants</Item>
+      <Item>src/ai_steward_wiki/tg/middleware_correlation.py — NEW CorrelationMiddleware</Item>
+      <Item>src/ai_steward_wiki/tg/bot.py — register CorrelationMiddleware BEFORE AllowlistMiddleware</Item>
+      <Item>Apply @traced to a small representative set (NOT a mass rollout): tg/pipeline.py public entrypoint(s), classifier stage entrypoints, inbox staging entrypoints, wiki run entrypoints</Item>
+      <Item>tests/unit/test_logging_traced.py — NEW</Item>
+      <Item>tests/unit/test_logging_events_catalog.py — NEW</Item>
+      <Item>tests/unit/tg/test_middleware_correlation.py — NEW</Item>
+      <Item>tests/integration/test_correlation_id_flow.py — NEW (light, no real TG)</Item>
+      <Item>tests/conftest.py — add autouse fixture to clear structlog contextvars between tests</Item>
+    </scope_in>
+    <scope_out>
+      <Item>
+        <Chunk_2_work key="Chunk 2 work">APScheduler EVENT_JOB_EXECUTED/ERROR/MISSED listener; SQLAlchemy slow-query log; Claude CLI subprocess wrapper logging; PII processor extension for new fields; grace-refresh --verify sync of log anchors ↔ BLOCK markers in verification-plan.xml</Chunk_2_work>
+      </Item>
+      <Item>Mass adoption of @traced on storage/* and claude_cli/* — explicitly deferred (covered by Chunk 2 or later)</Item>
+      <Item>Rewriting existing event-key literal strings to constants from logging_events.py (deferred — gradual migration)</Item>
+      <Item>Fix of pre-existing mypy error src/ai_steward_wiki/tg/handlers.py:139 (out-of-scope)</Item>
+      <Item>sampling, rate-limiting of logs, log shipping</Item>
+      <Item>Performance benchmarking gates (informal NFR-3 only)</Item>
+    </scope_out>
+  </Feature>
+  <Feature source="20260513-logging-coverage-chunk2-discovery.md" bd_id="aisw-nrt">
+    <feature>logging-coverage-chunk2</feature>
+    <module_id>M-FOUNDATION-LOGGING</module_id>
+    <status>draft</status>
+    <date>2026-05-13</date>
+    <risk>medium</risk>
+    <evidence>strong</evidence>
+    <fr>
+      <Item>
+        <FR-1>scheduler/core.py registers a single APScheduler listener on the AsyncIOScheduler returned by build_scheduler() that handles EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, EVENT_JOB_MISSED, EVENT_JOB_MAX_INSTANCES and emits stable structlog events scheduler.job.executed / scheduler.job.error / scheduler.job.missed / scheduler.job.max_instances with fields job_id, jobstore (alias), scheduled_run_time (ISO-8601 UTC string), duration_ms (executed branch only — derived from event.scheduled_run_time vs event-end timestamp).</FR-1>
+      </Item>
+      <Item>
+        <FR-2>The .error branch logs at ERROR with exc_info=True (so structlog format_exc_info renders the traceback); the other three branches log at WARNING (missed, max_instances) or INFO (executed). No job kwargs, no job return value, no exception message text in fields — only standard event metadata.</FR-2>
+      </Item>
+      <Item>
+        <FR-3>storage event listeners attach before_cursor_execute / after_cursor_execute on each AsyncEngine returned by build_engine() in storage/{jobs,audit,sessions}/engine.py. When duration_ms &gt; settings.storage_slow_query_threshold_ms (default 200), emit storage.slow_query at WARNING with fields db_name (&quot;jobs&quot;|&quot;audit&quot;|&quot;sessions&quot;), statement_sha8 (sha256[:8] hex of the normalized SQL statement template — parameters stripped via sqlalchemy's compiled str OR raw statement text without parameters), duration_ms (int). NEVER log raw SQL, never log parameter values.</FR-3>
+      </Item>
+      <Item>
+        <FR-4>Both AsyncioSpawner.spawn implementations (classifier/backend.py and wiki/runner.py — the two physical claude CLI subprocess invocation points) emit claude_cli.spawn at INFO before subprocess creation with fields argv_length (len(argv)), env_keys_count (len(env)), cwd (string or None), and emit claude_cli.exit at INFO on normal completion with fields exit_code (int), duration_ms (int), stdout_bytes (len(stdout)), stderr_bytes (len(stderr)). On non-zero exit also emit claude_cli.error at ERROR with the same fields plus exc_info if available. NEVER log argv items, env values, env keys, stdin/stdout/stderr content.</FR-4>
+      </Item>
+      <Item>
+        <FR-5>logging_events.py SSoT catalog is extended with new Final[str] constants for every event key introduced in FR-1..FR-4. Module map is updated; CHANGE_SUMMARY bumped to v0.0.2.</FR-5>
+      </Item>
+      <Item>
+        <FR-6>ops/pii.py is reviewed for new fields introduced in Chunk 2 (statement_sha8, argv_length, env_keys_count, stdout_bytes, stderr_bytes, exit_code, duration_ms, job_id, jobstore, scheduled_run_time, db_name, cwd). All are metadata-only — confirmed NOT in tier-1 DROP / tier-2 MASK redaction surface. A unit test asserts a representative Chunk-2 record passes through PIIRedactor.redact_event without altering these fields, AND that any user-supplied free-text field on the same record (e.g. a fake cwd containing an email) IS redacted.</FR-6>
+      </Item>
+      <Item>
+        <FR-7>docs/verification-plan.xml is regenerated via `grace-refresh --verify` after code lands; Chunk-1 + Chunk-2 log anchors are cross-referenced with semantic BLOCK markers (LDD evidence rule). XML commit is separate from code commits.</FR-7>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>PII safety — bytes-counts and sha8 only. No raw SQL, no parameter values, no argv items, no env values, no stdin/stdout/stderr content, no exception message strings outside of exc_info-rendered traceback.</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>All new event keys are bounded constants from logging_events.py; high-cardinality values (job_id, statement_sha8) ride as structured fields.</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>mypy --strict on src/ stays clean. make lint stays clean. Pre-existing mypy error in tg/handlers.py (out-of-scope chunk-1 carryover) untouched.</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4>APScheduler listener overhead &lt; 1 ms per job-end on local dev machine (no benchmark gate; sanity only). SQLAlchemy listener overhead negligible when below threshold (single perf_counter pair + comparison).</NFR-4>
+      </Item>
+      <Item>
+        <NFR-5>Slow-query threshold is configurable via settings (settings.storage_slow_query_threshold_ms: int = 200) so prod can tune without code changes (Fail-Fast on settings load via pydantic int constraint).</NFR-5>
+      </Item>
+      <Item>
+        <NFR-6>Tests use structlog.testing.capture_logs + AsyncMock/MagicMock for APScheduler events and a real engine for storage event listeners. Tests assert event key + presence of fields, do NOT assert absolute duration values.</NFR-6>
+      </Item>
+    </nfr>
+    <risks>
+      <Item>R-1 (low): APScheduler event payload fields differ between minor versions — pin call sites to documented public attrs (job_id, jobstore, scheduled_run_time, exception, traceback). Verified via apscheduler 3.x SchedulerEvent docs in design phase.</Item>
+      <Item>R-2 (low): SQLAlchemy connection_record / context API changes — use the documented before_cursor_execute / after_cursor_execute signature (conn, cursor, statement, parameters, context, executemany), store start time on context.</Item>
+      <Item>R-3 (medium): statement_sha8 collisions in observability tooling for high-volume queries — 8 hex chars = 32 bits, ~1 collision per 65k unique statements at 50% birthday probability. Acceptable for slow-query log (low volume by definition); revisit if SLO needed.</Item>
+      <Item>R-4 (low): grace-refresh --verify may rewrite verification-plan.xml broader than chunk scope — commit XML diff carefully, verify only Chunk 1/2 anchors are touched.</Item>
+    </risks>
+    <scope_in>
+      <Item>scheduler/core.py — add lifecycle listener registration on the returned AsyncIOScheduler</Item>
+      <Item>storage/jobs/engine.py, storage/audit/engine.py, storage/sessions/engine.py — attach before/after_cursor_execute listeners in build_engine</Item>
+      <Item>classifier/backend.py — instrument AsyncioSpawner.spawn</Item>
+      <Item>wiki/runner.py — instrument AsyncioSpawner.spawn</Item>
+      <Item>logging_events.py — extend SSoT constants</Item>
+      <Item>settings.py — add storage_slow_query_threshold_ms</Item>
+      <Item>ops/pii.py — verification test only (no code change unless gap found)</Item>
+      <Item>docs/verification-plan.xml — regenerated, committed separately</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Mass adoption of @traced to all storage/*, claude_cli/* internal helpers (Chunk 3 or never)</Item>
+      <Item>Sampling / rate-limiting of log events</Item>
+      <Item>Log shipping / external sink configuration</Item>
+      <Item>Rewriting existing event-key string literals into catalog constants (gradual migration)</Item>
+      <Item>Pre-existing WIP in templates/*.ru.md, tests/unit/test_templates.py, src/ai_steward_wiki/tg/handlers.py — not staged with `git add -u`</Item>
+      <Item>Pre-existing tests/unit/auth/test_onboarding.py failure (related to templates WIP)</Item>
+    </scope_out>
+    <constraints>
+      <Item>
+        <TDD_throughout key="TDD throughout">RED → GREEN → REFACTOR.</TDD_throughout>
+      </Item>
+      <Item>No pre-commit hook bypass (no --no-verify, no SKIP=...).</Item>
+      <Item>Conventional Commits + GRACE MODULE_ID scope.</Item>
+      <Item>mypy --strict on src/ stays clean; make lint stays clean.</Item>
+      <Item>All new event keys via logging_events.py SSoT.</Item>
+      <Item>USER APPROVAL gates auto-approved per session memory feedback_auto_approve_gates.md.</Item>
+    </constraints>
+    <open_questions/>
+    <references>
+      <Item>
+        <chunk-1_PR_commits key="chunk-1 PR commits">a193fc1..0fa0372</chunk-1_PR_commits>
+      </Item>
+      <Item>logging_setup.py @traced decorator: src/ai_steward_wiki/logging_setup.py</Item>
+      <Item>
+        <logging_events.py_SSoT key="logging_events.py SSoT">src/ai_steward_wiki/logging_events.py</logging_events.py_SSoT>
+      </Item>
+      <Item>
+        <APScheduler_events key="APScheduler events">https://apscheduler.readthedocs.io/en/3.x/modules/events.html</APScheduler_events>
+      </Item>
+      <Item>
+        <SQLAlchemy_core_events key="SQLAlchemy core events">https://docs.sqlalchemy.org/en/20/core/events.html#sqlalchemy.events.ConnectionEvents</SQLAlchemy_core_events>
+      </Item>
+    </references>
+  </Feature>
+  <Feature source="20260513-migrate-ai-steward-userdata-discovery.md" bd_id="aisw-0a5">
+    <feature>migrate-ai-steward-userdata</feature>
+    <title>Миграция user-data ai-steward (vpn-0) → ai-steward-wiki (vpn-gpu-1)</title>
+    <date>2026-05-13</date>
+    <status>approved</status>
+    <risk>high</risk>
+    <risk_justification>DB writes (jobs.db truncate+reload), cross-machine cutover, auth surface (users.toml creation), irreversible после announce юзерам.</risk_justification>
+    <evidence>strong</evidence>
+    <evidence_justification>17 архитектурных решений зафиксированы через /questions-answers (источники — ground-truth from src/, prescan от старых planner.json, D-005/D-007/D-008/D-041/D-042 проектные decisions, Karpathy LLM Wiki gist, AWS DMS / Stripe migration best practices).</evidence_justification>
+    <open_questions/>
+    <fr>
+      <Item id="FR-01">
+        <text>Создать users.toml с 5 entries (763463467 admin, 6156629438 user, 1151678530 user, 1122408606 user, 8587590035 user); display_name, tz=Europe/Moscow, lang=ru per user.</text>
+      </Item>
+      <Item id="FR-02">
+        <text>Скопировать {User}/{Project}/CLAUDE.md → &lt;Domain&gt;-WIKI/raw/legacy-ai-steward-claude-md.md с frontmatter (source path, snapshot date) для каждого mapping-pair.</text>
+      </Item>
+      <Item id="FR-03">
+        <text>ETL planner.json → jobs.db — active items (status=pending AND (date≥today OR repeat≠null)) разворачиваются в Job rows с fan-out по remind_before.</text>
+      </Item>
+      <Item id="FR-04">
+        <text>ETL planner.json history (completed/skipped/cancelled/expired) → &lt;Domain&gt;-WIKI/raw/legacy-planner-history.md (Markdown summary per source planner).</text>
+      </Item>
+      <Item id="FR-05">
+        <text>planner.json repeat=monthly → CronUserPayload.cron_expr=&quot;M H D * *&quot; (5-field) + payload.legacy_source=&quot;planner.json:monthly&quot;.</text>
+      </Item>
+      <Item id="FR-06">
+        <text>planner.json category mapping — medication→medication, event→event, остальное→generic; payload.legacy_category хранит original value.</text>
+      </Item>
+      <Item id="FR-07">
+        <text>planner.json recipients → Job.chat_id = recipients[0] (prescan: 0 multi). При встрече len(recipients)&gt;1 — fail-fast.</text>
+      </Item>
+      <Item id="FR-08">
+        <text>Скопировать data/ структуру — CSV/JSON → &lt;Domain&gt;-WIKI/&lt;subfolder&gt;/&lt;file&gt;, PDF/JPG → &lt;Domain&gt;-WIKI/raw/&lt;subfolder&gt;/&lt;file&gt;. Скрипты (.py) — drop.</text>
+      </Item>
+      <Item id="FR-09">
+        <text>Скопировать _output/* → &lt;Domain&gt;-WIKI/raw/legacy-output/&lt;file&gt;. PDF, MD, CSV, TXT — все туда; скрипты drop.</text>
+      </Item>
+      <Item id="FR-10">
+        <text>Скопировать root-level PDF/JPG (не CLAUDE.md/planner.json/data/_output) → &lt;Domain&gt;-WIKI/raw/legacy-root/&lt;file&gt;.</text>
+      </Item>
+      <Item id="FR-11">
+        <text>Создать новые WIKI-папки для несуществующих доменов (Career-WIKI, Budget-WIKI, Default-WIKI, Weightwatch-WIKI) — из соответствующих templates/&lt;name&gt;.md или _default.md.</text>
+      </Item>
+      <Item id="FR-12">
+        <text>WIKI namespacing — каждый WIKI принадлежит одному owner_telegram_id; 6156629438 имеет собственный Career-WIKI, отдельный от 763463467 Career-WIKI.</text>
+      </Item>
+      <Item id="FR-13">
+        <text>Создать пустую папку /home/bgs/.local/share/ai-steward-wiki/data/profiles/ и env var AISW_PROFILES_DIR (для будущего onboarding). profiles/&lt;id&gt;.md не генерируются.</text>
+      </Item>
+      <Item id="FR-14">
+        <text>ETL имеет --dry-run режим, генерирующий migration_report.md без записи в БД/файлы. Полный отчёт о том, что будет сделано (counts, mappings, dropped items, edge-cases).</text>
+      </Item>
+      <Item id="FR-15">
+        <text>Реальный run работает Fail-Fast — exception на любую неожиданность блокирует ETL. Snapshot БД до запуска сохраняется в /tmp.</text>
+      </Item>
+      <Item id="FR-16">
+        <text>Cutover: остановка ai-steward bot на vpn-0 (systemctl stop или pkill) → rsync /home/bgs/ai-steward/ → vpn-gpu-1:/tmp/migration-snapshot/ → dry-run → ETL real → restart ai-steward-wiki bot.</text>
+      </Item>
+      <Item id="FR-17">
+        <text>Старый бот после cutover stopped permanently; /home/bgs/ai-steward/ на vpn-0 остаётся read-only cold archive.</text>
+      </Item>
+    </fr>
+    <nfr>
+      <Item id="NFR-01">
+        <text>Idempotency — повторный запуск ETL после truncate jobs.db даёт идентичный результат (deterministic ordering, stable autoincrement через ORDER BY на читаемых planner items).</text>
+      </Item>
+      <Item id="NFR-02">
+        <text>Observability — каждый Job row имеет payload.legacy_item_id ссылающийся на исходный UUID; migration_report.md содержит per-user/per-project counts; structlog JSON logs для каждого ETL phase.</text>
+      </Item>
+      <Item id="NFR-03">
+        <text>Safety — pre-ETL snapshot БД (sqlite3 .backup), rollback возможен через restore snapshot + clear filesystem changes.</text>
+      </Item>
+      <Item id="NFR-04">
+        <text>Maintenance window ≤ 30 минут (от stop старого бота до restart нового).</text>
+      </Item>
+      <Item id="NFR-05">
+        <text>Coverage — unit tests для core mapping функций (planner→Job, fan-out, category-mapping, monthly cron) ≥80%.</text>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>Старого ai-steward код / конфиги — не трогаем; только read snapshot.</Item>
+      <Item>Новый ai-steward-wiki код — не правим в migration scope (тулинг = новый модуль/скрипт + новая env var; runtime код existing не меняется).</Item>
+      <Item>users.toml schema v1 не bumpaem; используем существующие поля (telegram_id, role, display_name, tz, lang).</Item>
+      <Item>Recurrence (Pydantic) НЕ расширяем под monthly — workaround через cron_user.cron_expr; typed расширение — follow-up beads, не блокер.</Item>
+      <Item>Никакого автоматического git push (правило ~/.claude/CLAUDE.md).</Item>
+    </constraints>
+    <risks>
+      <Item id="R-01">
+        <impact>high</impact>
+        <text>ETL пишет в production jobs.db до cutover — может сломать running бот.</text>
+        <mitigation>ETL запускается ТОЛЬКО после stop бота на vpn-gpu-1 (kill PID 962854); pre-ETL snapshot jobs.db.</mitigation>
+      </Item>
+      <Item id="R-02">
+        <impact>medium</impact>
+        <text>Старый бот на vpn-0 продолжает писать в planner.json во время rsync.</text>
+        <mitigation>systemctl stop ai-steward на vpn-0 ДО rsync. Бот ai-steward — systemd unit; sudo доступ требуется.</mitigation>
+      </Item>
+      <Item id="R-03">
+        <impact>medium</impact>
+        <text>Cron expression &quot;M H D * *&quot; может быть невалидным для CronUserPayload.cron_expr (нет validator-проверки в Pydantic — string).</text>
+        <mitigation>ETL валидирует cron через APScheduler CronTrigger.from_crontab() до записи в payload.</mitigation>
+      </Item>
+      <Item id="R-04">
+        <impact>medium</impact>
+        <text>WIKI namespacing per owner_telegram_id неясен — нет explicit code-confirmation, что Medical-WIKI под 763463467 ≠ Medical-WIKI под 1151678530.</text>
+        <mitigation>Brainstorming phase Step 4 — изучить src/ai_steward_wiki/wiki/{name,lifecycle,acquire}.py для verification; если single global namespace — wiki names получают per-user suffix или префикс.</mitigation>
+      </Item>
+      <Item id="R-05">
+        <impact>low</impact>
+        <text>WIKI templates требуют specific init-flow (CLAUDE.md, log.md, index.md). Простой mkdir + копирование template insufficient.</text>
+        <mitigation>Использовать существующий lifecycle.py:acquire_wiki / wiki/init logic, не дублировать.</mitigation>
+      </Item>
+      <Item id="R-06">
+        <impact>low</impact>
+        <text>Старые planner items с invalid TZ/format могут сломать TZ-конверсию MSK→UTC.</text>
+        <mitigation>dry-run выявит, ETL Fail-Fast при первом разрыве.</mitigation>
+      </Item>
+      <Item id="R-07">
+        <impact>medium</impact>
+        <text>SQLite jobs.db в WAL mode, бот удерживает lock — ETL не сможет писать.</text>
+        <mitigation>ETL writeс выполняется при остановленном боте; перед ETL — sqlite3 PRAGMA wal_checkpoint(TRUNCATE).</mitigation>
+      </Item>
+    </risks>
+    <scope>
+      <in>
+        <Item>
+          <ETL-tooling>`scripts/migrate_legacy.py` (or `src/ai_steward_wiki/migration/`)</ETL-tooling>
+        </Item>
+        <Item>users.toml generation</Item>
+        <Item>planner.json → jobs.db transformation (Job + JobPayload discriminated union)</Item>
+        <Item>File copy operations per FR-08/09/10</Item>
+        <Item>&lt;Domain&gt;-WIKI bootstrap для несуществующих</Item>
+        <Item>migration_report.md generation</Item>
+        <Item>Unit tests для core mapping</Item>
+        <Item>.env.example update: AISW_PROFILES_DIR</Item>
+      </in>
+      <out>
+        <Item>Изменения в runtime коде ai-steward-wiki (classifier, scheduler, tg-handlers, wiki, auth)</Item>
+        <Item>Typed Recurrence monthly (D-NNN) — follow-up beads issue</Item>
+        <Item>systemd unit для нового бота — follow-up</Item>
+        <Item>AISW_ENV=local→vps switch — follow-up</Item>
+        <Item>Profile prose extraction (Q6/V4) — re-onboarding юзеров заполнит</Item>
+        <Item>Cross-machine sync, live replication, dual-write — V1 cutover only</Item>
+      </out>
+      <later>
+        <Item>Recurrence.kind=monthly typed</Item>
+        <Item>profile prose ingest когда юзер заполнит</Item>
+      </later>
+    </scope>
+    <dependencies>
+      <affects>
+        <Item>data/users.toml — создаётся</Item>
+        <Item>data/jobs.db — truncate+reload (но preserves schema!)</Item>
+        <Item>/home/bgs/.local/share/ai-steward-wiki/workspace/wikis/ — populated</Item>
+        <Item>/home/bgs/.local/share/ai-steward-wiki/data/profiles/ — empty dir created</Item>
+        <Item>.env / .env.example — adds AISW_PROFILES_DIR</Item>
+      </affects>
+      <affected_by>
+        <Item>existing alembic schema (jobs.db, audit.db, sessions.db) — must be migrated to head before ETL</Item>
+        <Item>existing wiki/lifecycle.py — used for WIKI init</Item>
+        <Item>users.toml schema v1 — used as-is</Item>
+      </affected_by>
+    </dependencies>
+    <references>
+      <Item>
+        <D-005>no planner.json (старый формат disallowed; SSoT — jobs.db)</D-005>
+      </Item>
+      <Item>
+        <D-007>--add-dir scope только &lt;wiki&gt;</D-007>
+      </Item>
+      <Item>
+        <D-008>WIKI marker regex ^[A-Z][A-Za-z0-9]*-WIKI$</D-008>
+      </Item>
+      <Item>
+        <D-041>append-data CSV/JSON в WIKI root (не raw/)</D-041>
+      </Item>
+      <Item>
+        <D-042>telegram_id canonical identity vocabulary</D-042>
+      </Item>
+      <Item>
+        <Karpathy_LLM_Wiki key="Karpathy LLM Wiki">3-layer (raw/, wiki pages, CLAUDE.md schema)</Karpathy_LLM_Wiki>
+      </Item>
+      <Item>
+        <AWS_DMS_migration_best_practices key="AWS DMS migration best practices">snapshot + ETL + cutover для different-schema</AWS_DMS_migration_best_practices>
+      </Item>
+    </references>
+  </Feature>
   <Feature source="20260513-reminder-fastpath-fix-discovery.md" bd_id="aisw-5q5">
     <title>Reminder fast-path broken end-to-end — Discovery</title>
     <status>approved</status>
@@ -1847,7 +2752,7 @@
     </constraints>
     <risks>
       <Item>Leftover maintenance rows in jobs.db block re-registration with same id in a different store → mitigated by FR-5 one-time cleanup</Item>
-      <Item>Future code paths that add maintenance jobs without jobstore="memory" silently regress → mitigated by smoke test</Item>
+      <Item>Future code paths that add maintenance jobs without jobstore=&quot;memory&quot; silently regress → mitigated by smoke test</Item>
     </risks>
     <scope_in>
       <Item>src/ai_steward_wiki/scheduler/core.py (build_scheduler — add memory jobstore)</Item>
@@ -2160,5 +3065,217 @@
       <Item>Building CRUD before walking skeleton works</Item>
       <Item>Tight coupling consumer to specific delivery channel (mitigated by bot DI)</Item>
     </common_mistakes_avoided>
+  </Feature>
+  <Feature source="20260620-hang-diagnostics-discovery.md" bd_id="aisw-xbc">
+    <feature>hang-diagnostics</feature>
+    <module_id>M-FOUNDATION-LOGGING</module_id>
+    <status>stable</status>
+    <date>2026-06-20</date>
+    <risk>medium</risk>
+    <fr>
+      <Item>
+        <FR-1>Event-loop heartbeat — a background task emits runtime.loop.heartbeat at a fixed cadence (~15-30s); its absence in the journal marks the freeze instant</FR-1>
+      </Item>
+      <Item>
+        <FR-2>Event-loop lag gauge — heartbeat measures scheduling drift (lag_ms = actual_sleep - expected_sleep); a runtime.loop.lag event fires only when lag_ms exceeds a threshold (detects synchronous blocking)</FR-2>
+      </Item>
+      <Item>
+        <FR-3>Boundary anchors on external I/O — AiogramSender.send_message/edit_message_text/send_document and audit-DB writes log start/done with duration_ms, threshold-gated (only slow/failed calls on the happy path)</FR-3>
+      </Item>
+      <Item>
+        <FR-4>Handler lifecycle — CorrelationMiddleware emits tg.update.handled with duration_ms on exit (success or exception), plus a slow-handler warning over threshold; makes 'received without handled' observable per update_id</FR-4>
+      </Item>
+      <Item>
+        <FR-5>On-demand stack dump — SIGUSR1 dumps asyncio.all_tasks() coroutine frames (task.get_stack) + thread stacks (faulthandler) to the journal</FR-5>
+      </Item>
+      <Item>
+        <FR-6>Auto stack dump — the lag watchdog auto-triggers the FR-5 dump when lag_ms breaches a (higher) threshold, rate-limited to avoid log floods</FR-6>
+      </Item>
+      <Item>
+        <FR-7>All new event names registered in logging_events.py (SSoT catalog)</FR-7>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>Diagnostics-only — no auto-restart, no systemd watchdog, no behavioural change to message handling</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>Hybrid cost — heartbeat is continuous but cheap and infrequent; all other anchors are threshold-gated so happy-path log volume stays near-zero</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>No PII — stack dumps print code frames (file:line + source line + coroutine name), never argument values; thresholds and durations carry no user content</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4>Thresholds configurable via Settings (pydantic-settings, .env) with safe defaults; no magic numbers</NFR-4>
+      </Item>
+      <Item>
+        <NFR-5>mypy --strict + ruff + ruff format + grace lint clean; unit coverage for the observability module</NFR-5>
+      </Item>
+      <Item>
+        <NFR-6>Reuse existing traced decorator (logging_setup.py) for boundary anchors — DRY, no parallel timing implementation</NFR-6>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>asyncio single event loop; heartbeat task created at startup alongside polling_task/consumer_task and cancelled in the shutdown block (__main__.py RUNTIME_SHUTDOWN)</Item>
+      <Item>structlog JSON → journald via PrintLoggerFactory (logging_setup.configure_logging) — new events are plain structlog calls</Item>
+      <Item>aiogram 3.15.0; start_polling default handle_as_tasks=True (handlers are background tasks); AiohttpSession default timeout 60s</Item>
+      <Item>SIGUSR1 handler must be installed on the running loop (loop.add_signal_handler) and must be safe to call repeatedly</Item>
+    </constraints>
+    <risks>
+      <Item>
+        <Heartbeat_itself_adds_a_task_that_could_mask_issues_if_it_shares_a_failing_primitive___mitigated key="Heartbeat itself adds a task that could mask issues if it shares a failing primitive → mitigated">heartbeat only sleeps + logs, no I/O, no locks</Heartbeat_itself_adds_a_task_that_could_mask_issues_if_it_shares_a_failing_primitive___mitigated>
+      </Item>
+      <Item>Stack dump under SIGUSR1 while loop is wedged must still run — faulthandler.register works at C level (signal-safe); asyncio.all_tasks() dump runs as a normal callback and may not fire if the loop is fully stuck → mitigated by ALSO using faulthandler (C-level) so at least thread stacks always dump</Item>
+      <Item>Threshold too low → log flood → mitigated by rate-limiting the lag/auto-dump events</Item>
+      <Item>faulthandler output is plain text to stderr (not structlog JSON) → acceptable for forensics; document the format mismatch</Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/ops/observability.py (NEW — heartbeat+lag task, SIGUSR1 install, asyncio task-stack dump, faulthandler register)</Item>
+      <Item>src/ai_steward_wiki/logging_setup.py (ensure traced usable on bound methods; no API change expected)</Item>
+      <Item>src/ai_steward_wiki/logging_events.py (register new event-name constants — SSoT)</Item>
+      <Item>src/ai_steward_wiki/tg/bot.py (AiogramSender — threshold-gated boundary anchors on send/edit/send_document)</Item>
+      <Item>src/ai_steward_wiki/tg/middleware_correlation.py (tg.update.handled + duration_ms + slow warn)</Item>
+      <Item>src/ai_steward_wiki/tg/output.py (audit-write boundary anchor in deliver_output; split pre-send/post-send anchor)</Item>
+      <Item>src/ai_steward_wiki/__main__.py (start heartbeat task + install SIGUSR1 handler; cancel on shutdown)</Item>
+      <Item>src/ai_steward_wiki/settings (thresholds + cadence config)</Item>
+      <Item>tests/unit/ops/test_observability.py (NEW), tests/unit/tg/* (anchor + lifecycle assertions)</Item>
+    </scope_in>
+    <scope_out>
+      <Item>systemd WatchdogSec / sd_notify / Restart=always (auto-recovery — explicitly deferred, diagnostics-only per user)</Item>
+      <Item>aiogram session timeout tuning (separate fix, not logging)</Item>
+      <Item>Any change to how updates are dispatched (handle_as_tasks etc.)</Item>
+      <Item>Off-host log shipping / metrics backend (Prometheus etc.)</Item>
+    </scope_out>
+  </Feature>
+  <Feature source="20260623-html-escape-outbound-discovery.md" bd_id="aisw-azu">
+    <feature>html-escape-outbound</feature>
+    <module_id>M-TG-OUTPUT</module_id>
+    <status>stable</status>
+    <date>2026-06-23</date>
+    <risk>medium</risk>
+    <fr>
+      <Item>
+        <FR-1>Outbound reply text MUST be deliverable regardless of stray &quot;&lt;&quot;, &quot;&gt;&quot;, &quot;&amp;&quot; in model output — Telegram parse_mode=HTML must never reject the whole message because of unescaped markup</FR-1>
+      </Item>
+      <Item>
+        <FR-2>Whitelisted formatting tags (ALLOWED_TAGS = b,i,u,s,a,code,pre) MUST be preserved as live HTML; everything else that looks like markup MUST be HTML-escaped (&amp;lt; &amp;gt; &amp;amp;)</FR-2>
+      </Item>
+      <Item>
+        <FR-3>Bare &quot;&amp;&quot; inside a preserved tag's attributes (e.g. &lt;a href=&quot;x?a=1&amp;b=2&quot;&gt;) MUST be escaped to &amp;amp; (Telegram rejects raw &amp; in attribute values too)</FR-3>
+      </Item>
+      <Item>
+        <FR-4>Sanitization MUST apply to ALL outbound paths in deliver_output — inline send, chain-split parts, and the summary+document path</FR-4>
+      </Item>
+      <Item>
+        <FR-5>Defensive fallback — if a send still fails with TelegramBadRequest &quot;can't parse entities&quot;, retry once with parse_mode=None so the reply is delivered as plain text rather than lost</FR-5>
+      </Item>
+      <Item>
+        <FR-6>Regression tests with real offending payloads (&quot;норма &lt;120/80&quot;, &quot;a &lt; b&quot;, &quot;x &amp; y&quot;, &quot;&lt;div&gt;&quot;, &quot;&lt;a href='u?a=1&amp;b=2'&gt;ok&lt;/a&gt;&quot;)</FR-6>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>No loss of intentional formatting — valid &lt;b&gt;/&lt;i&gt;/… still render</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>Idempotent-ish — sanitizing already-valid whitelisted HTML does not double-escape the allowed tags</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>mypy --strict + ruff + grace lint clean; deliver_output existing tests stay green</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4>Fallback emits a structlog warning (tg.io.send_message.parse_fallback) so silent degradation is visible</NFR-4>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>parse_mode=HTML is the product default (D-024) — do NOT switch the default to Markdown/plain; keep HTML, just make the payload valid</Item>
+      <Item>ALLOWED_TAGS and _TAG_RE already defined in src/ai_steward_wiki/tg/output.py — reuse, do not fork the whitelist</Item>
+      <Item>aiogram 3.15 raises aiogram.exceptions.TelegramBadRequest with message &quot;can't parse entities ...&quot; for invalid HTML</Item>
+    </constraints>
+    <risks>
+      <Item>Over-escaping a legitimate allowed tag (e.g. &lt;b&gt;) → regression in formatting. Mitigation - tokenize by allowed-tag regex, escape only the gaps + non-whitelist tags; test with mixed payloads</Item>
+      <Item>&lt;a href&gt; with entity-bearing URL — naive &quot;&amp;&quot;→&quot;&amp;amp;&quot; could double-escape an existing &amp;amp;. Mitigation - negative-lookahead regex (skip &amp;amp;/&amp;lt;/&amp;gt;/&amp;quot;/&amp;#nn;)</Item>
+      <Item>Fallback retry could double-send if the first send partially succeeded. Mitigation - only retry on TelegramBadRequest BEFORE any message is returned (the call raised, nothing delivered)</Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/tg/output.py (NEW sanitize_html(); apply at top of deliver_output)</Item>
+      <Item>src/ai_steward_wiki/tg/bot.py (AiogramSender.send_message — parse_mode=None fallback on can't-parse-entities)</Item>
+      <Item>tests/unit/tg/test_output.py + tests/unit/tg/test_bot_anchors.py (regression tests)</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Switching default parse_mode away from HTML (D-024 unchanged)</Item>
+      <Item>Markdown rendering / a full HTML sanitizer library dependency (bleach etc.) — stdlib only, scoped to the TG whitelist</Item>
+      <Item>Changing the wiki prompt to emit safer output (model-side) — defence is at the delivery boundary</Item>
+    </scope_out>
+  </Feature>
+  <Feature source="20260623-md-to-tg-html-discovery.md" bd_id="aisw-iyz">
+    <feature>md-to-tg-html</feature>
+    <module_id>M-TG-OUTPUT</module_id>
+    <status>stable</status>
+    <date>2026-06-23</date>
+    <risk>medium</risk>
+    <fr>
+      <Item>
+        <FR-1>Model replies in GitHub-flavored Markdown MUST render as Telegram-native formatting, not literal markdown syntax</FR-1>
+      </Item>
+      <Item>
+        <FR-2>Map supported inline markup to TG HTML — **bold**→&lt;b&gt;, *italic*/_italic_→&lt;i&gt;, ~~strike~~→&lt;s&gt;, `code`→&lt;code&gt;, ```fenced```→&lt;pre&gt;, [text](url)→&lt;a href&gt;</FR-2>
+      </Item>
+      <Item>
+        <FR-3>Map block markup — &gt; quote→&lt;blockquote&gt;; paragraphs separated by blank lines</FR-3>
+      </Item>
+      <Item>
+        <FR-4>DEGRADE Telegram-unsupported constructs gracefully —</FR-4>
+      </Item>
+      <Item>
+        <FR-5>Text content MUST be HTML-escaped (&lt;,&gt;,&amp; → entities); output composes with sanitize_html so the result is valid for parse_mode=HTML with no double-escaping</FR-5>
+      </Item>
+      <Item>
+        <FR-6>Applied in deliver_output BEFORE the size policy (inline/chain/summary) so all paths emit valid TG-HTML</FR-6>
+      </Item>
+      <Item>
+        <FR-7>Idempotence-safe and robust on edge cases (nested **/_, &quot;*&quot; inside `code`, links with query &quot;&amp;&quot;, escaped \\*) via a real tokenizer, not regex</FR-7>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>Use markdown-it-py (ALREADY in uv.lock 4.2.0, transitive) promoted to a direct dependency — robust CommonMark tokenizer; a small custom renderer walks the token stream and emits ONLY the TG whitelist + degradations. No new external dep beyond promoting the locked one.</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>No behavioural change to non-markdown text (plain text passes through escaped, unchanged meaning)</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>mypy --strict + ruff + grace lint clean; deliver_output existing tests stay green</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4>Pin markdown-it-py == 4.2.0 (project policy: exact ==)</NFR-4>
+      </Item>
+      <Item>
+        <NFR-5>Default parse_mode stays HTML (D-024 unchanged) — this makes the HTML payload correct, it does not switch modes</NFR-5>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>ALLOWED_TAGS = {b,i,u,s,a,code,pre} (output.py) — converter MUST emit only these; everything else degrades or escapes</Item>
+      <Item>markdown-it-py default preset is CommonMark — strikethrough/tables are NOT in core; enable strikethrough rule if present, handle tables via a pre-pass flattener (no extra plugin dep)</Item>
+      <Item>Telegram has NO headings, NO tables, NO native list entities — degradation is mandatory, not optional</Item>
+      <Item>Compose with sanitize_html (aisw-azu): the converter's text nodes are escaped; sanitize_html on already-valid converter output must be idempotent</Item>
+    </constraints>
+    <risks>
+      <Item>markdown-it core lacks table/strikethrough → unhandled tables render literally. Mitigation - pre-pass pipe-table flattener + enable strikethrough rule (verified at execution); fall back to escaped text otherwise</Item>
+      <Item>Converter bug could drop/garble content. Mitigation - the parse_mode=None fallback (aisw-azu) still guarantees delivery; extensive token-level unit tests incl. the exact prod payload</Item>
+      <Item>Double-escaping between converter and sanitize_html. Mitigation - converter escapes text nodes itself and emits final TG-HTML; sanitize_html is then idempotent over it (tested)</Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/tg/md_to_html.py (NEW — markdown_to_tg_html(text) via MarkdownIt token walk + degradations + pre-pass table flatten)</Item>
+      <Item>src/ai_steward_wiki/tg/output.py (call markdown_to_tg_html at top of deliver_output, before/with sanitize_html)</Item>
+      <Item>pyproject.toml (promote markdown-it-py == 4.2.0 to direct dependency)</Item>
+      <Item>tests/unit/tg/test_md_to_html.py (NEW — token mappings, degradations, prod payload, idempotence with sanitize_html)</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Switching parse_mode to MarkdownV2 (D-024 stays HTML)</Item>
+      <Item>Full table rendering (TG has no tables — flatten only)</Item>
+      <Item>Changing the wiki prompt (defence at delivery boundary; prompt tuning is a separate optional follow-up)</Item>
+      <Item>Custom-emoji / spoiler / images</Item>
+    </scope_out>
   </Feature>
 </Requirements>

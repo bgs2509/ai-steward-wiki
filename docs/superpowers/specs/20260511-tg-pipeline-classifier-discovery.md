@@ -29,10 +29,10 @@ requirements:
     - CONS-3: Document mime-routing is deferred to chunk-22 per DEC-L3 (on_document body left as today's ack).
     - CONS-4: WikiRunner public Protocol must accept aggregated `text` output, hiding the raw events list from DefaultPipeline.
   risks:
-    - R-1: WikiRunResult exposes events: list[StreamEvent], not aggregated text. Mitigation: concrete WikiRunner adapter extracts assistant text from `assistant_chunk` payload events; covered by unit test on extraction helper.
-    - R-2: run_wiki_session requires wiki_path/prompt paths/acquirer/spawner — DefaultPipeline must not see these. Mitigation: hide them behind a thin Protocol/adapter constructed in __main__.py.
-    - R-3: Classifier prompt_path + backend wiring is non-trivial. Mitigation: ClassifierAdapter wraps classify(...) with pre-bound prompt_path + backend + audit_session, exposes only `classify(text, *, correlation_id)`.
-    - R-4: deliver_output needs runs_dir + audit_session_maker per call. Mitigation: OutputDeliveryAdapter pre-binds these.
+    - R-1: "WikiRunResult exposes events: list[StreamEvent], not aggregated text. Mitigation: concrete WikiRunner adapter extracts assistant text from `assistant_chunk` payload events; covered by unit test on extraction helper."
+    - R-2: "run_wiki_session requires wiki_path/prompt paths/acquirer/spawner — DefaultPipeline must not see these. Mitigation: hide them behind a thin Protocol/adapter constructed in __main__.py."
+    - R-3: "Classifier prompt_path + backend wiring is non-trivial. Mitigation: ClassifierAdapter wraps classify(...) with pre-bound prompt_path + backend + audit_session, exposes only `classify(text, *, correlation_id)`."
+    - R-4: "deliver_output needs runs_dir + audit_session_maker per call. Mitigation: OutputDeliveryAdapter pre-binds these."
     - R-5: L2 dedup on voice transcript uses transcript text (already-normalized via classifier consumer); identical re-uploads of the same audio file may produce slightly different transcripts. Acceptable for MVP — text L2 covers identical text, voice bytes L2 (kind="voice") could be added later.
   scope_in:
     - tg/pipeline.py: add Classifier/WikiRunner/OutputDelivery Protocols + DefaultPipeline ctor params + new on_text/on_voice bodies.

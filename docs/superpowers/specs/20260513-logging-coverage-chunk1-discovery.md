@@ -6,12 +6,12 @@ status: draft
 date: 2026-05-13
 fr:
   - FR-1: A reusable @traced decorator wraps async and sync callables, emitting one INFO event on entry (event="<module>.<func>.start"), one INFO on success (event="<module>.<func>.done", duration_ms=int), and one ERROR on exception (event="<module>.<func>.error", duration_ms=int, exc_info=True), then re-raises.
-  - FR-2: The decorator MUST NOT log function arguments or return values automatically (PII safety). Caller may pass an optional `bind={"key": "value", ...}` parameter at call site via structlog.contextvars.bound_contextvars for non-PII fields only.
+  - FR-2: "The decorator MUST NOT log function arguments or return values automatically (PII safety). Caller may pass an optional `bind={\"key\": \"value\", ...}` parameter at call site via structlog.contextvars.bound_contextvars for non-PII fields only."
   - FR-3: A logging_events.py module exposes a stable catalog of canonical event-key constants (snake_case dotted), at minimum covering the events emitted by @traced, by aiogram middleware, and by AllowlistMiddleware (existing 3 events). All other modules MAY adopt constants incrementally — Chunk 1 does NOT mass-rename existing string literals.
   - FR-4: A new aiogram BaseMiddleware (CorrelationMiddleware) runs BEFORE AllowlistMiddleware on every Update; it generates a fresh correlation_id (uuid4), binds correlation_id + telegram_id + chat_id + update_id into structlog.contextvars.bound_contextvars for the lifetime of one update, and clears the binding on exit (even on exception).
-  - FR-5: @traced is applied to public entrypoints of currently-covered modules where boundary observability is missing: tg/pipeline.py top-level pipeline function(s), classifier stage entrypoints, inbox staging entrypoints, wiki run entrypoints. Internal helpers, getters, pure functions are NOT decorated.
+  - FR-5: "@traced is applied to public entrypoints of currently-covered modules where boundary observability is missing: tg/pipeline.py top-level pipeline function(s), classifier stage entrypoints, inbox staging entrypoints, wiki run entrypoints. Internal helpers, getters, pure functions are NOT decorated."
   - FR-6: Tests using structlog.testing.capture_logs assert that for at least one representative @traced callable (one async, one sync, one raising) the three lifecycle events appear with stable event keys, duration_ms is an int ≥ 0, correlation_id flows through from CorrelationMiddleware, and arguments do NOT appear in event_dict.
-  - FR-7: CorrelationMiddleware integration test: one TG Update flow emits records whose correlation_id matches across CorrelationMiddleware, AllowlistMiddleware, and a representative downstream @traced function.
+  - FR-7: "CorrelationMiddleware integration test: one TG Update flow emits records whose correlation_id matches across CorrelationMiddleware, AllowlistMiddleware, and a representative downstream @traced function."
 nfr:
   - NFR-1: PII safety — @traced does not introspect args/kwargs/return; no positional argument values logged; only call-site explicit `bind` accepted, and bind values are caller-responsibility (documented in docstring).
   - NFR-2: Cardinality — event keys are bounded constants from logging_events.py; high-cardinality values (user_id, update_id) ride as structured fields, never as part of event string.
@@ -23,20 +23,20 @@ constraints:
   - structlog ≥ 24.x already configured in logging_setup.py with merge_contextvars + _inject_correlation_id processors; reuse, do not duplicate.
   - aiogram 3.15 middleware API (BaseMiddleware.__call__(handler, event, data)); middleware order is registration order on Dispatcher.
   - correlation_id ContextVar in logging_setup.py is separate from structlog.contextvars binding — the explicit ContextVar predates the contextvars processor. Chunk 1 keeps both (no breakage of legacy bind_correlation_id callers), but the new middleware uses structlog.contextvars.bound_contextvars as the primary mechanism going forward.
-  - Conventional Commits + GRACE MODULE_ID scope — commits use feat(M-FOUNDATION-LOGGING): or feat(M-TG-MIDDLEWARE):.
+  - "Conventional Commits + GRACE MODULE_ID scope — commits use feat(M-FOUNDATION-LOGGING): or feat(M-TG-MIDDLEWARE):."
   - No timeline-blocking: this is a foundation feature; downstream chunks (APScheduler listener, SQLAlchemy events, Claude CLI subprocess wrapper) depend on @traced + events catalog being in place first.
 risks:
-  - R-1 — Double correlation_id sources: legacy ContextVar (logging_setup._correlation_id, injected by _inject_correlation_id processor) AND new structlog.contextvars binding from CorrelationMiddleware. If both set different values, _inject_correlation_id wins because it runs AFTER merge_contextvars in processor order. → Mitigation: CorrelationMiddleware also calls bind_correlation_id(uuid) so both paths agree. Test asserts equality.
-  - R-2 — @traced on coroutines vs sync: a single @overload pair (or runtime inspect.iscoroutinefunction) decorator must dispatch correctly. → Mitigation: write both paths, test both, type with ParamSpec + TypeVar.
-  - R-3 — Test cross-contamination via contextvars — failing test leaves correlation_id bound. → Mitigation: autouse fixture in conftest clears structlog contextvars between tests.
-  - R-4 — Cardinality blow-up if developers later embed user_id inside event keys (event=f"user.{id}.action"). → Mitigation: logging_events.py docstring + ADR-light note (decision can stay in design.md, not a full ADR for Chunk 1).
-  - R-5 — aiogram middleware ordering — if CorrelationMiddleware registered AFTER AllowlistMiddleware, allowlist deny events lose correlation_id binding. → Mitigation: explicit ordering in tg/bot.py register block + integration test asserting order.
+  - "R-1 — Double correlation_id sources: legacy ContextVar (logging_setup._correlation_id, injected by _inject_correlation_id processor) AND new structlog.contextvars binding from CorrelationMiddleware. If both set different values, _inject_correlation_id wins because it runs AFTER merge_contextvars in processor order. → Mitigation: CorrelationMiddleware also calls bind_correlation_id(uuid) so both paths agree. Test asserts equality."
+  - "R-2 — @traced on coroutines vs sync: a single @overload pair (or runtime inspect.iscoroutinefunction) decorator must dispatch correctly. → Mitigation: write both paths, test both, type with ParamSpec + TypeVar."
+  - "R-3 — Test cross-contamination via contextvars — failing test leaves correlation_id bound. → Mitigation: autouse fixture in conftest clears structlog contextvars between tests."
+  - "R-4 — Cardinality blow-up if developers later embed user_id inside event keys (event=f\"user.{id}.action\"). → Mitigation: logging_events.py docstring + ADR-light note (decision can stay in design.md, not a full ADR for Chunk 1)."
+  - "R-5 — aiogram middleware ordering — if CorrelationMiddleware registered AFTER AllowlistMiddleware, allowlist deny events lose correlation_id binding. → Mitigation: explicit ordering in tg/bot.py register block + integration test asserting order."
 scope_in:
   - src/ai_steward_wiki/logging_setup.py — add traced decorator (sync + async dispatch) + helper context manager for bound fields
   - src/ai_steward_wiki/logging_events.py — NEW module, SSoT catalog of stable event-key constants
   - src/ai_steward_wiki/tg/middleware_correlation.py — NEW CorrelationMiddleware
   - src/ai_steward_wiki/tg/bot.py — register CorrelationMiddleware BEFORE AllowlistMiddleware
-  - Apply @traced to a small representative set (NOT a mass rollout): tg/pipeline.py public entrypoint(s), classifier stage entrypoints, inbox staging entrypoints, wiki run entrypoints
+  - "Apply @traced to a small representative set (NOT a mass rollout): tg/pipeline.py public entrypoint(s), classifier stage entrypoints, inbox staging entrypoints, wiki run entrypoints"
   - tests/unit/test_logging_traced.py — NEW
   - tests/unit/test_logging_events_catalog.py — NEW
   - tests/unit/tg/test_middleware_correlation.py — NEW

@@ -19,13 +19,13 @@ nfr:
   - NFR-2: All new event keys are bounded constants from logging_events.py; high-cardinality values (job_id, statement_sha8) ride as structured fields.
   - NFR-3: mypy --strict on src/ stays clean. make lint stays clean. Pre-existing mypy error in tg/handlers.py (out-of-scope chunk-1 carryover) untouched.
   - NFR-4: APScheduler listener overhead < 1 ms per job-end on local dev machine (no benchmark gate; sanity only). SQLAlchemy listener overhead negligible when below threshold (single perf_counter pair + comparison).
-  - NFR-5: Slow-query threshold is configurable via settings (settings.storage_slow_query_threshold_ms: int = 200) so prod can tune without code changes (Fail-Fast on settings load via pydantic int constraint).
+  - NFR-5: "Slow-query threshold is configurable via settings (settings.storage_slow_query_threshold_ms: int = 200) so prod can tune without code changes (Fail-Fast on settings load via pydantic int constraint)."
   - NFR-6: Tests use structlog.testing.capture_logs + AsyncMock/MagicMock for APScheduler events and a real engine for storage event listeners. Tests assert event key + presence of fields, do NOT assert absolute duration values.
 risks:
-  - R-1 (low): APScheduler event payload fields differ between minor versions — pin call sites to documented public attrs (job_id, jobstore, scheduled_run_time, exception, traceback). Verified via apscheduler 3.x SchedulerEvent docs in design phase.
-  - R-2 (low): SQLAlchemy connection_record / context API changes — use the documented before_cursor_execute / after_cursor_execute signature (conn, cursor, statement, parameters, context, executemany), store start time on context.
-  - R-3 (medium): statement_sha8 collisions in observability tooling for high-volume queries — 8 hex chars = 32 bits, ~1 collision per 65k unique statements at 50% birthday probability. Acceptable for slow-query log (low volume by definition); revisit if SLO needed.
-  - R-4 (low): grace-refresh --verify may rewrite verification-plan.xml broader than chunk scope — commit XML diff carefully, verify only Chunk 1/2 anchors are touched.
+  - "R-1 (low): APScheduler event payload fields differ between minor versions — pin call sites to documented public attrs (job_id, jobstore, scheduled_run_time, exception, traceback). Verified via apscheduler 3.x SchedulerEvent docs in design phase."
+  - "R-2 (low): SQLAlchemy connection_record / context API changes — use the documented before_cursor_execute / after_cursor_execute signature (conn, cursor, statement, parameters, context, executemany), store start time on context."
+  - "R-3 (medium): statement_sha8 collisions in observability tooling for high-volume queries — 8 hex chars = 32 bits, ~1 collision per 65k unique statements at 50% birthday probability. Acceptable for slow-query log (low volume by definition); revisit if SLO needed."
+  - "R-4 (low): grace-refresh --verify may rewrite verification-plan.xml broader than chunk scope — commit XML diff carefully, verify only Chunk 1/2 anchors are touched."
 scope_in:
   - scheduler/core.py — add lifecycle listener registration on the returned AsyncIOScheduler
   - storage/jobs/engine.py, storage/audit/engine.py, storage/sessions/engine.py — attach before/after_cursor_execute listeners in build_engine
@@ -52,7 +52,7 @@ constraints:
 open_questions: []
 references:
   - chunk-1 PR commits: a193fc1..0fa0372
-  - logging_setup.py @traced decorator: src/ai_steward_wiki/logging_setup.py
+  - "logging_setup.py @traced decorator: src/ai_steward_wiki/logging_setup.py"
   - logging_events.py SSoT: src/ai_steward_wiki/logging_events.py
   - APScheduler events: https://apscheduler.readthedocs.io/en/3.x/modules/events.html
   - SQLAlchemy core events: https://docs.sqlalchemy.org/en/20/core/events.html#sqlalchemy.events.ConnectionEvents

@@ -8,15 +8,15 @@ status: stable
 date: 2026-05-10
 fr:
   - FR-1: Stage-0 classifier — invoke `claude-haiku-4-5` headless CLI with `--output-format json`, `--json-schema <classifier-schema>`, `--max-turns 1`, `--disallowedTools Bash Read Write Edit Glob Grep WebFetch`, `--permission-mode dontAsk`
-  - FR-2: Backend abstraction — `ClassifierBackend` Protocol with two implementations: `ClaudeCliBackend` (default, subscription auth) and `AnthropicApiBackend` (optional, gated by env `STAGE0_BACKEND=anthropic_api` + separate credential)
+  - FR-2: "Backend abstraction — `ClassifierBackend` Protocol with two implementations: `ClaudeCliBackend` (default, subscription auth) and `AnthropicApiBackend` (optional, gated by env `STAGE0_BACKEND=anthropic_api` + separate credential)"
   - FR-3: Backend-independent prompt — `prompts/classifier.md` consumed by CLI via `--append-system-prompt @file` and by API via system instructions
-  - FR-4: Output schema — `ClassifierResult{intent, confidence: float ∈ [0,1], distilled_payload: dict}` validated via Pydantic v2; intent enum drawn from spec §3 job-kinds taxonomy
-  - FR-5: `FakeClaudeRunner` Protocol implementation for unit tests — deterministic, no subprocess
+  - FR-4: "Output schema — `ClassifierResult{intent, confidence: float ∈ [0,1], distilled_payload: dict}` validated via Pydantic v2; intent enum drawn from spec §3 job-kinds taxonomy"
+  - FR-5: "`FakeClaudeRunner` Protocol implementation for unit tests — deterministic, no subprocess"
   - FR-6: Prompt versioning — semver + sha256 of every prompt file used in a call recorded into `audit.db.prompt_versions` per D-015
-  - FR-7: NL time parser — two-stage: `dateparser` (rule-based, ru/en, user-TZ from users.toml per D-042) → on miss, Haiku-fallback with narrow system prompt → on still-ambiguous, escalate=True signal for caller (Stage-1a)
+  - FR-7: "NL time parser — two-stage: `dateparser` (rule-based, ru/en, user-TZ from users.toml per D-042) → on miss, Haiku-fallback with narrow system prompt → on still-ambiguous, escalate=True signal for caller (Stage-1a)"
   - FR-8: All datetime persisted as **UTC** in jobs.db; user-TZ applied only at parse-input and render-output boundaries
-  - FR-9: Public API — `classify(text: str, *, correlation_id: str) -> ClassifierResult` and `parse_time(text: str, *, user_tz: ZoneInfo, now_utc: datetime) -> TimeParseResult`
-  - FR-10: structlog event on every call: `classifier.stage0.call`, `classifier.time.parse`, with backend, model, prompt_semver, prompt_sha8, latency_ms, intent, confidence
+  - FR-9: "Public API — `classify(text: str, *, correlation_id: str) -> ClassifierResult` and `parse_time(text: str, *, user_tz: ZoneInfo, now_utc: datetime) -> TimeParseResult`"
+  - FR-10: "structlog event on every call: `classifier.stage0.call`, `classifier.time.parse`, with backend, model, prompt_semver, prompt_sha8, latency_ms, intent, confidence"
 nfr:
   - NFR-1: Stage-0 p95 latency ≤ 1500ms (CLI subprocess including auth handshake); SLA enforced via timeout (D-019 transient class)
   - NFR-2: dateparser p95 ≤ 50ms; Haiku-fallback p95 ≤ 1500ms

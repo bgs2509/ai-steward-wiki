@@ -17,9 +17,9 @@ stack:
 decisions:
   - D-local-1: SeenFile PK becomes composite (owner_telegram_id, content_sha256). Existing PK on content_sha256 alone is replaced; `owner_telegram_id` loses its standalone index (now leading column of PK).
   - D-local-2: check_content WHERE clause adds `first_seen_at_utc > now - ttl_for_kind`. Older rows are treated as not-seen → ON CONFLICT path triggers `DO UPDATE SET first_seen_at_utc=excluded.first_seen_at_utc` (upsert), keeping the row but resetting the window.
-  - D-local-3: TTL per kind: `text/voice → AISW_L2_TTL_TEXT_SECONDS=60`, `photo/file → AISW_L2_TTL_BINARY_SECONDS=2592000` (30d). Both in Settings, .env-overridable.
-  - D-local-4: Migration drops legacy seen_files data (DELETE all rows then alter PK). Justification: forensic-only state, 30d retention, no business loss; alternative (data-preserving PK rebuild on SQLite) requires temp-table copy and is overkill for audit data.
-  - D-local-5: `inbox.idempotency.l2_duplicate` log event gains `within_ttl: bool` field. `l2_new` unchanged.
+  - D-local-3: "TTL per kind: `text/voice → AISW_L2_TTL_TEXT_SECONDS=60`, `photo/file → AISW_L2_TTL_BINARY_SECONDS=2592000` (30d). Both in Settings, .env-overridable."
+  - D-local-4: "Migration drops legacy seen_files data (DELETE all rows then alter PK). Justification: forensic-only state, 30d retention, no business loss; alternative (data-preserving PK rebuild on SQLite) requires temp-table copy and is overkill for audit data."
+  - D-local-5: "`inbox.idempotency.l2_duplicate` log event gains `within_ttl: bool` field. `l2_new` unchanged."
   - D-local-6: ACK_DEDUP_RU message stays the same — only fires now when truly within TTL, so the meaning matches.
 ---
 

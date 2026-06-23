@@ -1,3 +1,11 @@
+---
+feature: wiki-lifecycle
+bd_id: aisw-9s4
+module_id: M-WIKI-LIFECYCLE
+status: stable
+date: 2026-05-10
+---
+
 # Discovery — M-WIKI-LIFECYCLE (NL pre-flight, anti-spam, soft-delete, frontmatter)
 
 **Feature:** chunk 8 of `20260510-ai-steward-wiki-mvp` epic.

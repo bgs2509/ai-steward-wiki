@@ -23,7 +23,7 @@ fr:
   - id: FR-06
     text: planner.json category mapping — medication→medication, event→event, остальное→generic; payload.legacy_category хранит original value.
   - id: FR-07
-    text: planner.json recipients → Job.chat_id = recipients[0] (prescan: 0 multi). При встрече len(recipients)>1 — fail-fast.
+    text: "planner.json recipients → Job.chat_id = recipients[0] (prescan: 0 multi). При встрече len(recipients)>1 — fail-fast."
   - id: FR-08
     text: Скопировать data/ структуру — CSV/JSON → <Domain>-WIKI/<subfolder>/<file>, PDF/JPG → <Domain>-WIKI/raw/<subfolder>/<file>. Скрипты (.py) — drop.
   - id: FR-09
@@ -41,7 +41,7 @@ fr:
   - id: FR-15
     text: Реальный run работает Fail-Fast — exception на любую неожиданность блокирует ETL. Snapshot БД до запуска сохраняется в /tmp.
   - id: FR-16
-    text: Cutover: остановка ai-steward bot на vpn-0 (systemctl stop или pkill) → rsync /home/bgs/ai-steward/ → vpn-gpu-1:/tmp/migration-snapshot/ → dry-run → ETL real → restart ai-steward-wiki bot.
+    text: "Cutover: остановка ai-steward bot на vpn-0 (systemctl stop или pkill) → rsync /home/bgs/ai-steward/ → vpn-gpu-1:/tmp/migration-snapshot/ → dry-run → ETL real → restart ai-steward-wiki bot."
   - id: FR-17
     text: Старый бот после cutover stopped permanently; /home/bgs/ai-steward/ на vpn-0 остаётся read-only cold archive.
 nfr:
@@ -92,14 +92,14 @@ risks:
     mitigation: ETL writeс выполняется при остановленном боте; перед ETL — sqlite3 PRAGMA wal_checkpoint(TRUNCATE).
 scope:
   in:
-    - ETL-tooling: `scripts/migrate_legacy.py` (or `src/ai_steward_wiki/migration/`)
+    - ETL-tooling: "`scripts/migrate_legacy.py` (or `src/ai_steward_wiki/migration/`)"
     - users.toml generation
     - planner.json → jobs.db transformation (Job + JobPayload discriminated union)
     - File copy operations per FR-08/09/10
     - <Domain>-WIKI bootstrap для несуществующих
     - migration_report.md generation
     - Unit tests для core mapping
-    - .env.example update: AISW_PROFILES_DIR
+    - ".env.example update: AISW_PROFILES_DIR"
   out:
     - Изменения в runtime коде ai-steward-wiki (classifier, scheduler, tg-handlers, wiki, auth)
     - Typed Recurrence monthly (D-NNN) — follow-up beads issue

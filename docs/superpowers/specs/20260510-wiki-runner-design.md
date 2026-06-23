@@ -1,3 +1,12 @@
+---
+feature: wiki-runner
+bd_id: aisw-x30
+module_id: M-WIKI-RUNNER
+status: stable
+date: 2026-05-10
+discovery: docs/superpowers/specs/20260510-wiki-runner-discovery.md
+---
+
 # Design — M-WIKI-RUNNER
 
 **Discovery:** `20260510-wiki-runner-discovery.md` (stable).
