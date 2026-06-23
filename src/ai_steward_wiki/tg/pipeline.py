@@ -2625,7 +2625,7 @@ class DefaultStreamingDelivery:
         intent: Intent,
         correlation_id: str,
     ) -> WikiRunOutcome:
-        from ai_steward_wiki.wiki.runner import aggregate_text  # lazy import
+        from ai_steward_wiki.wiki.runner import final_turn_text  # lazy import
 
         buffered: list[object] = []
         live_editor: object | None = None
@@ -2711,12 +2711,16 @@ class DefaultStreamingDelivery:
         # to outcome.text or ACK_TEXT_RU if events lacked assistant content.
         from ai_steward_wiki.wiki.streaming import StreamEvent
 
-        final_text = aggregate_text([e for e in buffered if isinstance(e, StreamEvent)])
+        # aisw-2n2: deliver only the trailing answer turn, not the concatenated
+        # inter-tool narration that was streamed live as loader progress.
+        final_text = final_turn_text([e for e in buffered if isinstance(e, StreamEvent)])
         if not final_text:
             final_text = outcome.text or ACK_TEXT_RU
 
         try:
-            await live_editor.finalize()  # type: ignore[attr-defined]
+            # aisw-2n2: replace the streamed narration (shown live as loader progress)
+            # with the clean trailing answer.
+            await live_editor.finalize(final_text)  # type: ignore[attr-defined]
         except Exception as exc:
             _log.warning(
                 "tg.pipeline.stream.error",

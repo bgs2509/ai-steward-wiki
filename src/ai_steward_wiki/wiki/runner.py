@@ -28,6 +28,7 @@
 #   extract_permission_denials - pull permission_denials from the CLI result event (aisw-t6w)
 #   run_wiki_session - public entrypoint orchestrating one Stage-1a/1b run; extra_add_dirs adds read-only --add-dir targets (digest multi-WIKI, aisw-oqq)
 #   aggregate_text - extract assistant text from WikiRunResult.events
+#   final_turn_text - assistant text after the last tool_use (drops inter-tool narration; aisw-2n2)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
@@ -138,6 +139,7 @@ __all__ = [
     "aggregate_text",
     "assemble_prompt",
     "extract_permission_denials",
+    "final_turn_text",
     "run_wiki_session",
 ]
 
@@ -262,6 +264,56 @@ def assemble_prompt(
 #   SIDE_EFFECTS: none (pure)
 #   LINKS: M-TG-PIPELINE-CLASSIFIER (chunk 20, DEC-TPC-2)
 # END_CONTRACT: aggregate_text
+def _assistant_text(ev: StreamEvent) -> str:
+    """Extract concatenated assistant text from one stream event ("" if none).
+
+    Recognised payload shapes (first match wins, matching the legacy aggregate):
+      - payload["message"]["content"] = [{"type": "text", "text": "..."}, ...]
+      - payload["delta"]["text"] = "..."
+      - payload["text"] = "..."
+    """
+    if ev.type != "assistant_chunk":
+        return ""
+    payload = ev.payload
+    message = payload.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, list):
+            parts = [
+                item["text"]
+                for item in content
+                if isinstance(item, dict)
+                and item.get("type") == "text"
+                and isinstance(item.get("text"), str)
+            ]
+            return "".join(parts)
+    delta = payload.get("delta")
+    if isinstance(delta, dict):
+        text = delta.get("text")
+        if isinstance(text, str):
+            return text
+    text = payload.get("text")
+    if isinstance(text, str):
+        return text
+    return ""
+
+
+def _has_tool_use(ev: StreamEvent) -> bool:
+    """True if the event represents a tool invocation (boundary for final_turn_text)."""
+    if ev.type == "tool_use":
+        return True
+    if ev.type != "assistant_chunk":
+        return False
+    message = ev.payload.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, list):
+            return any(
+                isinstance(item, dict) and item.get("type") == "tool_use" for item in content
+            )
+    return False
+
+
 def aggregate_text(events: list[StreamEvent]) -> str:
     """Extract assistant text from an event list (stream-json shape).
 
@@ -271,31 +323,34 @@ def aggregate_text(events: list[StreamEvent]) -> str:
       - payload["delta"]["text"] = "..."
       - payload["text"] = "..."
     """
-    parts: list[str] = []
-    for ev in events:
-        if ev.type != "assistant_chunk":
-            continue
-        payload = ev.payload
-        message = payload.get("message")
-        if isinstance(message, dict):
-            content = message.get("content")
-            if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "text":
-                        text = item.get("text")
-                        if isinstance(text, str):
-                            parts.append(text)
-                continue
-        delta = payload.get("delta")
-        if isinstance(delta, dict):
-            text = delta.get("text")
-            if isinstance(text, str):
-                parts.append(text)
-                continue
-        text = payload.get("text")
-        if isinstance(text, str):
-            parts.append(text)
-    return "".join(parts)
+    return "".join(_assistant_text(ev) for ev in events)
+
+
+# START_CONTRACT: final_turn_text
+#   PURPOSE: Return only the trailing assistant answer, dropping inter-tool narration.
+#   INPUTS: { events: list[StreamEvent] - parsed events from one run }
+#   OUTPUTS: { str - text of assistant turn(s) after the last tool_use; falls back
+#             to aggregate_text when there is no tool_use or no trailing text }
+#   SIDE_EFFECTS: none (pure)
+#   LINKS: aisw-2n2, M-TG-PIPELINE-CLASSIFIER, M-INBOX-LIBRARIAN
+# END_CONTRACT: final_turn_text
+def final_turn_text(events: list[StreamEvent]) -> str:
+    """Concatenate assistant text emitted after the last tool invocation.
+
+    In the agentic loop Claude narrates before each tool call ("Прочитаю сырьё…").
+    The user-facing answer is the trailing text turn(s) after the last tool_use;
+    this strips the narration leak. Never empty when aggregate_text is non-empty:
+      - no tool_use at all  -> identical to aggregate_text (whole answer)
+      - tool_use but no text after it -> fall back to aggregate_text
+    """
+    last_tool = -1
+    for index, ev in enumerate(events):
+        if _has_tool_use(ev):
+            last_tool = index
+    if last_tool == -1:
+        return aggregate_text(events)
+    tail = "".join(_assistant_text(ev) for ev in events[last_tool + 1 :])
+    return tail if tail else aggregate_text(events)
 
 
 def _persist_transcript(events: list[StreamEvent], target: Path) -> None:

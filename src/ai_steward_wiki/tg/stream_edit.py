@@ -176,17 +176,22 @@ class StreamEditor:
                 size=len(self._buffer),
             )
 
-    async def finalize(self) -> None:
+    async def finalize(self, final_override: str | None = None) -> None:
         """Emit canonical balanced final state with (i/N) footer.
 
         Idempotent: subsequent calls are no-ops. Swallows non-fatal sender
         errors (logs `tg.stream.final_flush_failed`); the caller has already
         persisted full text via deliver_output, so TG delivery is best-effort.
+
+        `final_override` (aisw-2n2): when provided, the final message is rendered
+        from this text instead of the accumulated buffer. The slow path streams
+        inter-tool narration into the buffer as transient loader progress and then
+        replaces it with the clean answer (final_turn_text) at finalize.
         """
         if self._finalized:
             return
         self._finalized = True
-        body = self._balance(self._buffer)
+        body = self._balance(final_override if final_override is not None else self._buffer)
         footer = self.FINAL_FOOTER_FMT.format(i=self._segment_idx, n=self._total_segments)
         final_text = f"{body}\n{footer}" if self._total_segments > 1 else body
         if final_text == self._last_sent_text:

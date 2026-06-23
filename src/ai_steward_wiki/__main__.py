@@ -231,6 +231,7 @@ from ai_steward_wiki.wiki.runner import (
     WikiRunnerTimeoutError,
     _RunConfig,
     aggregate_text,
+    final_turn_text,
     run_wiki_session,
 )
 from ai_steward_wiki.wiki.schema_gen import (
@@ -465,7 +466,7 @@ class _WikiRunnerAdapter:
                 logger.warning("runtime.media.promote_failed", run_id=run_id, src=str(media_path))
         return WikiRunOutcome(
             run_id=run_id,
-            text=aggregate_text(result.events),
+            text=final_turn_text(result.events),
             latency_ms=result.latency_ms,
         )
 
@@ -1031,7 +1032,7 @@ class _LibrarianAdapter:
                 target_wiki=target.wiki_name.primary,
                 created=target.created,
             )
-        summary = aggregate_text(result.events)
+        summary = final_turn_text(result.events)
         logger.info(
             "inbox.route.ingest.done",
             correlation_id=correlation_id,
@@ -1041,9 +1042,12 @@ class _LibrarianAdapter:
             latency_ms=result.latency_ms,
             chars=len(summary),
         )
+        # aisw-2n2: do NOT prepend decision.notes here — the routing/classification was
+        # already shown in the confirmation message; repeating it bloats the reply. The
+        # final-turn summary stands alone.
         return IngestOutcome(
             status="ok",
-            reply=f"{decision.notes}\n\n{summary or '(WIKI обновлена)'}",
+            reply=summary or "(WIKI обновлена)",
             run_id=run_id,
             target_wiki=target.wiki_name.primary,
             created=target.created,

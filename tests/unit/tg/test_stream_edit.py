@@ -86,6 +86,18 @@ async def test_finalize_skips_edit_when_text_unchanged() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finalize_override_replaces_buffer() -> None:
+    """aisw-2n2: finalize(final_override) renders the override, not the fed buffer
+    (narration fed live as loader progress is replaced by the clean answer)."""
+    ed, sender, _ = _make_editor(delta_chars=10000)
+    await ed.feed("Прочитаю сырьё… Вижу query… Теперь понятно…")
+    await ed.finalize("Чистый ответ.")
+    final = sender.edits[-1]["text"]
+    assert final == "Чистый ответ."
+    assert "Прочитаю сырьё" not in final
+
+
+@pytest.mark.asyncio
 async def test_finalize_balances_html_tags() -> None:
     ed, sender, _ = _make_editor(delta_chars=10000)
     await ed.feed("<b>unclosed bold")

@@ -70,12 +70,14 @@ class _FakeEditor:
     feeds: list[str]
     finalized: int
     raise_on_finalize: bool = False
+    final_override: str | None = None
 
     async def feed(self, text: str) -> None:
         self.feeds.append(text)
 
-    async def finalize(self) -> None:
+    async def finalize(self, final_override: str | None = None) -> None:
         self.finalized += 1
+        self.final_override = final_override
         if self.raise_on_finalize:
             raise RuntimeError("boom-finalize")
 
@@ -180,6 +182,45 @@ async def test_slow_path_sends_placeholder_then_streams() -> None:
     out.deliver.assert_awaited_once()
     assert out.deliver.await_args.kwargs["text"] == "часть-1 часть-2"
     # Slow path: reply already streamed via the editor — deliver() persists only.
+    assert out.deliver.await_args.kwargs["tg_send"] is False
+
+
+@pytest.mark.asyncio
+async def test_slow_path_streams_narration_but_finalizes_clean_answer() -> None:
+    """aisw-2n2: narration is fed live as loader progress; finalize + deliver use the
+    clean trailing answer (text after the last tool_use), not the narration."""
+    sender = FakeSender()
+    editors: list[_FakeEditor] = []
+    streaming = DefaultStreamingDelivery(
+        sender=sender, timeout_s=0.05, stream_editor_factory=_editor_factory(editors)
+    )
+    out = _output()
+
+    def _msg(*content: dict[str, object]) -> StreamEvent:
+        return StreamEvent(type="assistant_chunk", payload={"message": {"content": list(content)}})
+
+    tool = {"type": "tool_use", "id": "t", "name": "Read", "input": {}}
+    events = [
+        _msg({"type": "text", "text": "Прочитаю сырьё…"}, tool),
+        _msg({"type": "text", "text": "Вижу query…"}, tool),
+        _msg({"type": "text", "text": "Чистый ответ."}),
+    ]
+    runner = _runner_factory(delay=0.15, emit_events=events, outcome_text="ignored")
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_idem(),
+        confirmation=_confirm(),
+        classifier=_classifier(),
+        runner=runner,
+        output=out,
+        streaming=streaming,
+    )
+    await pipe.on_text(telegram_id=1, chat_id=10, update_id=2, text="hi")
+    # Narration WAS shown live as loader progress (fed to the editor)...
+    assert editors[0].feeds == ["Прочитаю сырьё…", "Вижу query…", "Чистый ответ."]
+    # ...but the final message replaced it with the clean trailing answer.
+    assert editors[0].final_override == "Чистый ответ."
+    assert out.deliver.await_args.kwargs["text"] == "Чистый ответ."
     assert out.deliver.await_args.kwargs["tg_send"] is False
 
 

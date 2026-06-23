@@ -52,6 +52,21 @@ def _fake_run_result(text: str) -> MagicMock:
     return r
 
 
+def _fake_run_result_with_narration(narration: list[str], answer: str) -> MagicMock:
+    """Events that interleave inter-tool narration with tool calls, then the answer."""
+
+    def _msg(*content: dict[str, object]) -> StreamEvent:
+        return StreamEvent(type="assistant_chunk", payload={"message": {"content": list(content)}})
+
+    tool = {"type": "tool_use", "id": "t", "name": "Read", "input": {}}
+    events = [_msg({"type": "text", "text": n}, tool) for n in narration]
+    events.append(_msg({"type": "text", "text": answer}))
+    r = MagicMock()
+    r.events = events
+    r.latency_ms = 50
+    return r
+
+
 @pytest.mark.asyncio
 async def test_create_wiki_happy_path(tmp_path: Path) -> None:
     adapter, wiki_root = _adapter(tmp_path)
@@ -89,8 +104,10 @@ async def test_create_wiki_happy_path(tmp_path: Path) -> None:
     assert outcome.run_id.startswith("ingest-")
     assert outcome.target_wiki == "Travel-WIKI"
     assert outcome.created is True
-    assert outcome.reply.startswith("Положу в Travel-WIKI.")
-    assert "Записал X" in outcome.reply
+    # aisw-2n2: ok reply is the final-turn summary only — no duplicated decision.notes
+    # prefix (the routing/classification was already shown in the confirmation message).
+    assert outcome.reply == "Записал X на стр. trips.md."
+    assert not outcome.reply.startswith("Положу в Travel-WIKI.")
 
 
 @pytest.mark.asyncio
@@ -133,6 +150,29 @@ async def test_cap_reached_returns_rejected(tmp_path: Path) -> None:
     assert outcome.run_id is None
     assert outcome.reply.startswith("Положу в Travel-WIKI.")  # decision.notes prefix
     assert "лимит" in outcome.reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_ok_reply_strips_inter_tool_narration(tmp_path: Path) -> None:
+    """aisw-2n2: only the trailing answer reaches the user, not the tool narration."""
+    adapter, _ = _adapter(tmp_path)
+    result = _fake_run_result_with_narration(
+        narration=["Прочитаю сырьё…", "Вижу query…", "Теперь понятно…"],
+        answer="Давление 131/92, в норме.",
+    )
+    with patch.object(runtime, "run_wiki_session", new=AsyncMock(return_value=result)):
+        outcome = await adapter.ingest(
+            _decision(RouterIntent.ROUTE, "Medical-WIKI"),
+            telegram_id=42,
+            user_text="что со здоровьем?",
+            source="text",
+            media_paths=None,
+            correlation_id="c",
+        )
+    assert outcome.status == "ok"
+    assert outcome.reply == "Давление 131/92, в норме."
+    assert "Прочитаю сырьё" not in outcome.reply
+    assert "query" not in outcome.reply
 
 
 @pytest.mark.asyncio
