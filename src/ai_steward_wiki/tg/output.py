@@ -55,6 +55,7 @@ from ai_steward_wiki.logging_events import IO_ANCHOR_AUDIT_WRITE
 from ai_steward_wiki.logging_setup import anchored
 from ai_steward_wiki.storage.audit.models import RunOutput
 from ai_steward_wiki.tg.bot import TgSender
+from ai_steward_wiki.tg.md_to_html import markdown_to_tg_html
 
 __all__ = [
     "ALLOWED_TAGS",
@@ -75,7 +76,10 @@ __all__ = [
 
 _log = structlog.get_logger("tg.output")
 
-ALLOWED_TAGS = frozenset({"b", "i", "u", "s", "a", "code", "pre"})
+# aisw-iyz: blockquote added — the markdown converter emits <blockquote> for "> q",
+# and Telegram parse_mode=HTML supports it; without it sanitize_html would escape
+# the tag back to literal text.
+ALLOWED_TAGS = frozenset({"b", "i", "u", "s", "a", "code", "pre", "blockquote"})
 INLINE_THRESHOLD = 3500
 CHAIN_THRESHOLD = 10000
 PART_MAX_CHARS = 3500
@@ -393,9 +397,16 @@ async def deliver_output(
     still persisting the full text to disk and recording the audit row.
     """
     started = _utcnow_naive()
-    # aisw-azu: make the payload valid for parse_mode=HTML BEFORE any send/persist —
-    # stray "<"/">"/"&" in model output would otherwise make Telegram reject the
-    # whole message ("can't parse entities"). Whitelisted tags stay live.
+    # aisw-iyz: model REPLY output is GitHub-Markdown; render it to Telegram-HTML so
+    # **bold**/`code`/## headings/lists become native formatting instead of literal
+    # markdown (parse_mode=HTML, D-024). Digests/ingest_reports are already built as
+    # Telegram-HTML by the app (e.g. <b>-section digests, D-025) — converting them
+    # would escape their tags, so only kind="reply" is run through the converter.
+    if kind == "reply":
+        text = markdown_to_tg_html(text)
+    # aisw-azu: sanitize_html is the idempotent safety net for ALL kinds (escapes
+    # stray <>& the converter passed through / that app HTML may contain); the
+    # parse_mode=None send fallback still guards residual edge cases.
     text = sanitize_html(text)
     output_path, output_bytes, sha = _persist_to_disk(
         runs_dir=runs_dir,

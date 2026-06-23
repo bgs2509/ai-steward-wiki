@@ -135,6 +135,28 @@ async def test_deliver_audit_write_error_is_anchored(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_deliver_renders_markdown_to_tg_html(tmp_path, audit_session_maker) -> None:
+    # aisw-iyz regression: model markdown must reach TG as HTML, not literal syntax.
+    sender = FakeSender()
+    await deliver_output(
+        sender=sender,
+        chat_id=100,
+        telegram_id=1001,
+        wiki_id="Medical-WIKI",
+        run_id="r-iyz",
+        text="## Резюме\n**133/92/69** норма <120/80",
+        runs_dir=tmp_path / "runs",
+        audit_session_maker=audit_session_maker,
+    )
+    sent = sender.sends[0]["text"]
+    assert "<b>Резюме</b>" in sent
+    assert "<b>133/92/69</b>" in sent
+    assert "&lt;120/80" in sent
+    assert "**" not in sent
+    assert "## " not in sent
+
+
+@pytest.mark.asyncio
 async def test_deliver_escapes_stray_lt_before_send(tmp_path, audit_session_maker) -> None:
     # aisw-azu regression: a "<120/80" reply must reach TG escaped, never raw.
     sender = FakeSender()
