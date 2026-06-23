@@ -45,6 +45,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
                 "inbox_hint_cache",
                 "fsm",
                 "user_digest_prefs",
+                "user_active_wiki",
             },
         ),
     ],
@@ -153,6 +154,31 @@ def test_sessions_stepwise_upgrade_adds_cards_enabled(tmp_path, monkeypatch):
     cols = {r[1] for r in conn.execute("PRAGMA table_info(user_digest_prefs)").fetchall()}
     conn.close()
     assert "cards_enabled" in cols
+
+
+def test_sessions_stepwise_upgrade_creates_user_active_wiki(tmp_path, monkeypatch):
+    """aisw-0ym: stamp 0003 then upgrade to head → 0004 creates user_active_wiki."""
+    db_path = tmp_path / "sessions.db"
+    monkeypatch.setenv("AISW_SESSIONS_DB_URL_SYNC", f"sqlite:///{db_path}")
+    cfg = Config(str(REPO_ROOT / "alembic" / "sessions" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic" / "sessions"))
+    command.upgrade(cfg, "0003_cards_enabled")
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS user_active_wiki")
+    conn.commit()
+    conn.close()
+
+    command.upgrade(cfg, "head")
+
+    conn = sqlite3.connect(db_path)
+    rows = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    conn.close()
+    assert "user_active_wiki" in rows
 
 
 def test_sessions_stepwise_upgrade_creates_user_digest_prefs(tmp_path, monkeypatch):
