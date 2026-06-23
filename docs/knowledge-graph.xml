@@ -98,6 +98,9 @@
         <type-OnboardingEvent PURPOSE="Intro-element measure-show per user (D-030)"/>
         <fn-build_engine PURPOSE="Create AsyncEngine with PRAGMAs applied"/>
         <fn-build_sessionmaker PURPOSE="async_sessionmaker bound to engine"/>
+        <type-ChatTurn PURPOSE="Frozen view of one recent chat_log row (direction/text/ts) (D-033, aisw-kml)"/>
+        <fn-ChatLogWriter PURPOSE="audit.db adapter: write_in/write_out + read_recent_window (D-033 last-20/24h conversation buffer fed to Stage-0/Stage-1a; aisw-kml)"/>
+        <fn-redact_chat_text PURPOSE="drop D-033 denylist secrets (sk-ant-/Bearer/password=) before persisting plaintext (aisw-kml)"/>
       </annotations>
     </M-STORAGE-AUDIT>
 
@@ -122,6 +125,8 @@
         <fn-resolve_user_id PURPOSE="telegram_id → users.user_id surrogate, or None (D-042)"/>
         <fn-get_digest_prefs PURPOSE="telegram_id → DigestPrefs (both True if no users row / no prefs row); read-only"/>
         <fn-set_digest_section PURPOSE="upsert one section's bool for telegram_id (creates the row with defaults if absent; bumps updated_at_utc); no-op + defaults if telegram_id has no users row; ValueError on unknown section"/>
+        <type-UserActiveWiki PURPOSE="Per-user sticky last-active-&lt;Domain&gt;-WIKI pointer (one row per telegram_id; alembic sessions 0004) (aisw-0ym)"/>
+        <fn-ActiveWikiPointer PURPOSE="sessions.db adapter: set_active (upsert on successful route/ingest) / get_active (24h TTL guard == chat_log D-033 window; stale ⇒ None) (aisw-0ym)"/>
       </annotations>
     </M-STORAGE-SESSIONS>
 
@@ -679,6 +684,8 @@
     <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX-ROUTER" relation="_RouterAdapter parses run_wiki_session reply via parse_router_reply; raises RouterError (aisw-dsg)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX" relation="_RouterAdapter calls ensure_inbox_wiki before each Stage-1a router run (aisw-dsg)"/>
     <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-INBOX-ROUTE" relation="Librarian Protocol returns IngestOutcome for ROUTE/CREATE_WIKI decisions (aisw-zd9); route_action_to_payload/route_action_from_payload (de)serialise the confirm-loop draft (aisw-e45)"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-STORAGE-AUDIT" relation="ChatLogPort: persist in/out turns (write_in after STT/OCR, write_out on final reply) + read the last-20/24h window folded into build_router_input (D-033, aisw-kml)"/>
+    <CrossLink from="M-TG-PIPELINE-CLASSIFIER" to="M-STORAGE-SESSIONS" relation="ActiveWikiPort: set_active on a successful route/ingest; get_active (24h TTL) default-routes a cold CLARIFY/REJECT follow-up into the last-active WIKI (aisw-0ym)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-INBOX-ROUTE" relation="_LibrarianAdapter calls resolve_target_wiki/stage_raw_into_wiki/pick_domain_overlay/build_ingest_prompt (aisw-zd9)"/>
     <CrossLink from="M-INBOX-ROUTE" to="M-WIKI-LIFECYCLE" relation="resolve_target_wiki wraps WikiLifecycleManager.lookup/create_wiki (AntiSpamCapError/WikiNameError)"/>
     <CrossLink from="M-INBOX-ROUTE" to="M-INBOX" relation="stage_raw_into_wiki promotes media via inbox.staging.promote_path_to_raw"/>

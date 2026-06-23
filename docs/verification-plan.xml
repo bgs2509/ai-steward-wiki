@@ -100,12 +100,13 @@
       <tests>
         <test path="tests/unit/storage/test_baselines.py"/>
         <test path="tests/unit/storage/test_pragmas.py"/>
+        <test path="tests/unit/storage/test_chat_log.py"/>
       </tests>
       <commands>
         <cmd>uv run pytest tests/unit/storage -q</cmd>
       </commands>
       <log-markers/>
-      <evidence>10 tables present per D-006 amendment (alembic baseline); PRAGMAs verified; append-only invariants.</evidence>
+      <evidence>10 tables present per D-006 amendment (alembic baseline); PRAGMAs verified; append-only invariants. chat_log (D-033, aisw-kml): redact_chat_text drops the denylist (sk-ant-/Bearer/password=) before write; ChatLogWriter.write_in/write_out persist one row per turn; read_recent_window returns the last-20 / 24h ChatTurns oldest-first for the router/Stage-0 buffer.</evidence>
     </V-M-STORAGE-AUDIT>
 
     <V-M-STORAGE-SESSIONS MODULE="M-STORAGE-SESSIONS">
@@ -113,12 +114,13 @@
         <test path="tests/unit/storage/test_baselines.py"/>
         <test path="tests/unit/storage/test_pragmas.py"/>
         <test path="tests/unit/storage/test_digest_prefs.py"/>
+        <test path="tests/unit/storage/test_active_wiki.py"/>
       </tests>
       <commands>
         <cmd>uv run pytest tests/unit/storage -q</cmd>
       </commands>
       <log-markers/>
-      <evidence>users/pending_users/pending_confirms/inbox_hint_cache/fsm/user_digest_prefs tables (alembic baseline + alembic/sessions/0002 stepwise); PRAGMAs verified. user_digest_prefs (aisw-pv8): get_digest_prefs → DigestPrefs(True,True) when no users row or no prefs row; set_digest_section upserts one bool (creates the row with defaults if absent, bumps updated_at_utc), no-op + defaults for an unknown telegram_id, ValueError on an unknown section; deleting the users row CASCADE-removes the prefs row; TOGGLEABLE_DIGEST_SECTIONS ⊆ EXPAND_SECTION_KEYS and SECTION_DISPLAY_NAME keys == TOGGLEABLE_DIGEST_SECTIONS. test_baselines: stamp 0001_sessions_baseline then `alembic upgrade head` → user_digest_prefs present (0002's idempotent Base.metadata.create_all delta), and `upgrade head` from empty also creates it (baseline create_all).</evidence>
+      <evidence>users/pending_users/pending_confirms/inbox_hint_cache/fsm/user_digest_prefs/user_active_wiki tables (alembic baseline + alembic/sessions/0002 + 0004 stepwise; test_baselines: stamp 0003_cards_enabled → `upgrade head` creates user_active_wiki); PRAGMAs verified. user_active_wiki (aisw-0ym): ActiveWikiPointer.set_active upserts the per-telegram_id row; get_active returns the name only within ACTIVE_WIKI_TTL_HOURS (24h), else None (stale ⇒ no force-route). user_digest_prefs (aisw-pv8): get_digest_prefs → DigestPrefs(True,True) when no users row or no prefs row; set_digest_section upserts one bool (creates the row with defaults if absent, bumps updated_at_utc), no-op + defaults for an unknown telegram_id, ValueError on an unknown section; deleting the users row CASCADE-removes the prefs row; TOGGLEABLE_DIGEST_SECTIONS ⊆ EXPAND_SECTION_KEYS and SECTION_DISPLAY_NAME keys == TOGGLEABLE_DIGEST_SECTIONS. test_baselines: stamp 0001_sessions_baseline then `alembic upgrade head` → user_digest_prefs present (0002's idempotent Base.metadata.create_all delta), and `upgrade head` from empty also creates it (baseline create_all).</evidence>
     </V-M-STORAGE-SESSIONS>
 
     <V-M-RUNTIME-WIRING MODULE="M-RUNTIME-WIRING">
@@ -211,12 +213,14 @@
         <test path="tests/unit/tg/test_pipeline_route_ingest.py"/>
         <test path="tests/unit/tg/test_pipeline_route_confirm.py"/>
         <test path="tests/unit/tg/test_pipeline_confirm_callback.py"/>
+        <test path="tests/unit/tg/test_pipeline_chat_log.py"/>
+        <test path="tests/unit/tg/test_pipeline_active_wiki.py"/>
         <test path="tests/unit/wiki/test_runner_aggregate.py"/>
         <test path="tests/integration/test_pipeline_classifier_e2e.py"/>
         <test path="tests/integration/test_e2e_pipeline.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/tg/test_pipeline_classifier_wiring.py tests/unit/tg/test_pipeline_router.py tests/unit/tg/test_pipeline_hint_fastpath.py tests/unit/tg/test_pipeline_route_ingest.py tests/unit/tg/test_pipeline_route_confirm.py tests/unit/tg/test_pipeline_confirm_callback.py tests/unit/wiki/test_runner_aggregate.py -q</cmd>
+        <cmd>uv run pytest tests/unit/tg/test_pipeline_classifier_wiring.py tests/unit/tg/test_pipeline_router.py tests/unit/tg/test_pipeline_hint_fastpath.py tests/unit/tg/test_pipeline_route_ingest.py tests/unit/tg/test_pipeline_route_confirm.py tests/unit/tg/test_pipeline_confirm_callback.py tests/unit/tg/test_pipeline_chat_log.py tests/unit/tg/test_pipeline_active_wiki.py tests/unit/wiki/test_runner_aggregate.py -q</cmd>
         <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/test_pipeline_classifier_e2e.py tests/integration/test_e2e_pipeline.py -q</cmd>
       </commands>
       <log-markers>
@@ -662,7 +666,7 @@
         <marker>scheduler.consumer.deliver_failed</marker>
         <marker>scheduler.consumer.unexpected</marker>
       </log-markers>
-      <evidence>CronConsumer.run() drains PriorityJobQueue.get() in a single async loop (NFR-1 concurrency=1, at-most-once); per item: CronUserQueueMsg.model_validate raises ValidationError → log+continue; UPDATE jobs.Job status='running' + started_at_utc=now_utc; spawn subprocess via asyncio.create_subprocess_exec(*argv, stdout=PIPE, stderr=PIPE, cwd=neutral_cwd(claude_config_dir), env=build_env(claude_config_dir)) where argv = ['systemd-run','--scope','--collect','--slice='+slice_name,'--unit=cli-'+str(job_id),'--setenv=CLAUDE_CONFIG_DIR='+str(claude_config_dir),'--', resolve_binary(claude_binary), *system_prompt_argv(prompt_path), command]; asyncio.wait_for(proc.communicate(), timeout=600); TimeoutError → kill_with_sequence(proc, grace_seconds=DEFAULT_TERM_GRACE_SECONDS) → status='failed' + reply '❌ Тайм-аут 10 минут.'; exit_code==0 → ChainSplitter().split(stdout.decode('utf-8','replace')) chunked bot.send_message * n_chunks + status='finished'; exit_code!=0 → '❌ Ошибка ({code}): '+truncate_stderr(stderr, limit=512) + status='failed'; TelegramAPIError on send → log scheduler.consumer.deliver_failed + status='failed' (no re-raise — loop survives). Cancellation: CancelledError propagates out of .run() so __main__ shutdown can await the task. CronUserQueueMsg Pydantic v2 discriminated union with discriminator='kind' (NFR-5) round-trips via model_dump_json. (aisw-02v; R-1 R-2 R-6 mitigations; D-011 §3; D-021).</evidence>
+      <evidence>CronConsumer.run() drains PriorityJobQueue.get() in a single async loop (NFR-1 concurrency=1, at-most-once); per item: CronUserQueueMsg.model_validate raises ValidationError → log+continue; UPDATE jobs.Job status='running' + started_at_utc=now_utc; spawn subprocess via asyncio.create_subprocess_exec(*argv, stdout=PIPE, stderr=PIPE, cwd=neutral_cwd(claude_config_dir), env=build_env(claude_config_dir)) where argv = ['systemd-run','--scope','--collect','--slice='+slice_name,'--unit=cli-'+str(job_id),'--setenv=CLAUDE_CONFIG_DIR='+str(claude_config_dir),'--', resolve_binary(claude_binary), *system_prompt_argv(prompt_path), command]; asyncio.wait_for(proc.communicate(), timeout=600); TimeoutError → kill_with_sequence(proc, grace_seconds=DEFAULT_TERM_GRACE_SECONDS) → status='failed' + reply '❌ Тайм-аут 10 минут.'; exit_code==0 → ChainSplitter().split(stdout.decode('utf-8','replace')) chunked bot.send_message * n_chunks + status='finished'; exit_code!=0 → '❌ Ошибка ({code}): '+truncate_stderr(stderr, limit=512) + status='failed'; TelegramAPIError on send → log scheduler.consumer.deliver_failed + status='failed' (no re-raise — loop survives). Cancellation: CancelledError propagates out of .run() so __main__ shutdown can await the task. CronUserQueueMsg Pydantic v2 discriminated union with discriminator='kind' (NFR-5) round-trips via model_dump_json. Runner-parity hardening (aisw-o3m): _build_argv now inserts --setting-sources "" / --disable-slash-commands / --permission-mode dontAsk / --disallowedTools WebFetch after system_prompt_argv and before the aisw-0j4 literal '--' + command separator (positional-prompt invocation model kept — no -p/stream-json switch); test_consumer.py asserts the flags are present and that the '--' guard still precedes a '-'-prefixed command. (aisw-02v; R-1 R-2 R-6 mitigations; D-011 §3; D-021).</evidence>
     </V-M-SCHEDULER-CONSUMER>
 
     <V-M-TG-CRON-ADD MODULE="M-TG-CRON-ADD">
