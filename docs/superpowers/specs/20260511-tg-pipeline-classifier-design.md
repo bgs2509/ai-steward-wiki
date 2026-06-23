@@ -49,7 +49,7 @@ stack:
       rationale: Same Claude pipeline is reused; voice is just text after STT.
     - id: DEC-TPC-6
       title: Adapters wire wiki_path resolution
-      choice: WikiRunner adapter resolves wiki_path via telegram_id → owner profile (existing convention in this repo: `/var/lib/ai-steward-wiki/wikis/<telegram_id>/`). For MVP-launch (single dev user) we hard-resolve from Settings.wikis_root / str(telegram_id). Multi-domain routing per D-029 stays deferred.
+      choice: "WikiRunner adapter resolves wiki_path via telegram_id → owner profile (existing convention in this repo: `/var/lib/ai-steward-wiki/wikis/<telegram_id>/`). For MVP-launch (single dev user) we hard-resolve from Settings.wikis_root / str(telegram_id). Multi-domain routing per D-029 stays deferred."
       alternatives_considered:
         - "Inject a WikiPathResolver — rejected: premature, no second consumer yet."
       rationale: Resolves only one path today; one-line constant function.

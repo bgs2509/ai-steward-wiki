@@ -16,7 +16,7 @@ nfr:
   - NFR-1: check_content latency stays O(1) per call — must keep unique index, no full-table scan
   - NFR-2: structlog event inbox.idempotency.l2_duplicate gains within_ttl=True|False field
   - NFR-3: mypy --strict + ruff + grace lint clean; no new ignores
-  - NFR-4: Unit tests cover: legit repeat after TTL (text), retry-storm within TTL (text), photo dedup at 1h still hits, cross-owner same-text passes for both
+  - NFR-4: "Unit tests cover: legit repeat after TTL (text), retry-storm within TTL (text), photo dedup at 1h still hits, cross-owner same-text passes for both"
   - NFR-5: Backward compatibility — existing seen_files rows MAY be dropped during migration (audit-only data, no business loss)
 constraints:
   - SQLite + Alembic per-DB (audit.db has its own alembic env)
@@ -24,10 +24,10 @@ constraints:
   - D-018 spec says "TTL 30d" globally — this feature amends D-018 with per-kind TTL (will be reflected via ADR + D-018 amendment note)
   - Pipeline still uses fast-path L2 BEFORE classifier (no Stage-0 Haiku before dedup — cost preservation)
 risks:
-  - R-1 (data loss on migration): dropping seen_files rows loses 30d of retry-protection state; mitigated by short TTL=60s for text — replays naturally within 60s window, photo/file replays from scratch (acceptable, retention is forensic not load-bearing)
-  - R-2 (TTL too short): 60s may miss legit retries beyond 1 min (rare TG webhook backoff); mitigated by .env config — operator can raise
-  - R-3 (TTL too long): >60s starts hitting daily-log repeats; mitigated by per-kind split — daily logs are text, photo/file keep 30d
-  - R-4 (clock skew): first_seen_at_utc is server UTC, no client clock involved — non-issue
+  - "R-1 (data loss on migration): dropping seen_files rows loses 30d of retry-protection state; mitigated by short TTL=60s for text — replays naturally within 60s window, photo/file replays from scratch (acceptable, retention is forensic not load-bearing)"
+  - "R-2 (TTL too short): 60s may miss legit retries beyond 1 min (rare TG webhook backoff); mitigated by .env config — operator can raise"
+  - "R-3 (TTL too long): >60s starts hitting daily-log repeats; mitigated by per-kind split — daily logs are text, photo/file keep 30d"
+  - "R-4 (clock skew): first_seen_at_utc is server UTC, no client clock involved — non-issue"
 scope_in:
   - src/ai_steward_wiki/storage/audit/models.py (SeenFile PK → composite)
   - src/ai_steward_wiki/inbox/idempotency.py (per-kind TTL filter in check_content)

@@ -1,3 +1,12 @@
+---
+feature: wiki-lifecycle
+bd_id: aisw-9s4
+module_id: M-WIKI-LIFECYCLE
+status: stable
+date: 2026-05-10
+discovery: docs/superpowers/specs/20260510-wiki-lifecycle-discovery.md
+---
+
 # Design — M-WIKI-LIFECYCLE
 
 **Discovery:** `20260510-wiki-lifecycle-discovery.md` (stable).

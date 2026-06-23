@@ -1,3 +1,11 @@
+---
+feature: wiki-runner
+bd_id: aisw-x30
+module_id: M-WIKI-RUNNER
+status: stable
+date: 2026-05-10
+---
+
 # Discovery — M-WIKI-RUNNER (Stage-1a/1b Sonnet runner)
 
 **Feature:** chunk 7 of 20260510-ai-steward-wiki-mvp epic.

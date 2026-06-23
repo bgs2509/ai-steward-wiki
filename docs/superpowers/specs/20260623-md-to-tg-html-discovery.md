@@ -17,13 +17,13 @@ nfr:
   - NFR-1: Use markdown-it-py (ALREADY in uv.lock 4.2.0, transitive) promoted to a direct dependency — robust CommonMark tokenizer; a small custom renderer walks the token stream and emits ONLY the TG whitelist + degradations. No new external dep beyond promoting the locked one.
   - NFR-2: No behavioural change to non-markdown text (plain text passes through escaped, unchanged meaning)
   - NFR-3: mypy --strict + ruff + grace lint clean; deliver_output existing tests stay green
-  - NFR-4: Pin markdown-it-py == 4.2.0 (project policy: exact ==)
+  - NFR-4: "Pin markdown-it-py == 4.2.0 (project policy: exact ==)"
   - NFR-5: Default parse_mode stays HTML (D-024 unchanged) — this makes the HTML payload correct, it does not switch modes
 constraints:
   - ALLOWED_TAGS = {b,i,u,s,a,code,pre} (output.py) — converter MUST emit only these; everything else degrades or escapes
   - markdown-it-py default preset is CommonMark — strikethrough/tables are NOT in core; enable strikethrough rule if present, handle tables via a pre-pass flattener (no extra plugin dep)
   - Telegram has NO headings, NO tables, NO native list entities — degradation is mandatory, not optional
-  - Compose with sanitize_html (aisw-azu): the converter's text nodes are escaped; sanitize_html on already-valid converter output must be idempotent
+  - "Compose with sanitize_html (aisw-azu): the converter's text nodes are escaped; sanitize_html on already-valid converter output must be idempotent"
 risks:
   - markdown-it core lacks table/strikethrough → unhandled tables render literally. Mitigation - pre-pass pipe-table flattener + enable strikethrough rule (verified at execution); fall back to escaped text otherwise
   - Converter bug could drop/garble content. Mitigation - the parse_mode=None fallback (aisw-azu) still guarantees delivery; extensive token-level unit tests incl. the exact prod payload

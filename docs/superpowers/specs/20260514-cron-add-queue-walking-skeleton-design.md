@@ -132,7 +132,7 @@ modules:
       - ai_steward_wiki.scheduler.core.kill_with_sequence
       - ai_steward_wiki.claude_cli.common (resolve_binary, build_env, neutral_cwd, system_prompt_argv, truncate_stderr)
       - ai_steward_wiki.tg.output.ChainSplitter (standalone reuse, ≤PART_MAX_CHARS chunking)
-      - ai_steward_wiki.storage.jobs.models.Job (status updates: 'running' → 'finished'|'failed')
+      - "ai_steward_wiki.storage.jobs.models.Job (status updates: 'running' → 'finished'|'failed')"
     inputs:
       CronConsumer(constructor):
         queue: "PriorityJobQueue"
@@ -179,7 +179,7 @@ modules:
 
 functional_design:
   ux_flow_cron_add: |
-    1. User: `/cron_add каждый день в 9 утра | напомни выпить витамины`
+    1. User: "`/cron_add каждый день в 9 утра | напомни выпить витамины`"
     2. Handler splits on first `|`: schedule_text="каждый день в 9 утра", command="напомни выпить витамины"
     3. parse_recurrence(schedule_text, user_tz=resolve_tz(owner)) → Recurrence | escalate
        3a. escalate → reply "Не понял расписание. Попробуй: каждый день в 9, каждую среду в 14:00, каждого 5го в 10:00" → return
@@ -209,7 +209,7 @@ functional_design:
        - try: stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
          except TimeoutError: await kill_with_sequence(proc); reply "❌ Тайм-аут 10 минут" → status='failed'
        - exit=0 → ChainSplitter.split(stdout.decode()) → bot.send_message * n; status='finished'
-       - exit!=0 → reply "❌ Ошибка ({code}): {truncate_stderr(stderr)}"; status='failed'
+       - "exit!=0 → reply \"❌ Ошибка ({code}): {truncate_stderr(stderr)}\"; status='failed'"
 
   module_map_visual: |
     TG /cron_add ──→ tg/cron_add.py (M-TG-CRON-ADD)

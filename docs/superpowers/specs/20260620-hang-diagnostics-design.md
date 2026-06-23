@@ -26,7 +26,7 @@ decisions:
   - D-local-6: Stack dump format — asyncio tasks dumped as structlog event runtime.diag.task_dump with a list of {name, frames:[file:line:func + source-line]} (NO arg values). faulthandler.dump_traceback(all_threads=True) writes plain text to stderr→journald. Both fire on SIGUSR1; faulthandler is the C-level fallback that survives a wedged loop.
   - D-local-7: Lifecycle wiring in __main__ — create heartbeat task next to polling_task/consumer_task; install SIGUSR1 via loop.add_signal_handler; faulthandler.enable() at startup; cancel heartbeat + remove signal handler in the RUNTIME_SHUTDOWN finally block.
   - D-local-8: Config via Settings (AISW_ prefix), mirroring storage_slow_query_threshold_ms precedent — obs_heartbeat_interval_s=20.0, obs_loop_lag_warn_ms=500, obs_loop_lag_dump_ms=5000, obs_io_slow_threshold_ms=1000, obs_handler_slow_threshold_ms=5000, obs_dump_min_interval_s=60.0. No magic numbers.
-  - D-local-9: New event-name constants centralised in logging_events.py (SSoT): RUNTIME_LOOP_HEARTBEAT, RUNTIME_LOOP_LAG, RUNTIME_DIAG_TASK_DUMP, TG_UPDATE_HANDLED, TG_UPDATE_HANDLER_SLOW, plus IO anchor prefixes.
+  - D-local-9: "New event-name constants centralised in logging_events.py (SSoT): RUNTIME_LOOP_HEARTBEAT, RUNTIME_LOOP_LAG, RUNTIME_DIAG_TASK_DUMP, TG_UPDATE_HANDLED, TG_UPDATE_HANDLER_SLOW, plus IO anchor prefixes."
 ---
 
 # Design: event-loop hang diagnostics logging

@@ -10,24 +10,24 @@ requirements:
     - FR-2: Rename WIKI domain slug `recipes` → `cooking` across all artifacts.
     - FR-3: Rename WIKI domain slug `health` → `medical` across all artifacts.
     - FR-4: Final canonical domain set (D-008) MUST equal exactly `{_default, medical, investment, budget, family, study, career, cooking}` (7 + _default).
-    - FR-5: `medical.md` template MUST contain an explicit non-interpretation guardrail (do not interpret symptoms unsolicited; on doubt redirect to a doctor).
+    - FR-5: "`medical.md` template MUST contain an explicit non-interpretation guardrail (do not interpret symptoms unsolicited; on doubt redirect to a doctor)."
     - FR-6: All tests that previously used `health-lite` to exercise hyphen-in-slug normalization MUST be replaced with a synthetic hyphen slug, preserving normalization coverage in `wiki/name.py`.
     - FR-7: Record the change as `ADR-NNN-prune-and-rename-domains` (alternatives, decision, consequences).
     - FR-8: Update `tech-spec-draft.md` (status=stable) D-008 and D-032 sections with the new slug list; XML SSoT (`requirements.xml`, `technology.xml`, `knowledge-graph.xml`) regenerated via `grace-refresh`.
   non_functional:
-    - NFR-1: `make total-test` MUST exit 0 (lint + grace + coverage ≥80% + integration).
+    - NFR-1: "`make total-test` MUST exit 0 (lint + grace + coverage ≥80% + integration)."
     - NFR-2: No data migration code paths introduced (pre-deploy, zero live `<Domain>-WIKI/` directories).
     - NFR-3: No backwards-compat aliases (no `health → medical` redirect, no `recipes → cooking` alias).
-    - NFR-4: `docs/reports/*` MUST remain untouched (immutable snapshots).
+    - NFR-4: "`docs/reports/*` MUST remain untouched (immutable snapshots)."
     - NFR-5: Hyphen-normalization branch in `wiki/name.py:~113` MUST remain covered.
   constraints:
     - C-1: Scope strictly limited to domain prune+rename; no bundling with other refactors.
     - C-2: Onboarding-intro prompt MUST NOT mention removed/renamed slugs after the change.
   risks:
-    - R-1: Hidden references to `health` as a substring of `health-lite` may be left dangling (e.g. test fixtures, log strings) — mitigation: word-boundary grep + per-file review.
-    - R-2: `health` is a generic English word; naive `s/health/medical/g` risks corrupting unrelated prose (e.g. `health.md` template content, log examples). Mitigation: edits scoped to slug occurrences (templates filename, REQUIRED_TEMPLATES list, D-008 list, test fixtures), with manual review of prose mentions.
-    - R-3: `home` and `hobby` are very common English words — same false-positive risk. Mitigation: rely on the user-provided surface enumeration (10 surface zones) rather than blanket replace.
-    - R-4: `prompts/domain-health.md` rename must update any include/reference. Mitigation: grep for the filename before rename.
+    - R-1: "Hidden references to `health` as a substring of `health-lite` may be left dangling (e.g. test fixtures, log strings) — mitigation: word-boundary grep + per-file review."
+    - R-2: "`health` is a generic English word; naive `s/health/medical/g` risks corrupting unrelated prose (e.g. `health.md` template content, log examples). Mitigation: edits scoped to slug occurrences (templates filename, REQUIRED_TEMPLATES list, D-008 list, test fixtures), with manual review of prose mentions."
+    - R-3: "`home` and `hobby` are very common English words — same false-positive risk. Mitigation: rely on the user-provided surface enumeration (10 surface zones) rather than blanket replace."
+    - R-4: "`prompts/domain-health.md` rename must update any include/reference. Mitigation: grep for the filename before rename."
   scope:
     in:
       - Filesystem renames in `templates/inbox-wiki/` and `prompts/`.
@@ -41,7 +41,7 @@ requirements:
       - Update of `/home/bgs/ai-steward/CLAUDE.md` "Шаблоны типов проектов" section.
       - Strengthening of non-interpretation guardrail in the new `medical.md`.
       - ADR creation.
-      - `grace-refresh` to regenerate `requirements.xml`, `technology.xml`, `knowledge-graph.xml`.
+      - "`grace-refresh` to regenerate `requirements.xml`, `technology.xml`, `knowledge-graph.xml`."
     out:
       - DB migrations (jobs.db / audit.db / sessions.db).
       - Backwards-compat aliases / redirects.
@@ -50,8 +50,8 @@ requirements:
       - Bundling with unrelated refactors.
     later: []
   dependencies:
-    - `grace lint` rules (semantic markup integrity unchanged — refactor is doc/template-heavy).
-    - `make total-test` infrastructure.
+    - "`grace lint` rules (semantic markup integrity unchanged — refactor is doc/template-heavy)."
+    - "`make total-test` infrastructure."
 ---
 
 # Discovery — Prune and Rename WIKI Domains

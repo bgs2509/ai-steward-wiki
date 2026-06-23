@@ -9,11 +9,11 @@ functional_requirements:
   - FR-3: Both invocations MUST continue to work under subscription auth (CLAUDE_CONFIG_DIR), not require ANTHROPIC_API_KEY.
 non_functional_requirements:
   - NFR-1: No additional subprocess overhead (no extra file reads per call beyond what already happens).
-  - NFR-2: Backwards-compatible signature for `system_prompt_argv(prompt_path: Path)` — callers stay unchanged.
-  - NFR-3: Argv MUST NOT leak prompt text into process listings beyond what `--system-prompt` already does (acceptable: same as inline prompts elsewhere).
+  - NFR-2: "Backwards-compatible signature for `system_prompt_argv(prompt_path: Path)` — callers stay unchanged."
+  - NFR-3: "Argv MUST NOT leak prompt text into process listings beyond what `--system-prompt` already does (acceptable: same as inline prompts elsewhere)."
 risks:
-  - R-1: Very large prompts → command-line ARG_MAX. Mitigation: prompts/classifier.md ≈ 2 KB, prompts/wiki.md similar — well below ARG_MAX (typically 128 KB+). Document limit; fail loud if exceeded.
-  - R-2: Future CLI version may make `--system-prompt-file` replace properly. Mitigation: leave a `# WHY:` comment pointing at this bd_id so a future cleanup is intentional.
+  - R-1: "Very large prompts → command-line ARG_MAX. Mitigation: prompts/classifier.md ≈ 2 KB, prompts/wiki.md similar — well below ARG_MAX (typically 128 KB+). Document limit; fail loud if exceeded."
+  - R-2: "Future CLI version may make `--system-prompt-file` replace properly. Mitigation: leave a `# WHY:` comment pointing at this bd_id so a future cleanup is intentional."
 scope:
   in:
     - Edit `system_prompt_argv` in `src/ai_steward_wiki/claude_cli/common.py`.
