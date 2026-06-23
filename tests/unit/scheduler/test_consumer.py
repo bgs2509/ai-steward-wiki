@@ -396,6 +396,61 @@ def test_build_argv_normal_command_still_present(session_factory, fake_prompt_fi
     assert argv[-2] == "--"
 
 
+# --- runner-parity argv hardening (aisw-o3m) -------------------------------
+
+
+def test_build_argv_applies_runner_hardening_flags(session_factory, fake_prompt_file) -> None:
+    """The cron path MUST carry the same defense-in-depth flags as wiki/runner
+    (aisw-o3m): explicit permission-mode, dropped setting-sources, disabled
+    slash-commands, and a disallowed-tools surface. Verified against
+    `claude --help` (claude 2.1.175): --permission-mode, --setting-sources,
+    --disable-slash-commands, --disallowedTools.
+    """
+    bot = _FakeBot()
+    spawner = _StubSpawner(_FakeProc(stdout=b"X", returncode=0))
+    consumer = _build_consumer(session_factory=session_factory, bot=bot, spawner=spawner)
+    consumer._prompt_path = fake_prompt_file
+
+    argv = consumer._build_argv(_msg(1, command="hi"))
+
+    # --permission-mode dontAsk (matches runner's mode).
+    assert "--permission-mode" in argv
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+
+    # --setting-sources "" (drop default settings, like runner).
+    assert "--setting-sources" in argv
+    assert argv[argv.index("--setting-sources") + 1] == ""
+
+    # --disable-slash-commands present (boolean flag).
+    assert "--disable-slash-commands" in argv
+
+    # --disallowedTools WebFetch (matches runner's default disallow surface).
+    assert "--disallowedTools" in argv
+    assert argv[argv.index("--disallowedTools") + 1] == "WebFetch"
+
+
+def test_build_argv_hardening_precedes_command_separator(session_factory, fake_prompt_file) -> None:
+    """All hardening flags MUST sit BEFORE the final '--' + msg.command separator,
+    so a '-'-prefixed user command can never be confused with a hardening flag
+    and the aisw-0j4 end-of-options guard stays intact.
+    """
+    bot = _FakeBot()
+    spawner = _StubSpawner(_FakeProc(stdout=b"X", returncode=0))
+    consumer = _build_consumer(session_factory=session_factory, bot=bot, spawner=spawner)
+    consumer._prompt_path = fake_prompt_file
+
+    danger = "--permission-mode"  # also a real flag name — must stay the command
+    argv = consumer._build_argv(_msg(1, command=danger))
+
+    # The final two elements remain the end-of-options separator + the command.
+    assert argv[-2] == "--"
+    assert argv[-1] == danger
+    # The hardening --permission-mode flag is the FIRST occurrence, well before
+    # the trailing separator; the command occurrence is the last element only.
+    last_sep = len(argv) - 2
+    assert argv.index("--permission-mode") < last_sep
+
+
 # --- queue payload validation failure --------------------------------------
 
 
