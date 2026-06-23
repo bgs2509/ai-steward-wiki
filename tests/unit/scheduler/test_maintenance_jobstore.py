@@ -31,22 +31,32 @@ from ai_steward_wiki.scheduler.maintenance import (
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
+# Each alembic env.py reads its sync URL from this env var first, falling back
+# to settings (which defaults to the relative ``data/<db>.db`` path). Setting
+# ``sqlalchemy.url`` via Config is NOT enough — env.py clobbers it. Point every
+# DB at tmp_path so the test never touches the gitignored ``./data`` dir.
+_DB_URL_ENV = {
+    "sessions": "AISW_SESSIONS_DB_URL_SYNC",
+    "jobs": "AISW_JOBS_DB_URL_SYNC",
+    "audit": "AISW_AUDIT_DB_URL_SYNC",
+}
 
-def _upgrade(db_path: Path, ini: str) -> None:
+
+def _upgrade(db_path: Path, ini: str, monkeypatch) -> None:
+    monkeypatch.setenv(_DB_URL_ENV[ini], f"sqlite:///{db_path}")
     cfg = Config(str(REPO_ROOT / "alembic" / ini / "alembic.ini"))
     cfg.set_main_option("script_location", str(REPO_ROOT / "alembic" / ini))
-    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
     command.upgrade(cfg, "head")
 
 
 @pytest.fixture
-def db_makers(tmp_path):
+def db_makers(tmp_path, monkeypatch):
     sessions_db = tmp_path / "sessions.db"
     jobs_db = tmp_path / "jobs.db"
     audit_db = tmp_path / "audit.db"
-    _upgrade(sessions_db, "sessions")
-    _upgrade(jobs_db, "jobs")
-    _upgrade(audit_db, "audit")
+    _upgrade(sessions_db, "sessions", monkeypatch)
+    _upgrade(jobs_db, "jobs", monkeypatch)
+    _upgrade(audit_db, "audit", monkeypatch)
     sm = async_sessionmaker(create_async_engine(f"sqlite+aiosqlite:///{sessions_db}"))
     jm = async_sessionmaker(create_async_engine(f"sqlite+aiosqlite:///{jobs_db}"))
     am = async_sessionmaker(create_async_engine(f"sqlite+aiosqlite:///{audit_db}"))
