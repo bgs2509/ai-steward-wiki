@@ -20,7 +20,7 @@ dependencies = [
     "alembic==1.14.0",
     "dateparser==1.2.0",
     "watchdog==6.0.0",
-    "pypdf==5.1.0",
+    "pypdf==6.14.1",
     # voice STT (D-022) — core dep: voice is a primary MVP feature. See ADR-002.
     "faster-whisper==1.1.0",
     "tomli-w==1.2.0",

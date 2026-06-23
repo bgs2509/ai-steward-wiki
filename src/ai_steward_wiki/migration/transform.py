@@ -465,12 +465,17 @@ def _wiki_id_marker(wiki_raw_name: str, owner_telegram_id: int) -> str:
 # START_CONTRACT: classify_file_target
 #   PURPOSE: Map a SourceFile to a relative target path inside its WIKI.
 #            Returns None if file should be dropped at transform level.
-#   INPUTS: { file: SourceFile, project_mapping: ProjectMapping | None }
+#   INPUTS: { file: SourceFile }
 #   OUTPUTS: { str | None - rel path inside <wiki>, or None means DROP }
 #   SIDE_EFFECTS: none
 #   LINKS: M-MIGRATION-TRANSFORM, Q1.4 + Q1.5 + Q1.6 decisions
 # END_CONTRACT: classify_file_target
-def classify_file_target(file: SourceFile, project_mapping: ProjectMapping | None) -> str | None:
+def classify_file_target(file: SourceFile) -> str | None:
+    """Map a SourceFile to a relative target path inside its WIKI (None = DROP).
+
+    Routing is purely location/file-type based; the owning ProjectMapping is
+    resolved by the caller and is not needed here.
+    """
     if file.file_type == "script":
         return None  # already filtered in extract, defence in depth
 
@@ -666,7 +671,7 @@ def build_plan(
         if pm_file is None:
             plan.dropped.append((str(f.abs_path), "no_target_wiki"))
             continue
-        target_rel = classify_file_target(f, pm_file)
+        target_rel = classify_file_target(f)
         if target_rel is None:
             plan.dropped.append((str(f.abs_path), "transform_drop"))
             continue
