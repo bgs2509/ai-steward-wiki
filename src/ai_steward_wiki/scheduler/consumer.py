@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/scheduler/consumer.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Single async drain loop over PriorityJobQueue — spawns
 #            `systemd-run --scope --collect`-wrapped Claude CLI per cron-user
@@ -31,7 +31,18 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-0j4: insert a literal "--" end-of-options separator
+#   LAST_CHANGE: v0.0.3 - aisw-o3m: bring the cron path to defense-in-depth parity
+#                with wiki/runner._build_argv. _build_argv now adds, BEFORE the
+#                aisw-0j4 "--" command separator: --setting-sources "" (drop default
+#                settings + default Claude Code system prompt under OAuth),
+#                --disable-slash-commands, --permission-mode dontAsk (matches runner),
+#                --disallowedTools WebFetch (matches runner read-only deny surface;
+#                no --allowedTools, like runner read-only runs). FORK DECISION kept:
+#                the positional-prompt + direct stdout-capture invocation model is
+#                unchanged (NOT switched to -p/stream-json/stdin) — cron-regression
+#                risk out of scope. Flag spelling verified against `claude --help`
+#                (claude 2.1.175). Closes the parity follow-up from v0.0.2.
+#   PREVIOUS:    v0.0.2 - aisw-0j4: insert a literal "--" end-of-options separator
 #                immediately before msg.command in _build_argv. The pre-existing "--"
 #                only terminates systemd-run option parsing, not claude's, so a
 #                "-"-prefixed user command was parsed as a Claude CLI flag
@@ -307,6 +318,26 @@ class CronConsumer:
             "--",
             binary,
             *system_prompt_argv(self._prompt_path),
+            # aisw-o3m: defense-in-depth parity with wiki/runner._build_argv. The
+            # positional-prompt invocation model (and the aisw-0j4 "--" guard below)
+            # is unchanged; only the hardening flags compatible with it are added.
+            # Flag names verified against `claude --help` (claude 2.1.175):
+            #   --permission-mode dontAsk  -> explicit mode, matches runner.
+            #   --setting-sources ""       -> drop default user/project settings &
+            #                                 the default Claude Code system prompt
+            #                                 loaded under subscription OAuth (aisw-0mg).
+            #   --disable-slash-commands   -> no skills/slash-commands from user input.
+            #   --disallowedTools WebFetch -> match runner's default deny surface; the
+            #                                 cron path is a read-only generic command,
+            #                                 so (like runner read-only runs) it sets no
+            #                                 --allowedTools.
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
+            "--permission-mode",
+            "dontAsk",
+            "--disallowedTools",
+            "WebFetch",
             # aisw-0j4: literal end-of-options separator BEFORE the user command.
             # The "--" at index ~7 only terminates systemd-run's own option parsing,
             # not claude's. Without this separator a msg.command starting with "-"
