@@ -41,22 +41,37 @@ from tests.unit.tg.conftest import FakeSender
 
 
 def _build_pdf_with_text(text: str = "Hello, мир!") -> bytes:
-    """Create a minimal one-page PDF with the given text via pypdf."""
-    writer = pypdf.PdfWriter()
-    page = writer.add_blank_page(width=200, height=200)
-    # pypdf can add a stream — for extract_text to return something we use an
-    # explicit text content stream.
+    """Create a minimal one-page PDF with the given text via pypdf.
+
+    The page declares a real ``/F1`` Helvetica font resource so pypdf's text
+    extractor can resolve the ``Tj`` operator. Without the registered font the
+    pypdf 6.x extractor returns empty text (it no longer guesses a default
+    font), which would mis-route the document as ``pdf_no_text``.
+    """
     from pypdf.generic import (
-        ContentStream,
         DecodedStreamObject,
+        DictionaryObject,
         NameObject,
     )
 
-    cs = ContentStream(None, writer)
-    cs._data = f"BT /F1 12 Tf 10 100 Td ({text}) Tj ET".encode("latin-1", errors="replace")
+    writer = pypdf.PdfWriter()
+    page = writer.add_blank_page(width=200, height=200)
+
+    font = DictionaryObject()
+    font[NameObject("/Type")] = NameObject("/Font")
+    font[NameObject("/Subtype")] = NameObject("/Type1")
+    font[NameObject("/BaseFont")] = NameObject("/Helvetica")
+    fonts = DictionaryObject()
+    fonts[NameObject("/F1")] = writer._add_object(font)
+    resources = DictionaryObject()
+    resources[NameObject("/Font")] = fonts
+    page[NameObject("/Resources")] = resources
+
+    data = f"BT /F1 12 Tf 10 100 Td ({text}) Tj ET".encode("latin-1", errors="replace")
     contents = DecodedStreamObject()
-    contents.set_data(cs._data)
-    page[NameObject("/Contents")] = contents
+    contents.set_data(data)
+    page[NameObject("/Contents")] = writer._add_object(contents)
+
     buf = io.BytesIO()
     writer.write(buf)
     return buf.getvalue()
