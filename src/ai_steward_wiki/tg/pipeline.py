@@ -65,6 +65,7 @@
 #   ROUTE_CONFIRM_ACK_RU - short ack sent on confirm before the Stage-1b ingest
 #   ROUTE_CONFIRM_CANCELLED_RU - reply on cancel/correct of a route confirm
 #   ROUTE_CONFIRM_STALE_RU - reply when a route confirm was already resolved/expired
+#   ACTIVE_WIKI_DEFAULT_ROUTE_RU - notice when a bare follow-up is default-routed to the sticky WIKI (aisw-0ym)
 #   build_route_recap - build the ru recap text for a RouterDecision route confirm
 #   REMINDER_CONFIDENCE_THRESHOLD - Stage-0 confidence floor for the reminder fast-path (aisw-kcz)
 #   REMINDER_RECAP_RU - recap template for a reminder confirm (aisw-kcz)
@@ -242,6 +243,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from ai_steward_wiki.classifier.schema import TimeParseResult
+    from ai_steward_wiki.storage.audit.chat_log import ChatTurn
 
 __all__ = [
     "ACK_CLASSIFY_ERR_RU",
@@ -255,6 +257,7 @@ __all__ = [
     "ACK_TEXT_RU",
     "ACK_VOICE_RU",
     "ACK_VOICE_UNAVAILABLE_RU",
+    "ACTIVE_WIKI_DEFAULT_ROUTE_RU",
     "DIGEST_ACK_RU",
     "DIGEST_CONFIRM_CANCELLED_RU",
     "DIGEST_CONFIRM_STALE_RU",
@@ -353,6 +356,10 @@ ROUTE_CONFIRM_RECAP_CREATE_RU = (
 ROUTE_CONFIRM_ACK_RU = "\U0001f4dd Записываю в вики…"
 ROUTE_CONFIRM_CANCELLED_RU = "Отменено. Файл остался в Inbox — пришли заново с уточнением."  # noqa: RUF001
 ROUTE_CONFIRM_STALE_RU = "Время на подтверждение истекло — пришли заново."
+
+# aisw-0ym: shown when a bare follow-up is default-routed into the user's sticky
+# last-active WIKI (instead of cold-rejecting it).
+ACTIVE_WIKI_DEFAULT_ROUTE_RU = "Похоже, это продолжение разговора — отправлю в {wiki}."
 
 # Reminder fast-path (aisw-kcz, Inbox-WIKI Phase-D.a). A Stage-0 intent=reminder
 # above this confidence floor with a parseable future time → an explicit confirm.
@@ -599,6 +606,7 @@ class Router(Protocol):
         source: Literal["text", "voice", "document", "photo"],
         media_paths: list[Path] | None = None,
         timeout_s: float | None = None,
+        recent_window: Sequence[ChatTurn] | None = None,
     ) -> RouterDecision: ...
 
 
@@ -688,6 +696,33 @@ class OutputDelivery(Protocol):
         text: str,
         tg_send: bool = True,
     ) -> None: ...
+
+
+class ChatLogPort(Protocol):
+    """D-033 conversation buffer port (aisw-kml). Writes in/out turns and reads
+    back the recent last-20/24h window. The dispatcher stays stateless — it is
+    FED the buffer, it does not own state."""
+
+    async def write_in(
+        self, *, telegram_id: int, chat_id: int, text: str, kind: str = "text"
+    ) -> None: ...
+
+    async def write_out(
+        self, *, telegram_id: int, chat_id: int, text: str, kind: str = "text"
+    ) -> None: ...
+
+    async def read_recent_window(self, telegram_id: int) -> list[ChatTurn]: ...
+
+
+class ActiveWikiPort(Protocol):
+    """Sticky last-active-<Domain>-WIKI pointer port (aisw-0ym). Set on a
+    successful route/ingest; read each turn (TTL-guarded) to default-route a
+    bare follow-up instead of cold-rejecting it. Read from sessions.db each
+    turn — the dispatcher stays stateless."""
+
+    async def set_active(self, telegram_id: int, wiki_name: str) -> None: ...
+
+    async def get_active(self, telegram_id: int) -> str | None: ...
 
 
 class MessagePipeline(Protocol):
@@ -815,6 +850,8 @@ class DefaultPipeline:
         default_user_tz: str = "Europe/Moscow",
         clock: Callable[[], datetime] | None = None,
         wiki_root: Path | None = None,
+        chat_log: ChatLogPort | None = None,
+        active_wiki: ActiveWikiPort | None = None,
     ) -> None:
         self._sender = sender
         self._idem = idempotency
@@ -858,6 +895,12 @@ class DefaultPipeline:
         # aisw-12t (Phase-E.a): per-sender media staging root. None ⇒ VoiceHandler /
         # PhotoIngestor fall back to the inbox_root they were constructed with.
         self._wiki_root = wiki_root
+        # aisw-kml (D-033): conversation buffer. None ⇒ no chat_log persistence /
+        # no recent-history injection (back-compat; all legacy tests pass it None).
+        self._chat_log = chat_log
+        # aisw-0ym: sticky last-active-WIKI pointer. None ⇒ no sticky default-route
+        # (back-compat; a bare follow-up still cold-rejects as before).
+        self._active_wiki = active_wiki
 
     def _inbox_root_for(self, telegram_id: int) -> Path | None:
         """Per-sender Inbox-WIKI dir (media-staging root, D-022), or None if no wiki_root."""
@@ -892,6 +935,81 @@ class DefaultPipeline:
         return (
             self._classifier is not None and self._runner is not None and self._output is not None
         )
+
+    # START_BLOCK_CHAT_LOG_HELPERS (aisw-kml, D-033)
+    async def _chatlog_in(self, *, telegram_id: int, chat_id: int, text: str, kind: str) -> None:
+        """Persist one inbound user turn (best-effort; never blocks the turn)."""
+        if self._chat_log is None:
+            return
+        try:
+            await self._chat_log.write_in(
+                telegram_id=telegram_id, chat_id=chat_id, text=text, kind=kind
+            )
+        except Exception as exc:  # chat_log is auxiliary — a failure must not kill the reply
+            _log.warning(
+                "tg.pipeline.chat_log.write_in_failed",
+                telegram_id=telegram_id,
+                error_class=type(exc).__name__,
+            )
+
+    async def _chatlog_out(self, *, telegram_id: int, chat_id: int, text: str) -> None:
+        """Persist one final outbound bot reply (best-effort; never blocks the turn)."""
+        if self._chat_log is None or not text:
+            return
+        try:
+            await self._chat_log.write_out(telegram_id=telegram_id, chat_id=chat_id, text=text)
+        except Exception as exc:
+            _log.warning(
+                "tg.pipeline.chat_log.write_out_failed",
+                telegram_id=telegram_id,
+                error_class=type(exc).__name__,
+            )
+
+    async def _chatlog_window(self, telegram_id: int) -> list[ChatTurn] | None:
+        """Read the D-033 recent window (best-effort); None when no chat_log wired."""
+        if self._chat_log is None:
+            return None
+        try:
+            return await self._chat_log.read_recent_window(telegram_id)
+        except Exception as exc:
+            _log.warning(
+                "tg.pipeline.chat_log.read_failed",
+                telegram_id=telegram_id,
+                error_class=type(exc).__name__,
+            )
+            return None
+
+    # END_BLOCK_CHAT_LOG_HELPERS
+
+    # START_BLOCK_ACTIVE_WIKI_HELPERS (aisw-0ym)
+    async def _active_wiki_get(self, telegram_id: int) -> str | None:
+        """Read the fresh sticky pointer (best-effort); None when unset/stale/unwired."""
+        if self._active_wiki is None:
+            return None
+        try:
+            return await self._active_wiki.get_active(telegram_id)
+        except Exception as exc:
+            _log.warning(
+                "tg.pipeline.active_wiki.read_failed",
+                telegram_id=telegram_id,
+                error_class=type(exc).__name__,
+            )
+            return None
+
+    async def _active_wiki_set(self, telegram_id: int, wiki_name: str | None) -> None:
+        """Upsert the sticky pointer on a successful route/ingest (best-effort)."""
+        if self._active_wiki is None or not wiki_name:
+            return
+        try:
+            await self._active_wiki.set_active(telegram_id, wiki_name)
+        except Exception as exc:
+            _log.warning(
+                "tg.pipeline.active_wiki.write_failed",
+                telegram_id=telegram_id,
+                error_class=type(exc).__name__,
+            )
+
+    # END_BLOCK_ACTIVE_WIKI_HELPERS
 
     # START_BLOCK_TEXT_PIPELINE
     async def _run_text_pipeline(
@@ -934,6 +1052,12 @@ class DefaultPipeline:
                 await self._idem.record_dedup_choice(sha256, telegram_id, "auto_skip")
                 await self._sender.send_message(chat_id, ACK_DEDUP_RU)
                 return
+
+        # D-033 (aisw-kml): persist the inbound turn AFTER STT/OCR + dedup gate
+        # (the resolved `text` is already post-transcription/post-extraction).
+        # `source` is one of text|voice|document|photo → chat_log.kind.
+        await self._chatlog_in(telegram_id=telegram_id, chat_id=chat_id, text=text, kind=source)
+        recent_window = await self._chatlog_window(telegram_id)
 
         _log.info(
             "tg.pipeline.classify.begin",
@@ -1114,6 +1238,7 @@ class DefaultPipeline:
                     source=source,
                     media_paths=media_paths,
                     timeout_s=timeout_s,
+                    recent_window=recent_window,
                 )
             except RouterError:
                 _log.exception(
@@ -1132,6 +1257,33 @@ class DefaultPipeline:
                 target_wiki=decision.target_wiki,
                 parsed_ok=decision.parsed_ok,
             )
+            # aisw-0ym: sticky active-WIKI fallback. When the router result is the
+            # cold class (CLARIFY/REJECT — ambiguous / conversational-with-no-new-
+            # domain-signal) and a FRESH (TTL-guarded) last-active-WIKI pointer
+            # exists, default-route the follow-up into it instead of cold-rejecting.
+            # A confident ROUTE/CREATE_WIKI is never overridden (pointer is only a
+            # fallback). The user still confirms via the route-confirm keyboard.
+            if (
+                decision.intent in (RouterIntent.CLARIFY, RouterIntent.REJECT)
+                and self._librarian is not None
+                and self._output is not None
+            ):
+                sticky = await self._active_wiki_get(telegram_id)
+                if sticky:
+                    _log.info(
+                        "tg.pipeline.active_wiki.default_route",
+                        correlation_id=correlation_id,
+                        telegram_id=telegram_id,
+                        target_wiki=sticky,
+                        from_intent=decision.intent.value,
+                    )
+                    decision = decision.model_copy(
+                        update={
+                            "intent": RouterIntent.ROUTE,
+                            "target_wiki": sticky,
+                            "notes": ACTIVE_WIKI_DEFAULT_ROUTE_RU.format(wiki=sticky),
+                        }
+                    )
             # Phase-C (aisw-e45): ROUTE/CREATE_WIKI → propose the move+ingest via
             # an explicit inline-button confirm (persisted as a route_ingest
             # pending row); the actual Stage-1b ingest runs in on_confirm_callback.
@@ -1179,6 +1331,7 @@ class DefaultPipeline:
                 )
                 return
             await self._sender.send_message(chat_id, decision.notes)
+            await self._chatlog_out(telegram_id=telegram_id, chat_id=chat_id, text=decision.notes)
             return
         # END_BLOCK_ROUTABLE_BRANCH
 
@@ -1228,6 +1381,12 @@ class DefaultPipeline:
                     chars=len(outcome.text or ACK_TEXT_RU),
                     streamed=True,
                 )
+                # D-033: only the FINAL streamed reply is persisted (no frames).
+                await self._chatlog_out(
+                    telegram_id=telegram_id,
+                    chat_id=chat_id,
+                    text=outcome.text or ACK_TEXT_RU,
+                )
                 return
             outcome = await self._runner.run(
                 text=text,
@@ -1272,6 +1431,7 @@ class DefaultPipeline:
             run_id=outcome.run_id,
             chars=len(reply_text),
         )
+        await self._chatlog_out(telegram_id=telegram_id, chat_id=chat_id, text=reply_text)
 
     # END_BLOCK_TEXT_PIPELINE
 
@@ -2115,6 +2275,8 @@ class DefaultPipeline:
             run_id=outcome.run_id,
         )
         if outcome.status == "ok":
+            # aisw-0ym: a confirmed ingest into a concrete WIKI updates the sticky pointer.
+            await self._active_wiki_set(telegram_id, outcome.target_wiki)
             await self._output.deliver(
                 chat_id=chat_id,
                 telegram_id=telegram_id,
@@ -2194,6 +2356,8 @@ class DefaultPipeline:
             run_id=outcome.run_id,
         )
         if outcome.status == "ok":
+            # aisw-0ym: a wiki-picked ingest also updates the sticky pointer (chosen WIKI).
+            await self._active_wiki_set(telegram_id, outcome.target_wiki or chosen)
             await self._output.deliver(
                 chat_id=chat_id,
                 telegram_id=telegram_id,

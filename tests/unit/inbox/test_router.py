@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from pydantic import ValidationError
 
@@ -10,8 +12,10 @@ from ai_steward_wiki.inbox.router import (
     RouterError,
     RouterIntent,
     build_router_input,
+    format_chat_window,
     parse_router_reply,
 )
+from ai_steward_wiki.storage.audit.chat_log import ChatTurn
 
 
 def test_build_router_input_lists_existing_wikis() -> None:
@@ -25,6 +29,36 @@ def test_build_router_input_lists_existing_wikis() -> None:
 def test_build_router_input_empty_list() -> None:
     out = build_router_input("привет", [])
     assert "нет ни одной" in out
+    assert out.endswith("привет")
+
+
+def _turn(direction: str, text: str) -> ChatTurn:
+    return ChatTurn(direction=direction, text=text, created_at_utc=datetime(2026, 6, 23, 12, 0))
+
+
+def test_format_chat_window_empty_is_blank() -> None:
+    assert format_chat_window([]) == ""
+
+
+def test_format_chat_window_renders_speakers() -> None:
+    out = format_chat_window([_turn("in", "давление 120"), _turn("out", "записал")])
+    assert "Пользователь: давление 120" in out
+    assert "Бот: записал" in out
+    # user turn precedes bot turn (chronological, oldest-first)
+    assert out.index("Пользователь") < out.index("Бот")
+
+
+def test_build_router_input_includes_recent_window() -> None:
+    window = [_turn("in", "какое было давление?"), _turn("out", "120 на 80")]
+    out = build_router_input("повтори последний ответ", ["Medical-WIKI"], recent_window=window)
+    assert "Недавняя история" in out
+    assert "120 на 80" in out
+    assert out.endswith("повтори последний ответ")
+
+
+def test_build_router_input_no_window_unchanged() -> None:
+    out = build_router_input("привет", ["Medical-WIKI"], recent_window=[])
+    assert "Недавняя история" not in out
     assert out.endswith("привет")
 
 

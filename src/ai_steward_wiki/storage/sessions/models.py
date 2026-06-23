@@ -1,10 +1,11 @@
 # FILE: src/ai_steward_wiki/storage/sessions/models.py
-# VERSION: 0.0.4
+# VERSION: 0.0.5
 # START_MODULE_CONTRACT
 #   PURPOSE: ORM models for sessions.db — runtime TG state and hot-path caches.
-#   SCOPE: users, pending_users, pending_confirms, inbox_hint_cache, fsm, user_digest_prefs.
+#   SCOPE: users, pending_users, pending_confirms, inbox_hint_cache, fsm,
+#          user_digest_prefs, user_active_wiki.
 #   DEPENDS: SQLAlchemy.orm, ai_steward_wiki.storage.sessions.engine.Base
-#   LINKS: M-STORAGE-SESSIONS, D-031, D-042, D-030, D-023, ADR-026, aisw-pv8
+#   LINKS: M-STORAGE-SESSIONS, D-031, D-042, D-030, D-023, ADR-026, aisw-pv8, aisw-0ym
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -16,10 +17,12 @@
 #   InboxHintCache - per-user runtime catalog of "## Inbox hint" (D-006 §"Структура")
 #   FsmState - aiogram FSM persistence
 #   UserDigestPrefs - per-owner digest section toggles (trackers/wiki on-off, ADR-026)
+#   UserActiveWiki - per-user sticky last-active-WIKI pointer (aisw-0ym, TTL 24h)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.4 - aisw-163 P2: UserDigestPrefs.cards_enabled (digest cards opt-out)
+#   LAST_CHANGE: v0.0.5 - aisw-0ym: UserActiveWiki sticky pointer (last-active <Domain>-WIKI).
+#   PREVIOUS:    v0.0.4 - aisw-163 P2: UserDigestPrefs.cards_enabled (digest cards opt-out)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ __all__ = [
     "PendingConfirm",
     "PendingUser",
     "User",
+    "UserActiveWiki",
     "UserDigestPrefs",
 ]
 
@@ -127,6 +131,21 @@ class UserDigestPrefs(Base):
     )
     wiki_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("1"))
     cards_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("1"))
+    updated_at_utc: Mapped[datetime] = mapped_column(nullable=False)
+
+
+class UserActiveWiki(Base):
+    """Sticky pointer to the user's last-active <Domain>-WIKI (aisw-0ym).
+
+    One row per user, keyed on the canonical telegram_id (D-042). Set on every
+    successful route/ingest into a concrete WIKI; read each turn (with a 24h TTL
+    guard) to default-route a bare follow-up instead of cold-rejecting it.
+    """
+
+    __tablename__ = "user_active_wiki"
+
+    telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    wiki_name: Mapped[str] = mapped_column(String(128), nullable=False)
     updated_at_utc: Mapped[datetime] = mapped_column(nullable=False)
 
 

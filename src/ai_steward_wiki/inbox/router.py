@@ -1,11 +1,12 @@
 # FILE: src/ai_steward_wiki/inbox/router.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Parse the Stage-1a Inbox-WIKI Router reply (a fenced ```router block) into a RouterDecision.
 #   SCOPE: RouterIntent enum, RouterDecision model, RouterError, parse_router_reply (tolerant, fallback to CLARIFY),
-#          build_router_input (prefix user input with the owner's existing <Domain>-WIKI list).
+#          format_chat_window (render the D-033 recent dialogue window),
+#          build_router_input (prefix user input with the owner's existing <Domain>-WIKI list + recent history).
 #   DEPENDS: pydantic, re, enum
-#   LINKS: D-004, D-016, prompts/inbox.md (>=1.1.0), M-INBOX-ROUTER, aisw-dsg, aisw-2co
+#   LINKS: D-004, D-016, D-033, prompts/inbox.md (>=1.1.0), M-INBOX-ROUTER, aisw-dsg, aisw-2co, aisw-kml
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -15,11 +16,14 @@
 #   RouterDecision - frozen Pydantic model (intent, target_wiki, notes, raw, parsed_ok)
 #   RouterError - raised by the runtime adapter when the Router CLI run fails unrecoverably
 #   parse_router_reply - extract the last ```router block, parse key:value, normalise, fallback to CLARIFY
-#   build_router_input - prefix the router user-input with the owner's existing <Domain>-WIKI names
+#   format_chat_window - render the D-033 recent dialogue window into a compact ru transcript
+#   build_router_input - prefix the router user-input with existing <Domain>-WIKI names + recent history
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-2co: add build_router_input — surface the owner's existing
+#   LAST_CHANGE: v0.0.3 - aisw-kml: build_router_input folds in the D-033 recent chat window
+#                (last-20/24h) so bare follow-ups route on history instead of cold-rejecting.
+#   PREVIOUS:    v0.0.2 - aisw-2co: add build_router_input — surface the owner's existing
 #                <Domain>-WIKI list to the Stage-1a router so it can route to an existing
 #                WIKI (e.g. medical data -> Medical-WIKI) instead of always proposing a new one.
 #   PREVIOUS:    v0.0.1 - initial Router reply model + parser (aisw-dsg, Inbox-WIKI Phase-A)
@@ -30,14 +34,19 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
+
+if TYPE_CHECKING:
+    from ai_steward_wiki.storage.audit.chat_log import ChatTurn
 
 __all__ = [
     "RouterDecision",
     "RouterError",
     "RouterIntent",
     "build_router_input",
+    "format_chat_window",
     "parse_router_reply",
 ]
 
@@ -126,27 +135,62 @@ def parse_router_reply(text: str) -> RouterDecision:
     # END_BLOCK_NORMALISE
 
 
-# START_CONTRACT: build_router_input
-#   PURPOSE: Prefix the Stage-1a router user-input with the owner's existing <Domain>-WIKI list.
-#   INPUTS: { text: str - the raw message, existing_wikis: Sequence[str] - dir names like "Medical-WIKI" }
-#   OUTPUTS: { str - a header line listing existing WIKIs, a blank line, then the text }
+_CHAT_WINDOW_HEADER = "[Недавняя история диалога (от старых к новым)]"
+_CHAT_DIRECTION_RU = {"in": "Пользователь", "out": "Бот"}
+
+
+# START_CONTRACT: format_chat_window
+#   PURPOSE: Render the D-033 recent chat window into a compact ru transcript block.
+#   INPUTS: { window: Sequence[ChatTurn] - oldest-first recent turns (in/out) }
+#   OUTPUTS: { str - a header + "Пользователь: …/Бот: …" lines, or "" when window is empty }
 #   SIDE_EFFECTS: none (pure)
-#   LINKS: prompts/inbox.md, M-INBOX-ROUTER, aisw-2co
+#   LINKS: D-033 §"Access pattern", aisw-kml
+# END_CONTRACT: format_chat_window
+def format_chat_window(window: Sequence[ChatTurn]) -> str:
+    if not window:
+        return ""
+    lines = [_CHAT_WINDOW_HEADER]
+    for turn in window:
+        speaker = _CHAT_DIRECTION_RU.get(turn.direction, turn.direction)
+        body = (turn.text or "").strip().replace("\n", " ")
+        lines.append(f"{speaker}: {body}")
+    return "\n".join(lines)
+
+
+# START_CONTRACT: build_router_input
+#   PURPOSE: Prefix the Stage-1a router user-input with the owner's existing <Domain>-WIKI
+#            list and (optionally) the D-033 recent dialogue window.
+#   INPUTS: { text: str - the raw message, existing_wikis: Sequence[str] - dir names like
+#             "Medical-WIKI", recent_window: Sequence[ChatTurn]|None - oldest-first recent turns }
+#   OUTPUTS: { str - the WIKI-list header, an optional recent-history block, a blank line, then the text }
+#   SIDE_EFFECTS: none (pure)
+#   LINKS: prompts/inbox.md, M-INBOX-ROUTER, aisw-2co, D-033, aisw-kml
 # END_CONTRACT: build_router_input
-def build_router_input(text: str, existing_wikis: Sequence[str]) -> str:
-    """Surface the owner's existing <Domain>-WIKI names to the router.
+def build_router_input(
+    text: str,
+    existing_wikis: Sequence[str],
+    *,
+    recent_window: Sequence[ChatTurn] | None = None,
+) -> str:
+    """Surface the owner's existing <Domain>-WIKI names (and recent dialogue) to the router.
 
     The Stage-1a router runs scoped to Inbox-WIKI and cannot otherwise see sibling
     WIKIs, so without this list it can only ever propose ``create_wiki``. Listing
     the existing WIKIs lets it return ``intent=route`` to a matching one
     (e.g. blood-pressure text -> Medical-WIKI) instead of duplicating a domain.
+
+    When ``recent_window`` is supplied (D-033 last-20/24h buffer) a compact ru
+    transcript is interleaved so a bare follow-up ("повтори последний ответ") is
+    routed using history instead of cold-rejected.
     """
     if existing_wikis:
         listing = ", ".join(existing_wikis)
         header = f"[Существующие WIKI пользователя: {listing}]"
     else:
         header = "[У пользователя пока нет ни одной <Domain>-WIKI]"  # noqa: RUF001
-    return f"{header}\n\n{text}"
+    history = format_chat_window(recent_window or [])
+    prefix = f"{header}\n\n{history}" if history else header
+    return f"{prefix}\n\n{text}"
 
 
 def _fallback(raw: str, *, notes: str = "") -> RouterDecision:
