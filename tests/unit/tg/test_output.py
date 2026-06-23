@@ -135,6 +135,26 @@ async def test_deliver_audit_write_error_is_anchored(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_deliver_escapes_stray_lt_before_send(tmp_path, audit_session_maker) -> None:
+    # aisw-azu regression: a "<120/80" reply must reach TG escaped, never raw.
+    sender = FakeSender()
+    await deliver_output(
+        sender=sender,
+        chat_id=100,
+        telegram_id=1001,
+        wiki_id="Medical-WIKI",
+        run_id="r-azu",
+        text="АД <120/80, пульс 69",
+        runs_dir=tmp_path / "runs",
+        audit_session_maker=audit_session_maker,
+    )
+    assert len(sender.sends) == 1
+    sent = sender.sends[0]["text"]
+    assert "&lt;120/80" in sent
+    assert "<120" not in sent
+
+
+@pytest.mark.asyncio
 async def test_deliver_inline_short_text(tmp_path, audit_session_maker) -> None:
     sender = FakeSender()
     runs = tmp_path / "runs"

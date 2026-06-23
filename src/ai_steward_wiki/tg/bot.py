@@ -34,11 +34,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
+from aiogram.exceptions import TelegramBadRequest
+
 from ai_steward_wiki.auth.allowlist import Allowlist
 from ai_steward_wiki.logging_events import (
     IO_ANCHOR_TG_DOCUMENT,
     IO_ANCHOR_TG_EDIT,
     IO_ANCHOR_TG_SEND,
+    IO_SEND_PARSE_FALLBACK,
 )
 from ai_steward_wiki.logging_setup import anchored
 from ai_steward_wiki.tg.middleware_auth import AllowlistMiddleware
@@ -56,6 +59,10 @@ __all__ = [
 import structlog
 
 _log = structlog.get_logger("tg.bot")
+
+# aisw-azu: Telegram's signal that an HTML payload is unparseable. Matched as a
+# substring of TelegramBadRequest to trigger the parse_mode=None safety net.
+_PARSE_ENTITIES_ERR = "can't parse entities"
 
 if TYPE_CHECKING:
     from aiogram import Bot, Dispatcher
@@ -121,12 +128,28 @@ class AiogramSender:
         reply_markup: object | None = None,
     ) -> SentMessage:
         async with anchored(IO_ANCHOR_TG_SEND, threshold_ms=self._io_threshold_ms, logger=_log):
-            msg = await self._bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,  # type: ignore[arg-type]
-            )
+            try:
+                msg = await self._bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode=parse_mode,
+                    reply_markup=reply_markup,  # type: ignore[arg-type]
+                )
+            except TelegramBadRequest as exc:
+                # aisw-azu safety net: if Telegram still rejects the HTML payload
+                # (residual markup sanitize_html missed), resend as plain text so the
+                # reply is delivered rather than lost. Primary defence is sanitize_html.
+                if _PARSE_ENTITIES_ERR not in str(exc):
+                    raise
+                # correlation_id/telegram_id ride structlog contextvars; text_len
+                # (not content) flags how big the degraded-delivery payload was.
+                _log.warning(IO_SEND_PARSE_FALLBACK, chat_id=chat_id, text_len=len(text))
+                msg = await self._bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode=None,
+                    reply_markup=reply_markup,  # type: ignore[arg-type]
+                )
         return msg  # type: ignore[return-value]
 
     async def edit_message_text(

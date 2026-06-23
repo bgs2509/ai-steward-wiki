@@ -78,3 +78,8 @@ IO_ANCHOR_TG_SEND: Final[str] = "tg.io.send_message"
 IO_ANCHOR_TG_EDIT: Final[str] = "tg.io.edit_message_text"
 IO_ANCHOR_TG_DOCUMENT: Final[str] = "tg.io.send_document"
 IO_ANCHOR_AUDIT_WRITE: Final[str] = "audit.io.record_run_output"
+
+# aisw-azu: send_message retried with parse_mode=None after Telegram rejected the
+# HTML payload ("can't parse entities"). Primary defence is sanitize_html; this
+# logs the safety-net fallback so degraded (plain-text) delivery stays visible.
+IO_SEND_PARSE_FALLBACK: Final[str] = "tg.io.send_message.parse_fallback"

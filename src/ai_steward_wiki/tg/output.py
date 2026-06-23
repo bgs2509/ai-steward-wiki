@@ -1,13 +1,13 @@
 # FILE: src/ai_steward_wiki/tg/output.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: D-025 output-size hybrid policy — ≤3500 inline, ≤10000 chain-split,
 #            >10000 Haiku-summary + send_document. Always persists full text to
 #            <wiki>/data/runs/<YYYY-MM-DD>/<run_id>.md and indexes the file in
-#            audit.run_outputs.
-#   SCOPE: HtmlBalancer (open/close whitelist), ChainSplitter, deliver_output,
-#          HaikuSummarizer Protocol, LengthCapSummarizer fallback,
-#          DeliveryReceipt.
+#            audit.run_outputs. Sanitizes outbound HTML for TG parse_mode=HTML.
+#   SCOPE: sanitize_html (whitelist-preserving escaper), HtmlBalancer (open/close
+#          whitelist), ChainSplitter, deliver_output, HaikuSummarizer Protocol,
+#          LengthCapSummarizer fallback, DeliveryReceipt.
 #   DEPENDS: SQLAlchemy.async, ai_steward_wiki.storage.audit.models.RunOutput,
 #            ai_steward_wiki.tg.bot.TgSender, structlog
 #   LINKS: D-024, D-025, M-TG-TEXT
@@ -23,6 +23,7 @@
 #   HARD_CAP_PARTS - max chain parts (3)
 #   SUMMARY_MAX_CHARS - max chars of >10000 branch summary
 #   OutputKind - Literal[reply|digest|ingest_report]
+#   sanitize_html - escape non-whitelist markup, keep ALLOWED_TAGS live (aisw-azu)
 #   HtmlBalancer - tokeniser-based open/close balancer
 #   ChainSplitter - split into ≤N parts at semantic boundaries with (i/M) footer
 #   HaikuSummarizer - Protocol with async summarize(text) -> str
@@ -32,7 +33,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-x92: tg_send flag (skip TG send on streaming
+#   LAST_CHANGE: v0.0.3 - aisw-azu: sanitize_html() escapes stray <,>,& so parse_mode=HTML never rejects the message; applied at top of deliver_output
+#   PREVIOUS:    v0.0.2 - aisw-x92: tg_send flag (skip TG send on streaming
 #                slow-path; persist+audit stay unconditional)
 # END_CHANGE_SUMMARY
 
@@ -68,6 +70,7 @@ __all__ = [
     "LengthCapSummarizer",
     "OutputKind",
     "deliver_output",
+    "sanitize_html",
 ]
 
 _log = structlog.get_logger("tg.output")
@@ -83,6 +86,48 @@ OutputKind = Literal["reply", "digest", "ingest_report"]
 
 # Matches an HTML start/end tag with optional attributes — non-greedy.
 _TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>")
+
+# aisw-azu: outbound HTML sanitization. parse_mode=HTML (D-024) rejects the WHOLE
+# message on any stray "<"/"&" that isn't valid markup (prod 2026-06-23:
+# "<120/80" → TelegramBadRequest "can't parse entities"). We keep the whitelist
+# tags live and escape everything else, so model output can contain "<", ">", "&"
+# freely. Built from ALLOWED_TAGS so the whitelist stays single-sourced.
+# NOTE: `[^>]*>` ends the tag at the first ">", so a ">" inside a quoted attribute
+# (e.g. <a href="a>b">) would split the tag. That input never produces a NEW bare
+# "<" in the escaped output (verified), and Telegram itself rejects ">"-in-attr —
+# which the parse_mode=None fallback in AiogramSender then catches. Only <a> takes
+# attributes and ">" in a URL is effectively nonexistent, so this stays a documented
+# limitation rather than a quote-aware regex (KISS / YAGNI for the TG whitelist).
+_ALLOWED_TAG_RE = re.compile(
+    r"</?(?:" + "|".join(sorted(ALLOWED_TAGS)) + r")\b[^>]*>", re.IGNORECASE
+)
+# A "&" that does NOT already start a known entity (so escaping is idempotent).
+_BARE_AMP_RE = re.compile(r"&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)")
+
+
+def _escape_text(segment: str) -> str:
+    """HTML-escape free text (not a whitelisted tag). Idempotent: only bare ``&``."""
+    segment = _BARE_AMP_RE.sub("&amp;", segment)
+    return segment.replace("<", "&lt;").replace(">", "&gt;")
+
+
+# START_CONTRACT: sanitize_html
+#   PURPOSE: Make text safe for Telegram parse_mode=HTML — keep ALLOWED_TAGS live, escape all other markup.
+#   INPUTS: { text: str - raw model/output text (may contain stray <, >, &) }
+#   OUTPUTS: { str - HTML where only whitelisted tags are live; everything else escaped }
+#   SIDE_EFFECTS: none
+# END_CONTRACT: sanitize_html
+def sanitize_html(text: str) -> str:
+    out: list[str] = []
+    last = 0
+    for m in _ALLOWED_TAG_RE.finditer(text):
+        out.append(_escape_text(text[last : m.start()]))
+        # Keep the whitelisted tag verbatim, but escape a bare "&" in its attrs
+        # (e.g. <a href="u?a=1&b=2"> — Telegram rejects raw & in attribute values).
+        out.append(_BARE_AMP_RE.sub("&amp;", m.group(0)))
+        last = m.end()
+    out.append(_escape_text(text[last:]))
+    return "".join(out)
 
 
 @dataclass(frozen=True)
@@ -348,6 +393,10 @@ async def deliver_output(
     still persisting the full text to disk and recording the audit row.
     """
     started = _utcnow_naive()
+    # aisw-azu: make the payload valid for parse_mode=HTML BEFORE any send/persist —
+    # stray "<"/">"/"&" in model output would otherwise make Telegram reject the
+    # whole message ("can't parse entities"). Whitelisted tags stay live.
+    text = sanitize_html(text)
     output_path, output_bytes, sha = _persist_to_disk(
         runs_dir=runs_dir,
         run_id=run_id,
