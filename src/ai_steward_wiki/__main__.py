@@ -199,6 +199,7 @@ from ai_steward_wiki.scheduler.maintenance import (
 )
 from ai_steward_wiki.scheduler.queue import PriorityJobQueue
 from ai_steward_wiki.settings import Settings, get_settings
+from ai_steward_wiki.storage.audit.chat_log import ChatLogWriter, ChatTurn
 from ai_steward_wiki.storage.audit.engine import build_engine, build_sessionmaker
 from ai_steward_wiki.storage.sessions.users import resolve_user_id
 from ai_steward_wiki.tg.aggregator import InboxAggregator
@@ -714,6 +715,7 @@ class _RouterAdapter:
         source: _RawSource,
         media_paths: list[Path] | None = None,
         timeout_s: float | None = None,
+        recent_window: Sequence[ChatTurn] | None = None,
     ) -> RouterDecision:
         inbox_dir = await ensure_inbox_wiki(
             telegram_id,
@@ -742,7 +744,9 @@ class _RouterAdapter:
             media_count=len(media_paths) if media_paths else 0,
         )
         existing_wikis = self._list_existing_wikis(telegram_id)
-        router_input = build_router_input(text, existing_wikis)
+        # D-033 (aisw-kml): fold the recent dialogue window into the router input so
+        # a bare follow-up routes on history instead of cold-rejecting.
+        router_input = build_router_input(text, existing_wikis, recent_window=recent_window)
         logger.info(
             "inbox.router.existing_wikis",
             correlation_id=correlation_id,
@@ -1385,6 +1389,8 @@ async def _amain() -> None:
         user_tz_lookup=_user_tz_lookup,
         default_user_tz=settings.default_user_tz,
         wiki_root=settings.wiki_root,
+        # D-033 (aisw-kml): conversation buffer in audit.db.
+        chat_log=ChatLogWriter(audit_maker),
     )
     # aisw-s5i: wire /start unknown-id callback (records pending_users row).
     from ai_steward_wiki.auth.onboarding import PendingUserRepo, start_unknown_user

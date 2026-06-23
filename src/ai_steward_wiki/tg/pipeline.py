@@ -242,6 +242,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from ai_steward_wiki.classifier.schema import TimeParseResult
+    from ai_steward_wiki.storage.audit.chat_log import ChatTurn
 
 __all__ = [
     "ACK_CLASSIFY_ERR_RU",
@@ -599,6 +600,7 @@ class Router(Protocol):
         source: Literal["text", "voice", "document", "photo"],
         media_paths: list[Path] | None = None,
         timeout_s: float | None = None,
+        recent_window: Sequence[ChatTurn] | None = None,
     ) -> RouterDecision: ...
 
 
@@ -688,6 +690,22 @@ class OutputDelivery(Protocol):
         text: str,
         tg_send: bool = True,
     ) -> None: ...
+
+
+class ChatLogPort(Protocol):
+    """D-033 conversation buffer port (aisw-kml). Writes in/out turns and reads
+    back the recent last-20/24h window. The dispatcher stays stateless — it is
+    FED the buffer, it does not own state."""
+
+    async def write_in(
+        self, *, telegram_id: int, chat_id: int, text: str, kind: str = "text"
+    ) -> None: ...
+
+    async def write_out(
+        self, *, telegram_id: int, chat_id: int, text: str, kind: str = "text"
+    ) -> None: ...
+
+    async def read_recent_window(self, telegram_id: int) -> list[ChatTurn]: ...
 
 
 class MessagePipeline(Protocol):
@@ -815,6 +833,7 @@ class DefaultPipeline:
         default_user_tz: str = "Europe/Moscow",
         clock: Callable[[], datetime] | None = None,
         wiki_root: Path | None = None,
+        chat_log: ChatLogPort | None = None,
     ) -> None:
         self._sender = sender
         self._idem = idempotency
@@ -858,6 +877,9 @@ class DefaultPipeline:
         # aisw-12t (Phase-E.a): per-sender media staging root. None ⇒ VoiceHandler /
         # PhotoIngestor fall back to the inbox_root they were constructed with.
         self._wiki_root = wiki_root
+        # aisw-kml (D-033): conversation buffer. None ⇒ no chat_log persistence /
+        # no recent-history injection (back-compat; all legacy tests pass it None).
+        self._chat_log = chat_log
 
     def _inbox_root_for(self, telegram_id: int) -> Path | None:
         """Per-sender Inbox-WIKI dir (media-staging root, D-022), or None if no wiki_root."""
@@ -892,6 +914,51 @@ class DefaultPipeline:
         return (
             self._classifier is not None and self._runner is not None and self._output is not None
         )
+
+    # START_BLOCK_CHAT_LOG_HELPERS (aisw-kml, D-033)
+    async def _chatlog_in(self, *, telegram_id: int, chat_id: int, text: str, kind: str) -> None:
+        """Persist one inbound user turn (best-effort; never blocks the turn)."""
+        if self._chat_log is None:
+            return
+        try:
+            await self._chat_log.write_in(
+                telegram_id=telegram_id, chat_id=chat_id, text=text, kind=kind
+            )
+        except Exception as exc:  # chat_log is auxiliary — a failure must not kill the reply
+            _log.warning(
+                "tg.pipeline.chat_log.write_in_failed",
+                telegram_id=telegram_id,
+                error_class=type(exc).__name__,
+            )
+
+    async def _chatlog_out(self, *, telegram_id: int, chat_id: int, text: str) -> None:
+        """Persist one final outbound bot reply (best-effort; never blocks the turn)."""
+        if self._chat_log is None or not text:
+            return
+        try:
+            await self._chat_log.write_out(telegram_id=telegram_id, chat_id=chat_id, text=text)
+        except Exception as exc:
+            _log.warning(
+                "tg.pipeline.chat_log.write_out_failed",
+                telegram_id=telegram_id,
+                error_class=type(exc).__name__,
+            )
+
+    async def _chatlog_window(self, telegram_id: int) -> list[ChatTurn] | None:
+        """Read the D-033 recent window (best-effort); None when no chat_log wired."""
+        if self._chat_log is None:
+            return None
+        try:
+            return await self._chat_log.read_recent_window(telegram_id)
+        except Exception as exc:
+            _log.warning(
+                "tg.pipeline.chat_log.read_failed",
+                telegram_id=telegram_id,
+                error_class=type(exc).__name__,
+            )
+            return None
+
+    # END_BLOCK_CHAT_LOG_HELPERS
 
     # START_BLOCK_TEXT_PIPELINE
     async def _run_text_pipeline(
@@ -934,6 +1001,12 @@ class DefaultPipeline:
                 await self._idem.record_dedup_choice(sha256, telegram_id, "auto_skip")
                 await self._sender.send_message(chat_id, ACK_DEDUP_RU)
                 return
+
+        # D-033 (aisw-kml): persist the inbound turn AFTER STT/OCR + dedup gate
+        # (the resolved `text` is already post-transcription/post-extraction).
+        # `source` is one of text|voice|document|photo → chat_log.kind.
+        await self._chatlog_in(telegram_id=telegram_id, chat_id=chat_id, text=text, kind=source)
+        recent_window = await self._chatlog_window(telegram_id)
 
         _log.info(
             "tg.pipeline.classify.begin",
@@ -1114,6 +1187,7 @@ class DefaultPipeline:
                     source=source,
                     media_paths=media_paths,
                     timeout_s=timeout_s,
+                    recent_window=recent_window,
                 )
             except RouterError:
                 _log.exception(
@@ -1179,6 +1253,7 @@ class DefaultPipeline:
                 )
                 return
             await self._sender.send_message(chat_id, decision.notes)
+            await self._chatlog_out(telegram_id=telegram_id, chat_id=chat_id, text=decision.notes)
             return
         # END_BLOCK_ROUTABLE_BRANCH
 
@@ -1228,6 +1303,12 @@ class DefaultPipeline:
                     chars=len(outcome.text or ACK_TEXT_RU),
                     streamed=True,
                 )
+                # D-033: only the FINAL streamed reply is persisted (no frames).
+                await self._chatlog_out(
+                    telegram_id=telegram_id,
+                    chat_id=chat_id,
+                    text=outcome.text or ACK_TEXT_RU,
+                )
                 return
             outcome = await self._runner.run(
                 text=text,
@@ -1272,6 +1353,7 @@ class DefaultPipeline:
             run_id=outcome.run_id,
             chars=len(reply_text),
         )
+        await self._chatlog_out(telegram_id=telegram_id, chat_id=chat_id, text=reply_text)
 
     # END_BLOCK_TEXT_PIPELINE
 
