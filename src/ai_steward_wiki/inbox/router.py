@@ -1,18 +1,18 @@
 # FILE: src/ai_steward_wiki/inbox/router.py
-# VERSION: 0.0.3
+# VERSION: 0.0.4
 # START_MODULE_CONTRACT
 #   PURPOSE: Parse the Stage-1a Inbox-WIKI Router reply (a fenced ```router block) into a RouterDecision.
 #   SCOPE: RouterIntent enum, RouterDecision model, RouterError, parse_router_reply (tolerant, fallback to CLARIFY),
 #          format_chat_window (render the D-033 recent dialogue window),
 #          build_router_input (prefix user input with the owner's existing <Domain>-WIKI list + recent history).
 #   DEPENDS: pydantic, re, enum
-#   LINKS: D-004, D-016, D-033, prompts/inbox.md (>=1.1.0), M-INBOX-ROUTER, aisw-dsg, aisw-2co, aisw-kml
+#   LINKS: D-004, D-016, D-033, prompts/inbox.md (>=1.1.0), M-INBOX-ROUTER, aisw-dsg, aisw-2co, aisw-kml, aisw-rl1
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
-#   RouterIntent - closed enum: route | create_wiki | clarify | reject
+#   RouterIntent - closed enum: route | create_wiki | list_wikis | clarify | reject
 #   RouterDecision - frozen Pydantic model (intent, target_wiki, notes, raw, parsed_ok)
 #   RouterError - raised by the runtime adapter when the Router CLI run fails unrecoverably
 #   parse_router_reply - extract the last ```router block, parse key:value, normalise, fallback to CLARIFY
@@ -21,7 +21,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - aisw-kml: build_router_input folds in the D-033 recent chat window
+#   LAST_CHANGE: v0.0.4 - aisw-rl1: add the list_wikis intent so "покажи мои вики" returns a
+#                structured decision (notes hold the rendered list) instead of prose that
+#                trips the parser fallback; target_wiki is forced None for list_wikis.
+#   PREVIOUS:    v0.0.3 - aisw-kml: build_router_input folds in the D-033 recent chat window
 #                (last-20/24h) so bare follow-ups route on history instead of cold-rejecting.
 #   PREVIOUS:    v0.0.2 - aisw-2co: add build_router_input — surface the owner's existing
 #                <Domain>-WIKI list to the Stage-1a router so it can route to an existing
@@ -66,6 +69,7 @@ class RouterError(Exception):
 class RouterIntent(str, Enum):
     ROUTE = "route"  # belongs to an existing <Domain>-WIKI (target_wiki set)
     CREATE_WIKI = "create_wiki"  # no domain yet; proposes a new NL name in target_wiki
+    LIST_WIKIS = "list_wikis"  # user asked to see their WIKIs; notes hold the list, target None
     CLARIFY = "clarify"  # needs a follow-up question; target_wiki is None
     REJECT = "reject"  # not actionable / out of scope; target_wiki is None
 
@@ -124,7 +128,7 @@ def parse_router_reply(text: str) -> RouterDecision:
         intent = RouterIntent((intent_raw or "").strip().lower())
     except ValueError:
         return _fallback(raw, notes=notes)
-    if intent in (RouterIntent.CLARIFY, RouterIntent.REJECT):
+    if intent in (RouterIntent.CLARIFY, RouterIntent.REJECT, RouterIntent.LIST_WIKIS):
         target = None
     elif intent in (RouterIntent.ROUTE, RouterIntent.CREATE_WIKI) and not target:
         # The model picked a routing intent but gave no target — demote to CLARIFY.

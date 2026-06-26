@@ -170,3 +170,41 @@ def test_decision_is_frozen_and_forbids_extra() -> None:
 
 def test_router_error_is_exception() -> None:
     assert issubclass(RouterError, Exception)
+
+
+# --- aisw-rl1: list_wikis intent + guarded fallback on prose ---------------
+
+
+def test_list_wikis_happy_path() -> None:
+    notes = "У тебя 2 WIKI:\n1. Medical-WIKI\n2. Budget-WIKI"
+    d = parse_router_reply(_block("null", "list_wikis", notes))
+    assert d.intent is RouterIntent.LIST_WIKIS
+    assert d.target_wiki is None
+    assert d.parsed_ok is True
+    assert "Medical-WIKI" in d.notes
+
+
+def test_list_wikis_ignores_stray_target() -> None:
+    # Even if the model fills target_wiki for a list intent, it is dropped.
+    d = parse_router_reply(_block("Medical-WIKI", "list_wikis", "Список вики"))
+    assert d.intent is RouterIntent.LIST_WIKIS
+    assert d.target_wiki is None
+    assert d.parsed_ok is True
+
+
+def test_prose_list_reply_falls_back_without_raising() -> None:
+    # Real-world regression: a "покажи все вики" request made the model answer in
+    # prose ("У вас сейчас 6 WIKI: 1. Medical-WIKI…") with no fenced block. The
+    # parser MUST return a guarded CLARIFY fallback, never raise (aisw-rl1).
+    prose = "У вас сейчас 6 WIKI: 1. Medical-WIKI 2. Budget-WIKI 3. Travel-WIKI"
+    d = parse_router_reply(prose)  # must not raise
+    assert d.intent is RouterIntent.CLARIFY
+    assert d.parsed_ok is False
+    assert d.notes.strip()
+
+
+def test_garbage_reply_does_not_raise() -> None:
+    for junk in ("{not json", "][", "```router\n```", "\x00\x01"):
+        d = parse_router_reply(junk)  # must not raise for any of these
+        assert d.parsed_ok is False
+        assert d.intent is RouterIntent.CLARIFY
