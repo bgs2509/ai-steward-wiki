@@ -14,6 +14,7 @@ from ai_steward_wiki.inbox.router import (
     build_router_input,
     format_chat_window,
     parse_router_reply,
+    reconcile_decision_with_existing,
 )
 from ai_steward_wiki.storage.audit.chat_log import ChatTurn
 
@@ -208,3 +209,34 @@ def test_garbage_reply_does_not_raise() -> None:
         d = parse_router_reply(junk)  # must not raise for any of these
         assert d.parsed_ok is False
         assert d.intent is RouterIntent.CLARIFY
+
+
+# --- aisw-4tu: reconcile a create_wiki proposal with existing translit dupes -
+
+
+def test_reconcile_create_into_cyrillic_existing() -> None:
+    # Router proposed the ISO-9 latin name while the Cyrillic dir already exists.
+    d = parse_router_reply(_block("Reczepty", "create_wiki", "Заведём вики про рецепты?"))
+    out = reconcile_decision_with_existing(d, ["Рецепты-WIKI", "Medical-WIKI"])
+    assert out.intent is RouterIntent.ROUTE
+    assert out.target_wiki == "Рецепты-WIKI"  # routes INTO the existing dir, no dupe
+    assert out.parsed_ok is True
+
+
+def test_reconcile_no_existing_match_keeps_create() -> None:
+    d = parse_router_reply(_block("Garden", "create_wiki", "Вики про сад"))
+    out = reconcile_decision_with_existing(d, ["Medical-WIKI", "Budget-WIKI"])
+    assert out.intent is RouterIntent.CREATE_WIKI
+    assert out.target_wiki == "Garden"
+
+
+def test_reconcile_ignores_route_intent() -> None:
+    d = parse_router_reply(_block("Medical-WIKI", "route", "давление"))
+    out = reconcile_decision_with_existing(d, ["Medical-WIKI"])
+    assert out is d  # untouched: only create_wiki is reconciled
+
+
+def test_reconcile_empty_existing_is_noop() -> None:
+    d = parse_router_reply(_block("Reczepty", "create_wiki", "..."))
+    out = reconcile_decision_with_existing(d, [])
+    assert out is d

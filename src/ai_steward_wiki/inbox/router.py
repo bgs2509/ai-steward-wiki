@@ -1,12 +1,13 @@
 # FILE: src/ai_steward_wiki/inbox/router.py
-# VERSION: 0.0.4
+# VERSION: 0.0.5
 # START_MODULE_CONTRACT
 #   PURPOSE: Parse the Stage-1a Inbox-WIKI Router reply (a fenced ```router block) into a RouterDecision.
 #   SCOPE: RouterIntent enum, RouterDecision model, RouterError, parse_router_reply (tolerant, fallback to CLARIFY),
 #          format_chat_window (render the D-033 recent dialogue window),
-#          build_router_input (prefix user input with the owner's existing <Domain>-WIKI list + recent history).
-#   DEPENDS: pydantic, re, enum
-#   LINKS: D-004, D-016, D-033, prompts/inbox.md (>=1.1.0), M-INBOX-ROUTER, aisw-dsg, aisw-2co, aisw-kml, aisw-rl1
+#          build_router_input (prefix user input with the owner's existing <Domain>-WIKI list + recent history),
+#          reconcile_decision_with_existing (translit-aware dedup of a create_wiki proposal).
+#   DEPENDS: pydantic, re, enum, ai_steward_wiki.wiki.name
+#   LINKS: D-004, D-016, D-033, prompts/inbox.md (>=1.1.0), M-INBOX-ROUTER, aisw-dsg, aisw-2co, aisw-kml, aisw-rl1, aisw-4tu
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -18,10 +19,14 @@
 #   parse_router_reply - extract the last ```router block, parse key:value, normalise, fallback to CLARIFY
 #   format_chat_window - render the D-033 recent dialogue window into a compact ru transcript
 #   build_router_input - prefix the router user-input with existing <Domain>-WIKI names + recent history
+#   reconcile_decision_with_existing - rewrite create_wiki->route when target is a translit dupe of an existing WIKI
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.4 - aisw-rl1: add the list_wikis intent so "покажи мои вики" returns a
+#   LAST_CHANGE: v0.0.5 - aisw-4tu: reconcile_decision_with_existing — when the router proposes
+#                create_wiki for a name that transliterates to an existing WIKI (Reczepty vs
+#                Рецепты-WIKI), rewrite the decision to route INTO it instead of duplicating.
+#   PREVIOUS:    v0.0.4 - aisw-rl1: add the list_wikis intent so "покажи мои вики" returns a
 #                structured decision (notes hold the rendered list) instead of prose that
 #                trips the parser fallback; target_wiki is forced None for list_wikis.
 #   PREVIOUS:    v0.0.3 - aisw-kml: build_router_input folds in the D-033 recent chat window
@@ -41,6 +46,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
+from ai_steward_wiki.wiki.name import wiki_names_match
+
 if TYPE_CHECKING:
     from ai_steward_wiki.storage.audit.chat_log import ChatTurn
 
@@ -51,6 +58,7 @@ __all__ = [
     "build_router_input",
     "format_chat_window",
     "parse_router_reply",
+    "reconcile_decision_with_existing",
 ]
 
 _MAX_FALLBACK_NOTES = 500
@@ -195,6 +203,30 @@ def build_router_input(
     history = format_chat_window(recent_window or [])
     prefix = f"{header}\n\n{history}" if history else header
     return f"{prefix}\n\n{text}"
+
+
+# START_CONTRACT: reconcile_decision_with_existing
+#   PURPOSE: Anti-duplicate guard — when the router proposes create_wiki for a name that
+#            is a Cyrillic/transliteration variant of an existing WIKI, rewrite the
+#            decision to route INTO the existing WIKI (deterministic translit match).
+#   INPUTS: { decision: RouterDecision, existing_wikis: Sequence[str] - owner dir names
+#             (may be Cyrillic, e.g. "Рецепты-WIKI") }
+#   OUTPUTS: { RouterDecision - unchanged unless a create_wiki target matches an existing
+#             WIKI, in which case intent=ROUTE and target_wiki=<existing dir name> }
+#   SIDE_EFFECTS: none (pure)
+#   LINKS: M-INBOX-ROUTER, M-WIKI-LIFECYCLE, aisw-4tu, aisw-2co
+# END_CONTRACT: reconcile_decision_with_existing
+def reconcile_decision_with_existing(
+    decision: RouterDecision, existing_wikis: Sequence[str]
+) -> RouterDecision:
+    if decision.intent is not RouterIntent.CREATE_WIKI or not decision.target_wiki:
+        return decision
+    for existing in existing_wikis:
+        if wiki_names_match(decision.target_wiki, existing):
+            return decision.model_copy(
+                update={"intent": RouterIntent.ROUTE, "target_wiki": existing}
+            )
+    return decision
 
 
 def _fallback(raw: str, *, notes: str = "") -> RouterDecision:

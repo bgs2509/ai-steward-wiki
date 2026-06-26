@@ -1,12 +1,13 @@
 # FILE: src/ai_steward_wiki/wiki/name.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: WIKI name normalisation — Cyrillic→Latin ISO 9, PascalCase,
 #            -WIKI suffix, regex validation. Returns frozen WikiName with
-#            primary, hyphenated_lookup, slug.
-#   SCOPE: normalize_wiki_name, WikiName, WikiNameError. Pure stdlib.
+#            primary, hyphenated_lookup, slug. Plus translit-aware dedup match.
+#   SCOPE: normalize_wiki_name, WikiName, WikiNameError, wiki_match_key,
+#          wiki_names_match. Pure stdlib.
 #   DEPENDS: pydantic
-#   LINKS: M-WIKI-LIFECYCLE, D-008, D-041, tech-spec §5
+#   LINKS: M-WIKI-LIFECYCLE, D-008, D-041, tech-spec §5, aisw-4tu
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -15,10 +16,15 @@
 #   WikiName - frozen Pydantic: primary, hyphenated_lookup, slug
 #   WikiNameError - validation failure (empty / regex mismatch)
 #   normalize_wiki_name - raw NL string -> WikiName
+#   wiki_match_key - tolerant canonical slug key for duplicate detection ("" on failure)
+#   wiki_names_match - True iff two NL names share a canonical key (Cyrillic == translit)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - chunk 8: ISO 9 transliteration + PascalCase pipeline
+#   LAST_CHANGE: v0.0.2 - aisw-4tu: wiki_match_key/wiki_names_match — compare two NL names
+#                by their canonical latin slug so a Cyrillic name and its transliteration
+#                (Рецепты == Reczepty) are recognised as the same WIKI (anti-duplicate).
+#   PREVIOUS:    v0.0.1 - chunk 8: ISO 9 transliteration + PascalCase pipeline
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -31,6 +37,8 @@ __all__ = [
     "WikiName",
     "WikiNameError",
     "normalize_wiki_name",
+    "wiki_match_key",
+    "wiki_names_match",
 ]
 
 # START_BLOCK_ISO9_TABLE
@@ -152,3 +160,31 @@ def normalize_wiki_name(raw: str) -> WikiName:
     hyphenated_lookup = _camel_to_hyphen(body)
     slug = hyphenated_lookup.replace("-", "")
     return WikiName(primary=primary, hyphenated_lookup=hyphenated_lookup, slug=slug)
+
+
+# START_CONTRACT: wiki_match_key
+#   PURPOSE: Tolerant canonical key for duplicate detection — the normalised latin
+#            slug, so Cyrillic input and its ISO-9 transliteration collapse to one key.
+#   INPUTS: { raw: str - an NL name or "<Name>-WIKI" dir name }
+#   OUTPUTS: { str - lowercase alnum slug, or "" when raw has no normalisable content }
+#   SIDE_EFFECTS: none (pure; never raises — WikiNameError is swallowed to "")
+#   LINKS: M-WIKI-LIFECYCLE, aisw-4tu
+# END_CONTRACT: wiki_match_key
+def wiki_match_key(raw: str) -> str:
+    try:
+        return normalize_wiki_name(raw).slug
+    except WikiNameError:
+        return ""
+
+
+# START_CONTRACT: wiki_names_match
+#   PURPOSE: Decide whether two NL names denote the same WIKI under transliteration,
+#            casing and the -WIKI suffix (deterministic; no fuzzy distance).
+#   INPUTS: { a: str, b: str - NL names or "<Name>-WIKI" dir names }
+#   OUTPUTS: { bool - True iff both share a non-empty canonical key }
+#   SIDE_EFFECTS: none (pure)
+#   LINKS: M-WIKI-LIFECYCLE, aisw-4tu
+# END_CONTRACT: wiki_names_match
+def wiki_names_match(a: str, b: str) -> bool:
+    key_a = wiki_match_key(a)
+    return bool(key_a) and key_a == wiki_match_key(b)

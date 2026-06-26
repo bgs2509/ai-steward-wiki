@@ -178,6 +178,7 @@ from ai_steward_wiki.inbox.router import (
     RouterError,
     build_router_input,
     parse_router_reply,
+    reconcile_decision_with_existing,
 )
 from ai_steward_wiki.inbox.staging import promote_path_to_raw
 from ai_steward_wiki.logging_setup import configure_logging
@@ -796,6 +797,10 @@ class _RouterAdapter:
             chars=len(reply_text),
         )
         decision = parse_router_reply(reply_text)
+        # aisw-4tu: anti-duplicate — if the router proposed creating a WIKI whose
+        # name transliterates to an existing one (Reczepty vs Рецепты-WIKI), route
+        # INTO the existing dir instead of spawning a Cyrillic/translit duplicate.
+        decision = reconcile_decision_with_existing(decision, existing_wikis)
         if not decision.parsed_ok:
             logger.info(
                 "inbox.router.parse_error",

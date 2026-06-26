@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from ai_steward_wiki.wiki.name import WikiNameError, normalize_wiki_name
+from ai_steward_wiki.wiki.name import (
+    WikiNameError,
+    normalize_wiki_name,
+    wiki_match_key,
+    wiki_names_match,
+)
 
 
 def test_pascal_case_english() -> None:
@@ -61,3 +66,41 @@ def test_hyphenated_lookup_camel_boundary() -> None:
 def test_digits_preserved() -> None:
     n = normalize_wiki_name("budget 2026")
     assert n.primary == "Budget2026-WIKI"
+
+
+# --- aisw-4tu: transliteration-aware duplicate-name matching ----------------
+
+
+def test_match_cyrillic_vs_translit_recipes() -> None:
+    # The original bug: router proposed the ISO-9 latin form while the Cyrillic
+    # dir already existed -> duplicate. Both must be recognised as the same WIKI.
+    assert wiki_names_match("Рецепты", "Reczepty")
+    assert wiki_names_match("Рецепты-WIKI", "Reczepty-WIKI")
+
+
+def test_match_cyrillic_vs_translit_health() -> None:
+    assert wiki_names_match("Здоровье", "Zdorove")
+    assert wiki_names_match("Бюджет-WIKI", "Byudzhet")
+
+
+def test_match_is_case_and_suffix_insensitive() -> None:
+    assert wiki_names_match("medical", "Medical-WIKI")
+
+
+def test_no_match_for_distinct_domains() -> None:
+    assert not wiki_names_match("Рецепты", "Medical")
+    assert not wiki_names_match("Budget", "Travel")
+
+
+def test_match_key_is_canonical_and_tolerant() -> None:
+    # Same canonical key for the Cyrillic original and its translit.
+    assert wiki_match_key("Рецепты-WIKI") == wiki_match_key("Reczepty")
+    assert wiki_match_key("Рецепты-WIKI") == "reczepty"
+    # Tolerant: non-normalisable input yields "" and never raises.
+    assert wiki_match_key("!!!") == ""
+    assert wiki_match_key("") == ""
+
+
+def test_match_empty_never_matches() -> None:
+    assert not wiki_names_match("", "Reczepty")
+    assert not wiki_names_match("!!!", "###")
