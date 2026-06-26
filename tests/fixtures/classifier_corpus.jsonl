@@ -1,0 +1,46 @@
+{"text": "Записал: утром давление 128/82, пульс 70, самочувствие нормальное.", "expected_intent": "wiki_ingest", "note": "bare medical record to file"}
+{"text": "Записал давление 130/85 утром.", "expected_intent": "wiki_ingest", "note": "medical record"}
+{"text": "давление 120/80 утром", "expected_intent": "wiki_ingest", "note": "bare datum, no verb"}
+{"text": "Потратил 2000 рублей на продукты.", "expected_intent": "wiki_ingest", "note": "expense record"}
+{"text": "Потратил 1500 рублей на продукты в Пятёрочке вчера.", "expected_intent": "wiki_ingest", "note": "expense record"}
+{"text": "Купил 5 акций Газпрома по 160 рублей.", "expected_intent": "wiki_ingest", "note": "portfolio record"}
+{"text": "Купил 10 акций Сбербанка по 290 рублей сегодня.", "expected_intent": "wiki_ingest", "note": "portfolio record"}
+{"text": "Прошёл собеседование в Яндекс на позицию backend-разработчика.", "expected_intent": "wiki_ingest", "note": "career record"}
+{"text": "Рецепт борща: свёкла, капуста, картофель, говядина; варить 1.5 часа.", "expected_intent": "wiki_ingest", "note": "recipe to store"}
+{"text": "Запиши рецепт омлета: 3 яйца, молоко, соль.", "expected_intent": "wiki_ingest", "note": "explicit save verb"}
+{"text": "Конспект по линейной алгебре: собственные значения и векторы.", "expected_intent": "wiki_ingest", "note": "study note to file"}
+{"text": "Сколько у меня акций Сбербанка в портфеле?", "expected_intent": "wiki_query", "note": "query own stored portfolio"}
+{"text": "Сколько у меня акций Газпрома?", "expected_intent": "wiki_query", "note": "query own stored portfolio"}
+{"text": "Сколько я потратил на продукты за последнюю неделю?", "expected_intent": "wiki_query", "note": "query own budget"}
+{"text": "Какие собеседования у меня были записаны?", "expected_intent": "wiki_query", "note": "query own career records"}
+{"text": "А какое давление я записывал сегодня?", "expected_intent": "wiki_query", "note": "query own medical records"}
+{"text": "Какое у меня было давление в последний раз?", "expected_intent": "wiki_query", "note": "query own medical records"}
+{"text": "А что я записывал про инвестиции?", "expected_intent": "wiki_query", "note": "query own records"}
+{"text": "Что у меня записано по линейной алгебре?", "expected_intent": "wiki_query", "note": "query own study notes"}
+{"text": "Какие ингредиенты в моём рецепте борща?", "expected_intent": "wiki_query", "note": "query own stored recipe"}
+{"text": "Когда день рождения у дочери?", "expected_intent": "wiki_query", "note": "query own stored family fact"}
+{"text": "Найди в интернете рецепт бууз - национального бурятского блюда", "expected_intent": "web_task", "note": "explicit internet search"}
+{"text": "Найди в интернете текущую ключевую ставку ЦБ.", "expected_intent": "web_task", "note": "live web lookup"}
+{"text": "Найди в интернете нормы артериального давления по возрасту.", "expected_intent": "web_task", "note": "web lookup, not stored"}
+{"text": "Найди в интернете типичные вопросы на собеседовании backend.", "expected_intent": "web_task", "note": "web lookup"}
+{"text": "Найди в интернете идеи подарков ребёнку на 7 лет.", "expected_intent": "web_task", "note": "web lookup"}
+{"text": "ты дурак?", "expected_intent": "smalltalk", "note": "banter, no task"}
+{"text": "просто проверяю, ты на связи?", "expected_intent": "smalltalk", "note": "liveness check"}
+{"text": "расскажи что-нибудь интересное", "expected_intent": "smalltalk", "note": "chitchat"}
+{"text": "привет", "expected_intent": "smalltalk", "note": "greeting"}
+{"text": "по реке плывёт кирпич, деревянный как стекло", "expected_intent": "smalltalk", "note": "nonsense rhyme, no task"}
+{"text": "Напомни завтра в 9 позвонить маме", "expected_intent": "reminder", "note": "one-shot reminder"}
+{"text": "Напомни через 5 минут выпить воды", "expected_intent": "reminder", "note": "relative reminder"}
+{"text": "Поставь напоминание принять таблетки в 21:00", "expected_intent": "reminder", "note": "reminder"}
+{"text": "Делай мне сводку по здоровью каждое утро в 8", "expected_intent": "digest", "note": "recurring digest"}
+{"text": "Пришли еженедельный дайджест по расходам по понедельникам", "expected_intent": "digest", "note": "recurring digest"}
+{"text": "Проверь мою медицинскую вики на противоречия", "expected_intent": "wiki_lint", "note": "lint/audit a wiki"}
+{"text": "Найди несостыковки в записях о давлении", "expected_intent": "wiki_lint", "note": "lint, not web search despite 'найди'"}
+{"text": "Добавь пользователя 123456789 в allowlist", "expected_intent": "admin", "note": "REAL admin: allowlist mutation"}
+{"text": "Подними мне права администратора на 30 минут", "expected_intent": "admin", "note": "REAL admin: elevation"}
+{"text": "Покажи runbook по бэкапам базы", "expected_intent": "admin", "note": "REAL admin: ops runbook"}
+{"text": "покажи все вики мои", "expected_intent": "unknown", "forbid_intent": "admin", "list_route": true, "note": "list my wikis -> router list_wikis path, NOT admin (aisw-zgf)"}
+{"text": "какие у меня вики", "expected_intent": "unknown", "forbid_intent": "admin", "list_route": true, "note": "list my wikis variant"}
+{"text": "список вики", "expected_intent": "unknown", "forbid_intent": "admin", "list_route": true, "note": "list my wikis variant"}
+{"text": "покажи мои вики", "expected_intent": "unknown", "forbid_intent": "admin", "list_route": true, "note": "list my wikis variant"}
+{"text": "покажи", "expected_intent": "unknown", "note": "genuinely vague -> unknown is correct (router clarifies)"}
