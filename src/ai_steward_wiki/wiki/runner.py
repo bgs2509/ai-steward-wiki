@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.13
+# VERSION: 0.0.14
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -33,7 +33,12 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.13 - aisw-dqz (Path B, HUMAN-approved 2026-06-26): web_task WebSearch
+#   LAST_CHANGE: v0.0.14 - aisw-9io: deny Bash on every wiki run-kind. _RunConfig.
+#                disallowed_tools default is now ["Bash", "WebFetch"] — no run needs a
+#                shell and the sandbox forbids it, so the agent stopped wasting turns on
+#                Bash permission_denied (17x on day-25). Paired with dropping the Bash
+#                affordance from prompts/wiki.md so advertised policy == sandbox policy.
+#   PREVIOUS:    v0.0.13 - aisw-dqz (Path B, HUMAN-approved 2026-06-26): web_task WebSearch
 #                carve-out. (1) WEB_SEARCH_TOOLS=["WebSearch"] allow-list. (2) _RunConfig.
 #                web_search flag: when set, _build_argv OMITS --add-dir on the WIKI tree and
 #                run_wiki_session uses a neutral empty cwd (no WIKI read access) — prompt-
@@ -469,7 +474,13 @@ class _RunConfig:
     timeout_s: float = 300.0
     term_grace_s: float = 10.0
     allowed_tools: list[str] | None = None
-    disallowed_tools: list[str] = field(default_factory=lambda: ["WebFetch"])
+    # aisw-9io: Bash is denied on EVERY wiki run-kind. No run (router/query/ingest/
+    # digest/librarian/web) needs a shell, and the systemd sandbox forbids it — without
+    # an explicit deny the agent kept trying Bash and burning turns on permission_denied
+    # (17x on day-25). Denying it here (plus dropping the Bash affordance from
+    # prompts/wiki.md) keeps the advertised policy and the sandbox aligned. WebFetch stays
+    # denied (SSRF guard M-2, aisw-dqz).
+    disallowed_tools: list[str] = field(default_factory=lambda: ["Bash", "WebFetch"])
     # aisw-dqz (Path B): when True the run is a web_task — it gets NO --add-dir on the WIKI
     # tree and a neutral cwd (no WIKI read access). Pair with allowed_tools=WEB_SEARCH_TOOLS.
     web_search: bool = False

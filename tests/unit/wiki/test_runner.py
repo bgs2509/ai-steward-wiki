@@ -509,6 +509,78 @@ async def test_web_task_run_config_allows_websearch_neutral_cwd(
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
 
 
+# ---------- aisw-9io: Bash is denied on every wiki run-kind (no Bash affordance) ----------
+
+
+def test_default_run_config_denies_bash_and_webfetch(tmp_path: Path) -> None:
+    """aisw-9io: no wiki run-kind (router/query/ingest/digest/web) uses Bash; the
+    sandbox denies it, so the default tool policy must DENY Bash (alongside WebFetch).
+    Otherwise the agent burns turns on Bash permission_denied (the day-25 17x)."""
+    cfg = _RunConfig(claude_config_dir=tmp_path)
+    assert "Bash" in cfg.disallowed_tools
+    assert "WebFetch" in cfg.disallowed_tools
+
+
+async def test_readonly_query_run_denies_bash_in_argv(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    """aisw-9io: a read/query run advertises NO Bash — Bash is under --disallowedTools
+    and never offered via --allowedTools (read-only keeps allowed_tools=None)."""
+    spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+    await run_wiki_session(
+        wiki_id="Medical-WIKI",
+        wiki_path=tmp_path / "Medical-WIKI",
+        base_prompt_path=prompts_dir / "wiki.md",
+        overlay_prompt_path=prompts_dir / "domain-default.md",
+        run_id="run-q",
+        correlation_id="corr-q",
+        runtime_dir=tmp_path / "runtime",
+        acquirer=fake_acquirer,
+        spawner=spawner,
+        config=_cfg(cfg_dir),  # read/query: allowed_tools defaults to None
+    )
+    argv = spawner.calls[0]["argv"]
+    assert "--allowedTools" not in argv  # Bash never advertised as allowed
+    dis_idx = argv.index("--disallowedTools")
+    assert "Bash" in argv[dis_idx + 1 :]
+
+
+async def test_writing_run_denies_bash_but_allows_write(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    """aisw-9io: an ingest/write run allows Write/Edit yet still DENIES Bash."""
+    from ai_steward_wiki.wiki.runner import WRITE_TOOLS
+
+    spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+    await run_wiki_session(
+        wiki_id="Medical-WIKI",
+        wiki_path=tmp_path / "Medical-WIKI",
+        base_prompt_path=prompts_dir / "wiki.md",
+        overlay_prompt_path=prompts_dir / "domain-default.md",
+        run_id="run-w",
+        correlation_id="corr-w",
+        runtime_dir=tmp_path / "runtime",
+        acquirer=fake_acquirer,
+        spawner=spawner,
+        config=_cfg(cfg_dir, allowed_tools=list(WRITE_TOOLS)),
+    )
+    argv = spawner.calls[0]["argv"]
+    a_idx = argv.index("--allowedTools")
+    dis_idx = argv.index("--disallowedTools")
+    # Bash is NOT in the allowed list ...
+    assert "Bash" not in argv[a_idx + 1 : dis_idx]
+    # ... and IS in the disallowed list.
+    assert "Bash" in argv[dis_idx + 1 :]
+
+
 async def test_run_captures_permission_denials(
     tmp_path: Path,
     prompts_dir: Path,
