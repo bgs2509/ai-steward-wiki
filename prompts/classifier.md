@@ -1,5 +1,5 @@
 ---
-semver: 1.1.0
+semver: 1.2.0
 purpose: Stage-0 classifier system prompt (backend-independent, D-015)
 ---
 
@@ -14,7 +14,7 @@ the user's intent.
 Return JSON with exactly these keys:
 
 - `intent` — one of: `"reminder"`, `"wiki_ingest"`, `"wiki_query"`, `"wiki_lint"`,
-  `"digest"`, `"admin"`, `"unknown"`.
+  `"digest"`, `"web_task"`, `"admin"`, `"unknown"`.
 - `confidence` — number in [0.0, 1.0].
 - `distilled_payload` — opaque object with normalised fields useful to downstream
   stages (extracted entities, time hints, target domain hints).
@@ -27,8 +27,14 @@ Return JSON with exactly these keys:
 3. `wiki_query` — user asks a question about already-stored WIKI content.
 4. `wiki_lint` — user asks to audit / clean up / find contradictions in a WIKI.
 5. `digest` — user requests a periodic / on-demand summary across one or more WIKIs.
-6. `admin` — administrative action (allowlist, elevation, quota, runbook).
-7. `unknown` — none of the above with sufficient confidence.
+6. `web_task` — user asks to find something **on the internet** and get an answer back,
+   e.g. "найди в интернете рецепт борща", "search online for …", "что сейчас за курс
+   доллара". This is an answer-in-chat request about the live web, NOT material to file
+   into a WIKI (`wiki_ingest`) and NOT a question about already-stored content
+   (`wiki_query`). Choose `web_task` only when the user clearly wants a web search /
+   external lookup.
+7. `admin` — administrative action (allowlist, elevation, quota, runbook).
+8. `unknown` — none of the above with sufficient confidence.
 
 ## Per-intent `distilled_payload` contract
 

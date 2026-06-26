@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.12
+# VERSION: 0.0.13
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
 #            locks, spawn `claude` CLI, stream events, persist transcript
@@ -24,6 +24,7 @@
 #   AsyncioSpawner - default Spawner using asyncio.create_subprocess_exec
 #   assemble_prompt - concat base+overlay (+ per-WIKI CLAUDE.md if present) → atomic write
 #   WRITE_TOOLS - tool names a writing run must allow (Write/Edit/MultiEdit) under dontAsk (aisw-t6w)
+#   WEB_SEARCH_TOOLS - sole tool a web_task run allows (WebSearch) — read-only, no WIKI add-dir (aisw-dqz)
 #   WikiRunResult - dataclass result of one run (run_id, exit_code, events, permission_denials, …)
 #   extract_permission_denials - pull permission_denials from the CLI result event (aisw-t6w)
 #   run_wiki_session - public entrypoint orchestrating one Stage-1a/1b run; extra_add_dirs adds read-only --add-dir targets (digest multi-WIKI, aisw-oqq)
@@ -32,7 +33,14 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.12 - aisw-t6w: fix ingest silent-data-loss. (1) WRITE_TOOLS
+#   LAST_CHANGE: v0.0.13 - aisw-dqz (Path B, HUMAN-approved 2026-06-26): web_task WebSearch
+#                carve-out. (1) WEB_SEARCH_TOOLS=["WebSearch"] allow-list. (2) _RunConfig.
+#                web_search flag: when set, _build_argv OMITS --add-dir on the WIKI tree and
+#                run_wiki_session uses a neutral empty cwd (no WIKI read access) — prompt-
+#                injection mitigation M-1. WebFetch stays in disallowed_tools (M-2). (3)
+#                wiki.run.web_search.enabled log anchor. WebSearch is enabled ONLY via this
+#                intent-scoped config (wired in __main__), never globally (M-5).
+#   PREVIOUS:    v0.0.12 - aisw-t6w: fix ingest silent-data-loss. (1) WRITE_TOOLS
 #                allow-list so writing runs (ingest/wiki/digest/librarian) can use
 #                Write/Edit under --permission-mode dontAsk (Read/Bash unchanged;
 #                router/classifier stay read-only via allowed_tools=None). (2)
@@ -129,6 +137,7 @@ from ai_steward_wiki.wiki.acquire import LockAcquirer
 from ai_steward_wiki.wiki.streaming import StreamEvent, parse_stream_json
 
 __all__ = [
+    "WEB_SEARCH_TOOLS",
     "WRITE_TOOLS",
     "AsyncioSpawner",
     "SpawnedProcess",
@@ -149,6 +158,15 @@ __all__ = [
 # ingest (CSV/log.md never written while the run still reported success). Read-only
 # runs (router / classifier) keep allowed_tools=None and never receive these.
 WRITE_TOOLS: list[str] = ["Write", "Edit", "MultiEdit"]
+
+# aisw-dqz (Path B, HUMAN-approved 2026-06-26): the ONLY tool a `web_task` run is allowed.
+# WebSearch (Anthropic-mediated search) lets the model answer "найди в интернете …" from
+# live web content. It is denied for every other run by the dontAsk allowlist; this carve-out
+# is intent-scoped (wired in __main__ for Intent.WEB_TASK only — M-5). The run is read-only
+# (no WRITE_TOOLS) and gets no --add-dir on the WIKI tree (see _RunConfig.web_search), so
+# untrusted web content cannot be turned into WIKI writes/exfiltration (M-1). WebFetch (the
+# arbitrary-URL / SSRF vector) stays in disallowed_tools (M-2).
+WEB_SEARCH_TOOLS: list[str] = ["WebSearch"]
 
 _log = structlog.get_logger("wiki.runner")
 _SEMVER_RE = re.compile(r"^semver:\s*(\d+\.\d+\.\d+)\s*$", re.MULTILINE)
@@ -372,18 +390,21 @@ def _build_argv(
     disallowed_tools: list[str] | None,
     media_dirs: list[Path] | None = None,
     extra_add_dirs: list[Path] | None = None,
+    add_wiki_dir: bool = True,
 ) -> list[str]:
     # claude CLI 2.1.139 has no --image flag; local media is exposed to the
     # Read tool by granting --add-dir on the staged file's directory (D-022).
     # extra_add_dirs: additional read-only --add-dir targets (digest multi-WIKI, aisw-oqq).
+    # add_wiki_dir=False (aisw-dqz web_task): suppress --add-dir on the WIKI tree so the run
+    # has no read access to the user's WIKIs (prompt-injection mitigation M-1).
     extra_dirs = [str(d) for d in (extra_add_dirs or [])] + [str(d) for d in (media_dirs or [])]
+    wiki_add_dir = ["--add-dir", str(wiki_path)] if add_wiki_dir else []
     argv: list[str] = [
         binary,
         "-p",
         "--model",
         model,
-        "--add-dir",
-        str(wiki_path),
+        *wiki_add_dir,
         *extra_dirs,
         *system_prompt_argv(prompt_path),
         "--setting-sources",
@@ -449,6 +470,9 @@ class _RunConfig:
     term_grace_s: float = 10.0
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] = field(default_factory=lambda: ["WebFetch"])
+    # aisw-dqz (Path B): when True the run is a web_task — it gets NO --add-dir on the WIKI
+    # tree and a neutral cwd (no WIKI read access). Pair with allowed_tools=WEB_SEARCH_TOOLS.
+    web_search: bool = False
 
 
 @traced(event_prefix=WIKI_RUN)
@@ -510,7 +534,15 @@ async def run_wiki_session(
     # for the path. wiki_path already includes the per-user <telegram_id> segment
     # (<wiki_root>/<telegram_id>/<WIKI>), so this is correct for every user. WIKIs live
     # outside the dev repo, so no project CLAUDE.md is auto-discovered up the tree.
-    cwd = wiki_path
+    #
+    # aisw-dqz (Path B): a web_task run must NOT read the user's WIKIs (M-1). Use a
+    # dedicated EMPTY neutral cwd and suppress the WIKI --add-dir, so the only file the
+    # Read tool can reach is this empty dir while WebSearch answers from the live web.
+    if cfg.web_search:
+        cwd = runtime_dir / "web_task_cwd"
+        cwd.mkdir(parents=True, exist_ok=True)
+    else:
+        cwd = wiki_path
 
     media_dirs = sorted({p.parent for p in media_paths}) if media_paths else None
     argv = _build_argv(
@@ -522,7 +554,16 @@ async def run_wiki_session(
         disallowed_tools=cfg.disallowed_tools,
         media_dirs=media_dirs,
         extra_add_dirs=extra_add_dirs,
+        add_wiki_dir=not cfg.web_search,
     )
+    if cfg.web_search:
+        _log.info(
+            "wiki.run.web_search.enabled",
+            correlation_id=correlation_id,
+            wiki_id=wiki_id,
+            run_id=run_id,
+            allowed_tools=cfg.allowed_tools,
+        )
 
     _log.info(
         "wiki.run.start",

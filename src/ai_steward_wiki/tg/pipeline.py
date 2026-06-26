@@ -591,10 +591,11 @@ def extract_wiki_names(
 
 # Stage-0 intents that mean "FILE this somewhere" → handled by the Inbox-WIKI
 # Router (Stage-1a) / '## Inbox hint' fast-path when one is wired (aisw-dsg,
-# Inbox-WIKI Phase-A). aisw-50z: WIKI_QUERY is NOT a filing intent — it is a
-# question about already-stored content, so it must reach the generic answer
-# runner (cross-WIKI read in the user root) and be ANSWERED in chat, never filed.
-# The other intents (REMINDER, DIGEST, WIKI_LINT, ADMIN) keep their own handling.
+# Inbox-WIKI Phase-A). The other intents (REMINDER, DIGEST, WIKI_LINT, ADMIN) keep
+# their own handling. NOT routable — both fall through to the generic answer runner
+# and are ANSWERED in chat, never filed:
+#   - WIKI_QUERY (aisw-50z): a question about already-stored content (cross-WIKI read).
+#   - WEB_TASK (aisw-dqz): "найди в интернете …" → answer runner with WebSearch enabled.
 _ROUTABLE_INTENTS = frozenset({Intent.WIKI_INGEST, Intent.UNKNOWN})
 
 

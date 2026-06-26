@@ -463,6 +463,52 @@ async def test_readonly_run_omits_allowedtools_flag(
     assert "--allowedTools" not in argv
 
 
+async def test_web_task_run_config_allows_websearch_neutral_cwd(
+    tmp_path: Path,
+    prompts_dir: Path,
+    fake_acquirer: FakeAcquirer,
+) -> None:
+    """aisw-dqz (Path B): a web_search run allows WebSearch ONLY, runs read-only (no
+    WRITE_TOOLS), keeps WebFetch denied, and is launched with NO --add-dir on the WIKI
+    tree + a neutral cwd (prompt-injection mitigation M-1)."""
+    from ai_steward_wiki.wiki.runner import WEB_SEARCH_TOOLS
+
+    spawner = FakeSpawner(lines=_make_lines(), exit_code=0)
+    cfg_dir = tmp_path / "claude-config"
+    cfg_dir.mkdir()
+    wiki = tmp_path / "Cooking-WIKI"
+    await run_wiki_session(
+        wiki_id="42",
+        wiki_path=wiki,
+        base_prompt_path=prompts_dir / "wiki.md",
+        overlay_prompt_path=prompts_dir / "domain-default.md",
+        run_id="run-web",
+        correlation_id="corr-web",
+        runtime_dir=tmp_path / "runtime",
+        acquirer=fake_acquirer,
+        spawner=spawner,
+        config=_cfg(cfg_dir, allowed_tools=list(WEB_SEARCH_TOOLS), web_search=True),
+    )
+    call = spawner.calls[0]
+    argv = call["argv"]
+    # WebSearch is allowed (and ONLY WebSearch — no Write/Edit).
+    assert WEB_SEARCH_TOOLS == ["WebSearch"]
+    flag_idx = argv.index("--allowedTools")
+    following = argv[flag_idx + 1 : flag_idx + 1 + len(WEB_SEARCH_TOOLS)]
+    assert following == list(WEB_SEARCH_TOOLS)
+    assert "Write" not in argv
+    assert "Edit" not in argv
+    assert "MultiEdit" not in argv
+    # WebFetch stays denied (SSRF guard M-2).
+    dis_idx = argv.index("--disallowedTools")
+    assert "WebFetch" in argv[dis_idx + 1 :]
+    # No --add-dir on the WIKI tree; neutral cwd (not the WIKI dir).
+    assert str(wiki) not in argv
+    assert call["cwd"] != str(wiki)
+    # dontAsk preserved.
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+
+
 async def test_run_captures_permission_denials(
     tmp_path: Path,
     prompts_dir: Path,

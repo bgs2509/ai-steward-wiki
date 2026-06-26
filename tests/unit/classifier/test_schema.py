@@ -35,6 +35,7 @@ def test_intent_enum_closed() -> None:
         "wiki_query",
         "wiki_lint",
         "digest",
+        "web_task",
         "admin",
         "unknown",
     }

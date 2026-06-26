@@ -225,6 +225,7 @@ from ai_steward_wiki.tg.voice import FasterWhisperTranscriber, VoiceHandler
 from ai_steward_wiki.wiki.acquire import WikiLockAdapter
 from ai_steward_wiki.wiki.lifecycle import WikiLifecycleManager
 from ai_steward_wiki.wiki.runner import (
+    WEB_SEARCH_TOOLS,
     WRITE_TOOLS,
     AsyncioSpawner,
     WikiRunnerError,
@@ -401,6 +402,7 @@ class _WikiRunnerAdapter:
         acquirer: WikiLockAdapter,
         spawner: AsyncioSpawner,
         run_config: _RunConfig,
+        web_run_config: _RunConfig | None = None,
     ) -> None:
         self._wiki_root = wiki_root
         self._base_prompt_path = base_prompt_path
@@ -409,6 +411,9 @@ class _WikiRunnerAdapter:
         self._acquirer = acquirer
         self._spawner = spawner
         self._run_config = run_config
+        # aisw-dqz (Path B): intent-scoped WebSearch config selected for Intent.WEB_TASK
+        # only. None → web_task falls back to the default read-only run (no WebSearch).
+        self._web_run_config = web_run_config
 
     async def run(
         self,
@@ -432,6 +437,13 @@ class _WikiRunnerAdapter:
         scratch = self._runtime_dir / "overlays" / f"{run_id}.md"
         scratch.parent.mkdir(parents=True, exist_ok=True)
         scratch.write_text("semver: 1.0.0\n\n# User turn\n", encoding="utf-8")
+        # aisw-dqz (Path B): web_task answers from the live web with WebSearch enabled,
+        # read-only, no WIKI add-dir. Every other intent keeps the default writing config.
+        run_config = (
+            self._web_run_config
+            if intent is Intent.WEB_TASK and self._web_run_config is not None
+            else self._run_config
+        )
         try:
             result = await run_wiki_session(
                 wiki_id=wiki_id,
@@ -443,7 +455,7 @@ class _WikiRunnerAdapter:
                 runtime_dir=self._runtime_dir,
                 acquirer=self._acquirer,
                 spawner=self._spawner,
-                config=self._run_config,
+                config=run_config,
                 on_event=on_event,
                 user_input=text,
                 media_paths=media_paths,
@@ -1238,6 +1250,18 @@ async def _amain() -> None:
             term_grace_s=settings.wiki_runner_term_grace_s,
             claude_config_dir=default_claude_config_dir(),
             allowed_tools=WRITE_TOOLS,  # aisw-t6w: ingest/wiki edits must write under dontAsk
+        ),
+        # aisw-dqz (Path B, HUMAN-approved 2026-06-26): Intent.WEB_TASK runs answer from the
+        # live web with WebSearch ONLY (read-only, no WRITE_TOOLS), no --add-dir on the WIKI
+        # tree + neutral cwd (web_search=True). WebFetch stays denied (default disallowed_tools).
+        # This is the ONLY config that enables WebSearch — never global (M-5).
+        web_run_config=_RunConfig(
+            model=settings.wiki_runner_model,
+            timeout_s=settings.wiki_runner_timeout_s,
+            term_grace_s=settings.wiki_runner_term_grace_s,
+            claude_config_dir=default_claude_config_dir(),
+            allowed_tools=WEB_SEARCH_TOOLS,
+            web_search=True,
         ),
     )
     # aisw-oqq: recurring-digest fast-path parser + digest firing context.
