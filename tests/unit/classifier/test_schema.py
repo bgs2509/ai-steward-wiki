@@ -11,6 +11,7 @@ from ai_steward_wiki.classifier import (
     Intent,
     TimeParseResult,
 )
+from ai_steward_wiki.classifier.schema import unwrap_fenced_json
 
 
 def _ok_payload(**overrides: object) -> dict[str, object]:
@@ -87,3 +88,41 @@ def test_time_parse_result_escalate() -> None:
 def test_error_hierarchy() -> None:
     assert issubclass(ClassifierTimeoutError, ClassifierError)
     assert issubclass(ClassifierSchemaError, ClassifierError)
+
+
+# --- unwrap_fenced_json (aisw-7j3) -----------------------------------------
+
+
+def test_unwrap_plain_json_object() -> None:
+    assert unwrap_fenced_json('{"when_iso": null, "ambiguous": true}') == {
+        "when_iso": None,
+        "ambiguous": True,
+    }
+
+
+def test_unwrap_strips_json_fence() -> None:
+    fenced = '```json\n{"when_iso": "2026-05-11T09:00:00+03:00", "ambiguous": false}\n```'
+    assert unwrap_fenced_json(fenced) == {
+        "when_iso": "2026-05-11T09:00:00+03:00",
+        "ambiguous": False,
+    }
+
+
+def test_unwrap_strips_bare_fence() -> None:
+    assert unwrap_fenced_json('```\n{"ambiguous": true}\n```') == {"ambiguous": True}
+
+
+def test_unwrap_tolerates_surrounding_prose() -> None:
+    """A model that adds a sentence around the fence must still parse (real failure shape)."""
+    reply = 'Вот результат:\n```json\n{"when_iso": null, "ambiguous": true}\n```\nГотово.'
+    assert unwrap_fenced_json(reply) == {"when_iso": None, "ambiguous": True}
+
+
+def test_unwrap_raises_on_non_json() -> None:
+    with pytest.raises(ClassifierSchemaError):
+        unwrap_fenced_json("мне нужно знать текущее время и часовой пояс")
+
+
+def test_unwrap_raises_on_non_object() -> None:
+    with pytest.raises(ClassifierSchemaError):
+        unwrap_fenced_json("[1, 2, 3]")

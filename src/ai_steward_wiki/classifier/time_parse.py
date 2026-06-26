@@ -1,20 +1,25 @@
 # FILE: src/ai_steward_wiki/classifier/time_parse.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: NL time parser — dateparser → Haiku-fallback → escalate (D-010).
 #   SCOPE: parse_time() public API; UTC invariant; user-TZ from caller.
 #   DEPENDS: dateparser, structlog, ai_steward_wiki.classifier.{schema,backend}
-#   LINKS: M-CLASSIFIER-STAGE0, D-010, aisw-kcz
+#   LINKS: M-CLASSIFIER-STAGE0, D-010, aisw-kcz, aisw-7j3
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
 #   parse_time - async; tries dateparser, then Haiku-fallback, then escalates; prefer_future rolls bare past times forward
+#   _normalize_haiku_reply - unwrap a fenced ```json / raw-CLI-envelope Haiku reply (aisw-7j3)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-kcz: add prefer_future kwarg (PREFER_DATES_FROM='future') for reminders
+#   LAST_CHANGE: v0.0.3 - aisw-7j3: normalize the Haiku-fallback reply via
+#                schema.unwrap_fenced_json — a fenced ```json envelope (or a raw CLI
+#                {result:...} passthrough) is stripped before reading when_iso/ambiguous,
+#                so a reminder time wrapped in a code fence parses instead of being lost.
+#   PREVIOUS:    v0.0.2 - aisw-kcz: add prefer_future kwarg (PREFER_DATES_FROM='future') for reminders
 #   PREVIOUS:    v0.0.1 - initial 3-step parser with UTC invariant
 # END_CHANGE_SUMMARY
 
@@ -23,19 +28,36 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import dateparser
 import structlog
 
 from ai_steward_wiki.classifier.backend import ClassifierBackend
-from ai_steward_wiki.classifier.schema import TimeParseResult
+from ai_steward_wiki.classifier.schema import TimeParseResult, unwrap_fenced_json
 
 __all__ = [
     "parse_time",
 ]
 
 _log = structlog.get_logger("classifier.time")
+
+
+def _normalize_haiku_reply(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a Haiku time-parse reply to a flat {when_iso, ambiguous, ...} dict.
+
+    aisw-7j3: a backend may pass through the raw CLI envelope ({result: "<text>"})
+    or the model may wrap its JSON in a ```json code fence. When the structured keys
+    are absent but a string ``result`` is present, unwrap the fenced envelope so the
+    reminder is parsed instead of lost. An already-flat reply is returned unchanged.
+    """
+    if "when_iso" in raw or "ambiguous" in raw:
+        return raw
+    result = raw.get("result")
+    if isinstance(result, str):
+        return unwrap_fenced_json(result)
+    return raw
 
 
 def _to_utc(dt: datetime, fallback_tz: ZoneInfo) -> datetime:
@@ -125,6 +147,9 @@ async def parse_time(
         text=payload, prompt_path=haiku_prompt_path, correlation_id=correlation_id
     )
     haiku_ms = int((time.monotonic() - started_h) * 1000)
+    # aisw-7j3: tolerate a fenced ```json envelope / un-unwrapped CLI result so an
+    # ambiguous-or-resolvable reply is parsed instead of crashing the reminder.
+    raw = _normalize_haiku_reply(raw)
 
     if raw.get("ambiguous"):
         _log.info(

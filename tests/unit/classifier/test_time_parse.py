@@ -67,6 +67,49 @@ async def test_prefer_future_keeps_explicit_future() -> None:
     assert res.when_utc > NOW
 
 
+async def test_parse_haiku_fenced_envelope_resolves(tmp_path: Path) -> None:
+    """aisw-7j3: a Haiku reply wrapped in a ```json fence still parses into the schema.
+
+    Reproduces the production failure where the time-parse model reply arrived as a
+    fenced code block whose envelope was not stripped before json.loads, so the
+    reminder was lost. parse_time must unwrap the fence and resolve when_utc.
+    """
+    fenced = '```json\n{"when_iso": "2026-05-11T09:00:00+03:00", "tz": "Europe/Moscow"}\n```'
+    runner = FakeClaudeRunner(responses=[{"result": fenced}])
+    prompt = tmp_path / "time.md"
+    prompt.write_text("---\nsemver: 1.2.0\n---\n", encoding="utf-8")
+    res = await parse_time(
+        "qwerty asdf zzz unparseable",
+        user_tz=MSK,
+        now_utc=NOW,
+        haiku_backend=runner,
+        haiku_prompt_path=prompt,
+    )
+    assert res.source == "haiku_fallback"
+    assert res.escalate is False
+    assert res.when_utc is not None
+    assert res.when_utc.tzinfo == UTC
+
+
+async def test_parse_haiku_fenced_ambiguous_asks_clarify(tmp_path: Path) -> None:
+    """aisw-7j3: a fenced ambiguous reply (when_iso=null, ambiguous=true) escalates
+    (→ ru clarification upstream) instead of raising a ClassifierSchemaError."""
+    fenced = '```json\n{"when_iso": null, "ambiguous": true}\n```'
+    runner = FakeClaudeRunner(responses=[{"result": fenced}])
+    prompt = tmp_path / "time.md"
+    prompt.write_text("---\nsemver: 1.2.0\n---\n", encoding="utf-8")
+    res = await parse_time(
+        "qwerty asdf zzz unparseable",
+        user_tz=MSK,
+        now_utc=NOW,
+        haiku_backend=runner,
+        haiku_prompt_path=prompt,
+    )
+    assert res.escalate is True
+    assert res.when_utc is None
+    assert res.source == "escalate"
+
+
 async def test_parse_haiku_ambiguous_escalates(tmp_path: Path) -> None:
     runner = FakeClaudeRunner(responses=[{"ambiguous": True}])
     prompt = tmp_path / "time.md"

@@ -1,5 +1,5 @@
 ---
-semver: 1.1.0
+semver: 1.2.0
 purpose: Haiku-fallback NL time parser (D-010 step 2, aisw-ct9)
 ---
 
@@ -34,7 +34,8 @@ Return JSON with exactly these keys:
 
 ## Rules
 
-1. Output a single JSON object. No prose. No code fences. No clarifying
+1. Output a single raw JSON object and NOTHING else. No prose, no explanation,
+   no surrounding text, and NO ``` code fences (not even ```json). No clarifying
    questions. The header gives you everything needed; if anything is still
    genuinely ambiguous, set `"ambiguous": true` and omit `when_iso`.
 2. `when_iso` MUST carry the user's timezone offset (e.g. `+03:00`), not UTC.
