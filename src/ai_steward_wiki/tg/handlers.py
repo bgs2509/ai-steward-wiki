@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/handlers.py
-# VERSION: 0.5.0
+# VERSION: 0.5.1
 # START_MODULE_CONTRACT
 #   PURPOSE: aiogram Router that adapts Telegram message/callback events to
 #            the MessagePipeline Protocol (+ the bot's first slash commands).
@@ -29,6 +29,7 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
+#   CREATE_PROJECT_BUTTON_TEXT - create-project reply-keyboard literal intercepted pre-classify (aisw-cla)
 #   CONFIRM_CALLBACK_PREFIX - "confirm:" callback_data prefix (D-023)
 #   DIGESTSEC_CALLBACK_PREFIX - "digestsec:" callback_data prefix (ADR-026)
 #   EXPAND_SECTION_KEYS - the four /expand <section> keys (mirror D-024 headers)
@@ -41,7 +42,11 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.0 - aisw-02v: build_router gains optional get_user_tz kwarg +
+#   LAST_CHANGE: v0.5.1 - aisw-cla: text handler intercepts the create-project reply-keyboard
+#                button (CREATE_PROJECT_BUTTON_TEXT) BEFORE classify/aggregate and replies
+#                with the NL create-WIKI guidance prompt; never reaches Stage-0 / a domain
+#                WIKI. New anchor tg.handlers.text.create_project_button(.send_failed).
+#   PREVIOUS:    v0.5.0 - aisw-02v: build_router gains optional get_user_tz kwarg +
 #                registers the /cron_add Command handler via
 #                ai_steward_wiki.tg.cron_add.register_cron_add_handlers when
 #                get_user_tz is provided. New routing dependency M-TG-CRON-ADD.
@@ -195,6 +200,7 @@ class BotLoaderControl:
 
 __all__ = [
     "CONFIRM_CALLBACK_PREFIX",
+    "CREATE_PROJECT_BUTTON_TEXT",
     "DIGESTSEC_CALLBACK_PREFIX",
     "EXPAND_SECTION_KEYS",
     "WIKIPICK_CALLBACK_PREFIX",
@@ -221,6 +227,17 @@ DIGESTSEC_CALLBACK_PREFIX = "digestsec:"
 
 # /expand <section> — the four keys mirror the D-024 <b>-headers in prompts/digest.md.
 EXPAND_SECTION_KEYS: tuple[str, ...] = ("today", "meds", "trackers", "wiki")
+
+# aisw-cla: the create-project reply-keyboard button sends this literal text. It
+# must be intercepted in the text handler BEFORE Stage-0 classification, otherwise
+# the bare glyph+word is classified as digest.unparseable / intent=unknown and gets
+# misrouted into a domain WIKI (e.g. Medical-WIKI). Tapping it starts the
+# NL-driven create-WIKI flow instead (D-041: WIKIs are created conversationally).
+CREATE_PROJECT_BUTTON_TEXT = "➕ Проект"  # noqa: RUF001 - exact TG button literal
+_CREATE_PROJECT_PROMPT_RU = (
+    "Давай заведём новую WIKI. Напиши одним сообщением, для чего она — "
+    "например: «заведи вики для путешествий». Я подберу название и спрошу подтверждение."
+)
 
 # ru user-facing strings for the slash commands (D-032: ru-only, no i18n).
 _DIGEST_NOW_NONE_RU = (
@@ -407,6 +424,26 @@ def build_router(
         # START_BLOCK_HANDLER_TEXT
         if message.from_user is None or message.text is None or message.chat is None:
             _log.debug("tg.handlers.text.skip_missing_fields")
+            return
+        # aisw-cla: intercept the create-project reply-keyboard button BEFORE any
+        # classification/aggregation. The bare button literal must never reach
+        # Stage-0 (it would misroute into a domain WIKI). Instead, kick off the
+        # NL-driven create-WIKI flow with a short guided prompt.
+        if message.text == CREATE_PROJECT_BUTTON_TEXT:
+            _log.info(
+                "tg.handlers.text.create_project_button",
+                owner_telegram_id=message.from_user.id,
+                chat_id=message.chat.id,
+            )
+            try:
+                await message.answer(_CREATE_PROJECT_PROMPT_RU)
+            except TelegramBadRequest as exc:
+                _log.warning(
+                    "tg.handlers.text.create_project_button.send_failed",
+                    owner_telegram_id=message.from_user.id,
+                    chat_id=message.chat.id,
+                    error=str(exc),
+                )
             return
         # aisw-378: when an aggregator is wired, buffer the message and return — a
         # burst of split messages is debounced into ONE classify/route, and the

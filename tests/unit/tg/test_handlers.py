@@ -449,6 +449,90 @@ async def test_router_callback_handler_malformed_data_just_answers() -> None:
     assert cb.answers == [1]
 
 
+# ---- aisw-cla: create-project reply-keyboard button intercept -----------
+
+
+@dataclass
+class _AnswerMessage:
+    """FakeMessage variant that records `answer(...)` calls."""
+
+    message_id: int
+    chat: FakeChat
+    from_user: FakeUser
+    text: str | None = None
+    bot: Any = None
+    answers: list[str] = field(default_factory=list)
+
+    async def answer(self, text: str, **kw: Any) -> None:
+        self.answers.append(text)
+
+
+@pytest.mark.asyncio
+async def test_create_project_button_intercepted_before_classify() -> None:
+    # The literal sent by the reply-keyboard button must NOT reach Stage-0.
+    from ai_steward_wiki.tg.handlers import CREATE_PROJECT_BUTTON_TEXT
+
+    pipeline = MagicMock()
+    pipeline.on_text = AsyncMock()
+    router = build_router(pipeline)
+    text_handler = router.message.handlers[0].callback
+    msg = _AnswerMessage(
+        message_id=900,
+        chat=FakeChat(id=10),
+        from_user=FakeUser(id=1),
+        text=CREATE_PROJECT_BUTTON_TEXT,
+    )
+    await text_handler(msg)
+    # No classification — the button is intercepted before the pipeline.
+    pipeline.on_text.assert_not_awaited()
+    # The user is routed into the create-WIKI flow (a guided prompt).
+    assert len(msg.answers) == 1
+    assert "вики" in msg.answers[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_create_project_button_bypasses_aggregator() -> None:
+    # Even with an aggregator wired, the button must not be buffered/classified.
+    from ai_steward_wiki.tg.handlers import CREATE_PROJECT_BUTTON_TEXT
+
+    pipeline = MagicMock()
+    pipeline.on_text = AsyncMock()
+    aggregator = MagicMock()
+    aggregator.submit = AsyncMock()
+    router = build_router(pipeline, aggregator=aggregator)
+    text_handler = router.message.handlers[0].callback
+    msg = _AnswerMessage(
+        message_id=901,
+        chat=FakeChat(id=10),
+        from_user=FakeUser(id=1),
+        text=CREATE_PROJECT_BUTTON_TEXT,
+    )
+    await text_handler(msg)
+    aggregator.submit.assert_not_awaited()
+    pipeline.on_text.assert_not_awaited()
+    assert len(msg.answers) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_button_text_still_dispatches_to_pipeline() -> None:
+    # Regression: ordinary text must still flow into the classify pipeline.
+    from ai_steward_wiki.tg.handlers import CREATE_PROJECT_BUTTON_TEXT
+
+    pipeline = MagicMock()
+    pipeline.on_text = AsyncMock()
+    router = build_router(pipeline)
+    text_handler = router.message.handlers[0].callback
+    msg = _AnswerMessage(
+        message_id=902,
+        chat=FakeChat(id=10),
+        from_user=FakeUser(id=1),
+        text=CREATE_PROJECT_BUTTON_TEXT + " travel",  # not an exact match
+    )
+    await text_handler(msg)
+    pipeline.on_text.assert_awaited_once()
+    assert msg.answers == []
+
+
 # Stamp Bot / Dispatcher imports used so linter doesn't drop them.
 def test_aiogram_imports_alive() -> None:
     assert Bot
