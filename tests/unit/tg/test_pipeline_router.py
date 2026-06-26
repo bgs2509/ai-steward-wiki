@@ -117,7 +117,7 @@ async def test_routable_intent_goes_through_router_not_runner(intent: Intent) ->
 # Intent.DIGEST is no longer legacy — it has its own fast-path (#2, aisw-578),
 # covered in test_pipeline_digest.py. Intent.ADMIN is no longer legacy either —
 # aisw-aca tames it (see test_admin_intent_declined_safely below).
-@pytest.mark.parametrize("intent", [Intent.REMINDER, Intent.WIKI_LINT])
+@pytest.mark.parametrize("intent", [Intent.REMINDER, Intent.WIKI_LINT, Intent.WEB_TASK])
 async def test_non_routable_intent_uses_legacy_path(intent: Intent) -> None:
     sender = FakeSender()
     router = _make_router()
@@ -127,6 +127,23 @@ async def test_non_routable_intent_uses_legacy_path(intent: Intent) -> None:
 
     router.route.assert_not_awaited()
     runner.run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_web_task_answers_via_runner_not_filed() -> None:
+    """aisw-dqz: web_task must ANSWER via the generic runner (intent threaded through),
+    never the Inbox router/filing path."""
+    sender = FakeSender()
+    router = _make_router()
+    pipe, runner, output = _pipe(sender=sender, intent=Intent.WEB_TASK, router=router)
+
+    await pipe.on_text(
+        telegram_id=1, chat_id=10, update_id=2, text="найди в интернете рецепт борща"
+    )
+
+    router.route.assert_not_awaited()  # not filed
+    runner.run.assert_awaited_once()
+    assert runner.run.await_args.kwargs["intent"] is Intent.WEB_TASK
 
 
 @pytest.mark.asyncio

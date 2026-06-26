@@ -581,7 +581,9 @@ def extract_wiki_names(
 
 # Stage-0 intents that mean "route this somewhere" → handled by the Inbox-WIKI
 # Router (Stage-1a) when one is wired (aisw-dsg, Inbox-WIKI Phase-A). The other
-# intents (REMINDER, DIGEST, WIKI_LINT, ADMIN) keep their legacy handling.
+# intents (REMINDER, DIGEST, WIKI_LINT, WEB_TASK, ADMIN) keep their legacy handling.
+# WEB_TASK (aisw-dqz) is intentionally NOT routable: it falls through to the generic
+# answer runner, which enables WebSearch for this intent only (answers in chat, no filing).
 _ROUTABLE_INTENTS = frozenset({Intent.WIKI_INGEST, Intent.WIKI_QUERY, Intent.UNKNOWN})
 
 

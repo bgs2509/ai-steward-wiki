@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/classifier/schema.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Pydantic schemas + intent enum + error classes for Stage-0 classifier.
 #   SCOPE: Intent enum (closed list), ClassifierResult, TimeParseResult, error hierarchy.
@@ -19,7 +19,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - initial intent enum + result schemas + error hierarchy
+#   LAST_CHANGE: v0.0.2 - aisw-dqz: add Intent.WEB_TASK ("web_task") — find-on-internet
+#                answers-in-chat. Stays out of _ROUTABLE_INTENTS so it reaches the generic
+#                answer runner; the runner enables WebSearch only for this intent (Path B).
+#   PREVIOUS:    v0.0.1 - initial intent enum + result schemas + error hierarchy
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ class Intent(str, Enum):
     WIKI_QUERY = "wiki_query"
     WIKI_LINT = "wiki_lint"
     DIGEST = "digest"
+    WEB_TASK = "web_task"
     ADMIN = "admin"
     UNKNOWN = "unknown"
 
