@@ -1,8 +1,9 @@
 # FILE: src/ai_steward_wiki/classifier/stage0.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-0 orchestrator — load+cache prompt, invoke backend, validate, audit.
-#   SCOPE: classify() public API; _PromptCache; idempotent prompt_versions audit upsert.
+#   SCOPE: classify() public API (with graceful timeout fallback to intent=unknown);
+#          _PromptCache; idempotent prompt_versions audit upsert.
 #   DEPENDS: pydantic, sqlalchemy.async, structlog, ai_steward_wiki.classifier.{schema,backend},
 #            ai_steward_wiki.storage.audit.models
 #   LINKS: M-CLASSIFIER-STAGE0, D-009, D-015
@@ -18,7 +19,13 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - initial orchestrator with prompt cache + audit hook
+#   LAST_CHANGE: v0.0.2 - aisw-32p: graceful Stage-0 timeout fallback. classify() catches
+#                ClassifierTimeoutError from backend.call() and returns a safe
+#                intent=unknown ClassifierResult (confidence 0.0, distilled_payload
+#                {"fallback":"stage0_timeout"}) instead of raising — unknown is routable so
+#                the tg pipeline forwards to the Inbox router rather than dropping the message.
+#                New log anchor classifier.stage0.timeout_fallback.
+#   PREVIOUS:    v0.0.1 - initial orchestrator with prompt cache + audit hook
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -39,6 +46,8 @@ from ai_steward_wiki.classifier.backend import ClassifierBackend
 from ai_steward_wiki.classifier.schema import (
     ClassifierResult,
     ClassifierSchemaError,
+    ClassifierTimeoutError,
+    Intent,
 )
 from ai_steward_wiki.logging_events import CLASSIFIER_STAGE0
 from ai_steward_wiki.logging_setup import traced
@@ -134,7 +143,42 @@ async def classify(
     meta = cache.get(prompt_path)
 
     started = time.monotonic()
-    raw = await backend.call(text=text, prompt_path=prompt_path, correlation_id=correlation_id)
+    # START_BLOCK_TIMEOUT_FALLBACK (aisw-32p)
+    # A Stage-0 Haiku TIMEOUT is transient — never let it drop the user's message.
+    # Instead of propagating ClassifierTimeoutError (which the tg pipeline turns into a
+    # dead-end "не удалось распознать" ack), return a safe fallback result with
+    # intent=unknown. `unknown` is a ROUTABLE intent (tg.pipeline._ROUTABLE_INTENTS), so the
+    # message degrades gracefully to the Inbox router (or, if no router is wired, the generic
+    # answer runner). ClassifierSchemaError (genuinely malformed output) is NOT caught — that
+    # is a permanent fault for which the existing error ack is correct.
+    try:
+        raw = await backend.call(text=text, prompt_path=prompt_path, correlation_id=correlation_id)
+    except ClassifierTimeoutError:
+        latency_ms = int((time.monotonic() - started) * 1000)
+        _log.warning(
+            "classifier.stage0.timeout_fallback",
+            correlation_id=correlation_id,
+            backend=backend.name,
+            model=backend.model,
+            prompt_name=meta.name,
+            prompt_semver=meta.semver,
+            prompt_sha8=meta.sha256[:8],
+            latency_ms=latency_ms,
+            intent=Intent.UNKNOWN.value,
+        )
+        return ClassifierResult.model_validate(
+            {
+                "intent": Intent.UNKNOWN.value,
+                "confidence": 0.0,
+                "distilled_payload": {"fallback": "stage0_timeout"},
+                "backend": backend.name,
+                "model": backend.model,
+                "prompt_semver": meta.semver,
+                "prompt_sha256": meta.sha256,
+                "latency_ms": latency_ms,
+            }
+        )
+    # END_BLOCK_TIMEOUT_FALLBACK
     latency_ms = int((time.monotonic() - started) * 1000)
 
     payload = {

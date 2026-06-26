@@ -7,7 +7,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from ai_steward_wiki.classifier import (
     ClassifierSchemaError,
+    ClassifierTimeoutError,
     FakeClaudeRunner,
+    Intent,
     PromptCache,
     classify,
 )
@@ -107,6 +109,50 @@ async def test_prompt_cache_requires_semver(tmp_path: Path) -> None:
     cache = PromptCache()
     with pytest.raises(ClassifierSchemaError):
         cache.get(bad)
+
+
+async def test_classify_timeout_falls_back_to_unknown(tmp_path: Path) -> None:
+    # aisw-32p: a Stage-0 Haiku TIMEOUT must degrade gracefully — classify() returns a safe
+    # intent=unknown result (routable) instead of propagating ClassifierTimeoutError, so the
+    # tg pipeline forwards to the Inbox router rather than dropping the user's message.
+    prompt = _write_prompt(tmp_path)
+
+    def _timeout(_text: str) -> dict[str, object]:
+        raise ClassifierTimeoutError("claude CLI exceeded timeout 30.0s")
+
+    runner = FakeClaudeRunner(responses=_timeout)
+    res = await classify(
+        "Сколько у меня акций Сбербанка?",
+        correlation_id="c-timeout",
+        backend=runner,
+        prompt_path=prompt,
+        cache=PromptCache(),
+    )
+    assert res.intent is Intent.UNKNOWN
+    assert res.confidence == 0.0
+    assert res.distilled_payload == {"fallback": "stage0_timeout"}
+    assert res.backend == "fake"
+    assert res.prompt_semver == "1.0.0"
+    assert res.latency_ms >= 0
+
+
+async def test_classify_schema_error_still_raises(tmp_path: Path) -> None:
+    # The graceful fallback is for TIMEOUTS only; a permanent schema fault must still raise
+    # so the pipeline surfaces its error ack.
+    prompt = _write_prompt(tmp_path)
+
+    def _schema_err(_text: str) -> dict[str, object]:
+        raise ClassifierSchemaError("backend returned garbage")
+
+    runner = FakeClaudeRunner(responses=_schema_err)
+    with pytest.raises(ClassifierSchemaError):
+        await classify(
+            "x",
+            correlation_id="c-schema",
+            backend=runner,
+            prompt_path=prompt,
+            cache=PromptCache(),
+        )
 
 
 async def test_prompt_cache_hits(tmp_path: Path) -> None:
