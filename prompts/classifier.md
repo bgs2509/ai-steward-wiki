@@ -1,5 +1,5 @@
 ---
-semver: 1.2.0
+semver: 1.3.0
 purpose: Stage-0 classifier system prompt (backend-independent, D-015)
 ---
 
@@ -14,7 +14,7 @@ the user's intent.
 Return JSON with exactly these keys:
 
 - `intent` — one of: `"reminder"`, `"wiki_ingest"`, `"wiki_query"`, `"wiki_lint"`,
-  `"digest"`, `"web_task"`, `"admin"`, `"unknown"`.
+  `"digest"`, `"web_task"`, `"smalltalk"`, `"admin"`, `"unknown"`.
 - `confidence` — number in [0.0, 1.0].
 - `distilled_payload` — opaque object with normalised fields useful to downstream
   stages (extracted entities, time hints, target domain hints).
@@ -33,8 +33,13 @@ Return JSON with exactly these keys:
    into a WIKI (`wiki_ingest`) and NOT a question about already-stored content
    (`wiki_query`). Choose `web_task` only when the user clearly wants a web search /
    external lookup.
-7. `admin` — administrative action (allowlist, elevation, quota, runbook).
-8. `unknown` — none of the above with sufficient confidence.
+7. `smalltalk` — casual chitchat, greeting, or banter with no actionable task,
+   e.g. "привет", "как дела", "расскажи что-нибудь интересное", "ты дурак?",
+   "просто проверяю, ты на связи?". Reply conversationally; do NOT file material,
+   schedule anything, or treat it as a web/WIKI request. Choose `smalltalk` only
+   when there is clearly no task to perform.
+8. `admin` — administrative action (allowlist, elevation, quota, runbook).
+9. `unknown` — none of the above with sufficient confidence.
 
 ## Per-intent `distilled_payload` contract
 

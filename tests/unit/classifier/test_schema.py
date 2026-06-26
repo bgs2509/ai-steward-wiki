@@ -36,9 +36,16 @@ def test_intent_enum_closed() -> None:
         "wiki_lint",
         "digest",
         "web_task",
+        "smalltalk",
         "admin",
         "unknown",
     }
+
+
+def test_smalltalk_intent_validates() -> None:
+    """aisw-df4: a smalltalk-classified result is accepted by the schema."""
+    r = ClassifierResult.model_validate(_ok_payload(intent="smalltalk", confidence=0.9))
+    assert r.intent is Intent.SMALLTALK
 
 
 def test_classifier_result_happy() -> None:
