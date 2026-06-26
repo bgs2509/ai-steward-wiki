@@ -32,7 +32,11 @@ build/
 # state / runtime
 state/
 *.wiki.lock
-data/
+# Ignore runtime DBs/artifacts under data/, but keep the dir itself (alembic
+# upgrades default to relative sqlite:///data/*.db; fresh checkouts/worktrees
+# need data/ to exist or scheduler/alembic tests error).
+data/*
+!data/.gitkeep
 
 # sentrux scratch
 .sentrux/baselines/
