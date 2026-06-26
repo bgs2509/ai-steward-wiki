@@ -11,7 +11,6 @@
 #
 # START_MODULE_MAP
 #   parse_time - async; tries dateparser, then Haiku-fallback, then escalates; prefer_future rolls bare past times forward
-#   _normalize_haiku_reply - unwrap a fenced ```json / raw-CLI-envelope Haiku reply (aisw-7j3)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
