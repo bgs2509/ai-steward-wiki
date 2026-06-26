@@ -385,3 +385,70 @@ async def test_ingest_timeout_with_no_data_reports_failed(tmp_path: Path) -> Non
 
     assert outcome.status == "run_failed"
     assert "Не удалось" in outcome.reply
+
+
+# ---------- aisw-94i: non-zero CLI exit (rc!=0) -> honest, retryable failure ----------
+
+
+@pytest.mark.asyncio
+async def test_nonzero_exit_keeps_raw_and_surfaces_retryable_failure(tmp_path: Path) -> None:
+    """aisw-94i: a non-zero wiki-run exit (rc=1) must NOT silently drop the record.
+
+    The raw payload is staged before the run and survives the crash; the user-facing
+    reply must be an explicit, retryable failure (resend to finish) — mirroring the
+    aisw-zpn timeout honest partial-success, extended to exit_code != 0 (the day-25
+    Medical-WIKI data-loss).
+    """
+    from ai_steward_wiki.wiki.runner import WikiRunnerError
+
+    adapter, wiki_root = _adapter(tmp_path)
+    with patch.object(
+        runtime,
+        "run_wiki_session",
+        new=AsyncMock(side_effect=WikiRunnerError("claude CLI exited rc=1; stderr=boom")),
+    ):
+        outcome = await adapter.ingest(
+            _decision(RouterIntent.ROUTE, "Medical-WIKI"),
+            telegram_id=42,
+            user_text="давление 140 90",
+            source="text",
+            media_paths=None,
+            correlation_id="tg-25-42",
+        )
+    # (b) explicit failure surfaced — not silently swallowed, and retryable
+    assert outcome.status == "run_failed"
+    assert "Не удалось" in outcome.reply
+    assert "ещё раз" in outcome.reply
+    assert outcome.run_id is not None
+    # (a) raw user input preserved on disk for a re-ingest (retryable, not lost)
+    assert list((wiki_root / "42" / "Medical-WIKI" / "raw").glob("*_text.md"))
+
+
+@pytest.mark.asyncio
+async def test_nonzero_exit_with_partial_data_reports_partial(tmp_path: Path) -> None:
+    """aisw-94i: rc!=0 after the model wrote some data -> honest partial-success."""
+    from ai_steward_wiki.wiki.runner import WikiRunnerError
+
+    adapter, _ = _adapter(tmp_path)
+
+    async def _explode(**kwargs: object) -> object:
+        wp = kwargs["wiki_path"]
+        assert isinstance(wp, Path)
+        (wp / "metrics").mkdir(exist_ok=True)
+        (wp / "metrics" / "bp.csv").write_text(
+            "date,sys,dia\n2026-06-25,140,90\n", encoding="utf-8"
+        )
+        raise WikiRunnerError("claude CLI exited rc=1; stderr=killed mid-write")
+
+    with patch.object(runtime, "run_wiki_session", new=AsyncMock(side_effect=_explode)):
+        outcome = await adapter.ingest(
+            _decision(RouterIntent.ROUTE, "Medical-WIKI"),
+            telegram_id=42,
+            user_text="давление 140 90",
+            source="text",
+            media_paths=None,
+            correlation_id="tg-25-42",
+        )
+    assert outcome.status == "partial"
+    assert "частично" in outcome.reply
+    assert "ещё раз" in outcome.reply

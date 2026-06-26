@@ -864,6 +864,48 @@ def _wiki_has_ingested_content(wiki_dir: Path) -> bool:
     return False
 
 
+def _failed_ingest_outcome(
+    *,
+    decision: RouterDecision,
+    partial: bool,
+    run_id: str,
+    target_wiki: str,
+    created: bool,
+) -> IngestOutcome:
+    """Honest, retryable outcome for an ingest run that did NOT complete cleanly.
+
+    Covers BOTH a hard timeout (aisw-zpn) and a non-zero CLI exit (aisw-94i, the
+    day-25 Medical-WIKI data-loss): in either case the raw payload was already staged
+    into the WIKI's ``raw/`` before the run and survives the crash, so the user is
+    asked to RE-SEND (soft-resume) rather than getting a silent drop or a misleading
+    "попробую позже" that promises a retry the bot never performs. ``partial=True``
+    means the model wrote some structured content before the failure.
+    """
+    if partial:
+        return IngestOutcome(
+            status="partial",
+            reply=(
+                f"{decision.notes}\n\n"
+                "Документ большой — занёс частично. "
+                "Пришли его ещё раз, чтобы дозанести остальное."  # noqa: RUF001
+            ),
+            run_id=run_id,
+            target_wiki=target_wiki,
+            created=created,
+        )
+    return IngestOutcome(
+        status="run_failed",
+        reply=(
+            f"{decision.notes}\n\n"
+            "Не удалось разложить по полочкам — сохранил исходное. "  # noqa: RUF001
+            "Пришли ещё раз, чтобы я занёс."
+        ),
+        run_id=run_id,
+        target_wiki=target_wiki,
+        created=created,
+    )
+
+
 # START_BLOCK_INBOX_LIBRARIAN_ADAPTER (aisw-zd9, Inbox-WIKI Phase-B)
 class _LibrarianAdapter:
     """Inbox-WIKI Stage-1b librarian: resolve/create the target <Domain>-WIKI from a
@@ -1009,26 +1051,21 @@ class _LibrarianAdapter:
                 run_id=run_id,
                 partial=partial,
             )
-            if partial:
-                return IngestOutcome(
-                    status="partial",
-                    reply=(
-                        f"{decision.notes}\n\n"
-                        "Документ большой — занёс частично. "
-                        "Пришли его ещё раз, чтобы дозанести остальное."  # noqa: RUF001
-                    ),
-                    run_id=run_id,
-                    target_wiki=target.wiki_name.primary,
-                    created=target.created,
-                )
-            return IngestOutcome(
-                status="run_failed",
-                reply=f"{decision.notes}\n\nНе удалось разложить по полочкам — попробую позже.",  # noqa: RUF001
+            return _failed_ingest_outcome(
+                decision=decision,
+                partial=partial,
                 run_id=run_id,
                 target_wiki=target.wiki_name.primary,
                 created=target.created,
             )
         except WikiRunnerError:
+            # aisw-94i: a non-zero CLI exit (rc!=0) is the SAME data-loss shape as the
+            # timeout — the raw payload is already staged into raw/ and survives the
+            # crash, but the structured ingest did NOT finish. Mirror the timeout's
+            # honest partial-success (check what was written, ask for a re-send) instead
+            # of the old generic "попробую позже", which silently dropped the day-25
+            # Medical record while promising a retry that never happened.
+            partial = await asyncio.to_thread(_wiki_has_ingested_content, target.wiki_dir)
             logger.exception(
                 "inbox.route.ingest_failed",
                 correlation_id=correlation_id,
@@ -1036,10 +1073,11 @@ class _LibrarianAdapter:
                 wiki_id=wiki_id,
                 run_id=run_id,
                 error_class="WikiRunnerError",
+                partial=partial,
             )
-            return IngestOutcome(
-                status="run_failed",
-                reply=f"{decision.notes}\n\nНе удалось разложить по полочкам — попробую позже.",  # noqa: RUF001
+            return _failed_ingest_outcome(
+                decision=decision,
+                partial=partial,
                 run_id=run_id,
                 target_wiki=target.wiki_name.primary,
                 created=target.created,
