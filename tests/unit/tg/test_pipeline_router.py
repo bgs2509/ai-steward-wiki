@@ -94,7 +94,10 @@ def _pipe(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("intent", [Intent.WIKI_INGEST, Intent.WIKI_QUERY, Intent.UNKNOWN])
+# aisw-50z: WIKI_QUERY is no longer routable — it must be ANSWERED by the generic
+# runner, not filed via the Stage-1a ingest router (see
+# test_wiki_query_answers_via_runner_not_router below).
+@pytest.mark.parametrize("intent", [Intent.WIKI_INGEST, Intent.UNKNOWN])
 async def test_routable_intent_goes_through_router_not_runner(intent: Intent) -> None:
     sender = FakeSender()
     router = _make_router()
@@ -111,6 +114,22 @@ async def test_routable_intent_goes_through_router_not_runner(intent: Intent) ->
     runner.run.assert_not_awaited()
     output.deliver.assert_not_awaited()
     assert sender.sends[0]["text"] == "Положу в Travel-WIKI."
+
+
+@pytest.mark.asyncio
+async def test_wiki_query_answers_via_runner_not_router() -> None:
+    """aisw-50z: wiki_query must ANSWER via the generic runner (cross-WIKI read),
+    NOT be filed through the Stage-1a ingest router — even when a router is wired."""
+    sender = FakeSender()
+    router = _make_router()
+    pipe, runner, output = _pipe(sender=sender, intent=Intent.WIKI_QUERY, router=router)
+
+    await pipe.on_text(telegram_id=42, chat_id=10, update_id=5, text="какое у меня было давление?")
+
+    router.route.assert_not_awaited()  # no filing
+    runner.run.assert_awaited_once()  # answer path
+    output.deliver.assert_awaited_once()
+    assert runner.run.await_args.kwargs["intent"] is Intent.WIKI_QUERY
 
 
 @pytest.mark.asyncio

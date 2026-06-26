@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.12.0
+# VERSION: 0.13.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -105,7 +105,17 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.12.0 - aisw-2ra: confident hint fast-path now routes SILENTLY
+#   LAST_CHANGE: v0.13.0 - aisw-50z (query-gap): WIKI_QUERY removed from
+#                _ROUTABLE_INTENTS (now {WIKI_INGEST, UNKNOWN}). A wiki_query is a
+#                question about already-stored content, not material to file: it now
+#                skips BOTH filing branches (HINT_FASTPATH + ROUTABLE_BRANCH, both
+#                gated on the set) and falls through to the generic answer runner
+#                (run_and_deliver / runner.run + output.deliver), which runs Claude in
+#                the user root with cross-WIKI --add-dir read access and delivers the
+#                answer to chat. No new module / protocol / anchor; theme cwd-scoping
+#                deferred (would need a WikiRunner-Protocol change). Fixes Cycle-1 e2e
+#                "filed instead of answered" (6/7 query__* scenarios).
+#   PREVIOUS:    v0.12.0 - aisw-2ra: confident hint fast-path now routes SILENTLY
 #                (D-023 'auto') — the confident branch ingests via the new shared
 #                _ingest_and_deliver tail (also reused by _handle_route_confirm) and
 #                acks with ROUTE_SILENT_ACK_RU + a one-tap redirect picker
@@ -579,10 +589,13 @@ def extract_wiki_names(
     return "all"
 
 
-# Stage-0 intents that mean "route this somewhere" → handled by the Inbox-WIKI
-# Router (Stage-1a) when one is wired (aisw-dsg, Inbox-WIKI Phase-A). The other
-# intents (REMINDER, DIGEST, WIKI_LINT, ADMIN) keep their legacy handling.
-_ROUTABLE_INTENTS = frozenset({Intent.WIKI_INGEST, Intent.WIKI_QUERY, Intent.UNKNOWN})
+# Stage-0 intents that mean "FILE this somewhere" → handled by the Inbox-WIKI
+# Router (Stage-1a) / '## Inbox hint' fast-path when one is wired (aisw-dsg,
+# Inbox-WIKI Phase-A). aisw-50z: WIKI_QUERY is NOT a filing intent — it is a
+# question about already-stored content, so it must reach the generic answer
+# runner (cross-WIKI read in the user root) and be ANSWERED in chat, never filed.
+# The other intents (REMINDER, DIGEST, WIKI_LINT, ADMIN) keep their own handling.
+_ROUTABLE_INTENTS = frozenset({Intent.WIKI_INGEST, Intent.UNKNOWN})
 
 
 class Classifier(Protocol):
