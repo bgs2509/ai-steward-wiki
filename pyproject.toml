@@ -23,6 +23,11 @@ dependencies = [
     "pypdf==6.14.1",
     # voice STT (D-022) — core dep: voice is a primary MVP feature. See ADR-002.
     "faster-whisper==1.1.0",
+    # faster-whisper 1.1.0 imports `requests` at runtime, but huggingface-hub 1.x
+    # (resolved transitively) switched to httpx and no longer pulls it, so it was
+    # absent from the lock → voice STT failed with ModuleNotFoundError on prod
+    # (aisw-voice-stt). Declared directly so uv installs it.
+    "requests==2.34.2",
     "tomli-w==1.2.0",
     # aisw-iyz: GitHub-Markdown → Telegram-HTML on the outbound reply path.
     # Already present transitively in uv.lock; promoted to a direct dependency.
