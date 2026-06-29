@@ -1651,6 +1651,14 @@ QueueMsg = Annotated[CronUserQueueMsg, Field(discriminator=&quot;kind&quot;)]
       </Item>
     </decisions>
   </Feature>
+  <Feature source="20260623-compact-reply-design.md" bd_id="aisw-2n2">
+    <feature>compact-reply</feature>
+    <status>approved</status>
+    <risk>medium</risk>
+    <approach>final-turn-extractor + 3 prose call-sites rewired + wiki.md format rules + loader progress</approach>
+    <adr_candidate>False</adr_candidate>
+    <libraries_touched/>
+  </Feature>
   <Feature source="20260623-html-escape-outbound-design.md" bd_id="aisw-azu">
     <feature>html-escape-outbound</feature>
     <module_id>M-TG-OUTPUT</module_id>
@@ -1732,6 +1740,44 @@ QueueMsg = Annotated[CronUserQueueMsg, Field(discriminator=&quot;kind&quot;)]
       </Item>
       <Item>
         <D-local-8>Safety net unchanged — the aisw-azu parse_mode=None fallback still catches any residual invalid HTML, so a reply is never lost even if the converter has a bug.</D-local-8>
+      </Item>
+    </decisions>
+  </Feature>
+  <Feature source="20260626-query-gap-design.md" bd_id="aisw-50z">
+    <feature>query-gap</feature>
+    <module_id>M-TG-PIPELINE</module_id>
+    <status>stable</status>
+    <date>2026-06-26</date>
+    <risk>medium</risk>
+    <evidence>strong</evidence>
+    <open_questions/>
+    <stack>
+      <Item>
+        <library>structlog</library>
+        <version>pinned (uv.lock)</version>
+        <used_for>existing tg.pipeline.runner.dispatched / deliver.sent anchors (no new anchor needed)</used_for>
+      </Item>
+      <Item>
+        <library>pytest / pytest-asyncio</library>
+        <version>pinned (uv.lock)</version>
+        <used_for>RED-&gt;GREEN unit test on the routing predicate</used_for>
+      </Item>
+    </stack>
+    <decisions>
+      <Item>
+        <D-local-1>Remove Intent.WIKI_QUERY from _ROUTABLE_INTENTS (pipeline.py:585). This is the whole behavioural fix. _ROUTABLE_INTENTS becomes {WIKI_INGEST, UNKNOWN}. wiki_query then skips HINT_FASTPATH (1157) and ROUTABLE_BRANCH (1278) — both gated on the set — and, being neither REMINDER/DIGEST/ADMIN, falls through to the generic answer runner (1404+).</D-local-1>
+      </Item>
+      <Item>
+        <D-local-2>Theme-picking is DELEGATED to the Claude run, not done in the pipeline. The generic runner runs in the user ROOT (wiki_root/&lt;telegram_id&gt;) with --add-dir on root, so the run reads across all &lt;Domain&gt;-WIKI/ and answers from the relevant one. This is the e2e spec's &quot;read across the user's WIKIs&quot; branch and is always correct. score_catalog/is_confident stay reserved for the INGEST fast-path only.</D-local-2>
+      </Item>
+      <Item>
+        <D-local-3>NO cwd-scoping to a single matched theme WIKI in this fix. Scoping would require threading a target wiki_path through the WikiRunner Protocol + _WikiRunnerAdapter + StreamingDelivery + pipeline (&gt;=4 modules =&gt; HIGH risk, breaks the medium-risk envelope). Deferred as a LATER optimization (focus/latency), not a correctness requirement.</D-local-3>
+      </Item>
+      <Item>
+        <D-local-4>NO new user-facing copy and NO new log anchor. The generic runner already logs tg.pipeline.runner.dispatched(intent=wiki_query) + tg.pipeline.deliver.sent and delivers assistant text (ACK_TEXT_RU only as empty-output fallback). The e2e log_watch scorer reads exactly this trace.</D-local-4>
+      </Item>
+      <Item>
+        <D-local-5>wiki_ingest and unknown are UNCHANGED — they stay in _ROUTABLE_INTENTS and keep router / hint-fast-path filing.</D-local-5>
       </Item>
     </decisions>
   </Feature>

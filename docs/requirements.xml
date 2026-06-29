@@ -3147,6 +3147,55 @@
       <Item>Off-host log shipping / metrics backend (Prometheus etc.)</Item>
     </scope_out>
   </Feature>
+  <Feature source="20260623-compact-reply-discovery.md" bd_id="aisw-2n2">
+    <feature>compact-reply</feature>
+    <status>approved</status>
+    <risk>medium</risk>
+    <risk_justification>2 source modules (wiki/runner.py, tg/pipeline.py) + 1 prompt, reversible, no DB schema change, no public-API break, no security surface.</risk_justification>
+    <open_questions/>
+    <functional_requirements>
+      <Item id="FR-1">
+        <text>Final user-facing reply MUST contain only the last assistant turn (text after the last tool_use), not concatenated inter-tool narration.</text>
+      </Item>
+      <Item id="FR-2">
+        <text>Stripped inter-tool narration MUST be surfaced as ephemeral loader progress in the ⏳ placeholder (slow path), then replaced by the clean final answer.</text>
+      </Item>
+      <Item id="FR-3">
+        <text>prompts/wiki.md MUST forbid the self-generated &quot;## Выполнено / Операция / Зафиксировано / Краткое резюме / Рекомендация&quot; footer and the duplicated summary; one compact answer + at most one thin confirmation line.</text>
+      </Item>
+      <Item id="FR-4">
+        <text>Fast path (run completes within timeout) MUST also deliver only the last assistant turn.</text>
+      </Item>
+    </functional_requirements>
+    <non_functional_requirements>
+      <Item id="NFR-1">
+        <text>No new dependencies. Pure-function change to text aggregation + delivery wiring.</text>
+      </Item>
+      <Item id="NFR-2">
+        <text>Backward-tolerant — if events lack a recognisable final turn, fall back to existing aggregate/outcome.text/ACK behaviour (no empty replies).</text>
+      </Item>
+      <Item id="NFR-3">
+        <text>structlog anchors preserved; technical details (log.md write, operation kind) stay in internal logs, never in the user reply.</text>
+      </Item>
+    </non_functional_requirements>
+    <scope_in>
+      <Item>src/ai_steward_wiki/wiki/runner.py (final-turn extractor)</Item>
+      <Item>src/ai_steward_wiki/tg/pipeline.py (slow/fast path delivery + loader progress)</Item>
+      <Item>prompts/wiki.md (response-format rules)</Item>
+      <Item>tests (unit for extractor + delivery)</Item>
+    </scope_in>
+    <scope_out>
+      <Item>classifier/inbox prompts (separate confirmation message stays)</Item>
+      <Item>voice/OCR paths</Item>
+      <Item>digest/cron prompts</Item>
+    </scope_out>
+    <risks>
+      <Item id="R-1">
+        <text>A legitimate multi-paragraph answer that the model splits across assistant messages could be truncated to the last turn only.</text>
+        <mitigation>Extract the last CONTIGUOUS run of text-only assistant messages (those not followed by a tool_use), not literally one message.</mitigation>
+      </Item>
+    </risks>
+  </Feature>
   <Feature source="20260623-html-escape-outbound-discovery.md" bd_id="aisw-azu">
     <feature>html-escape-outbound</feature>
     <module_id>M-TG-OUTPUT</module_id>
@@ -3277,5 +3326,225 @@
       <Item>Changing the wiki prompt (defence at delivery boundary; prompt tuning is a separate optional follow-up)</Item>
       <Item>Custom-emoji / spoiler / images</Item>
     </scope_out>
+  </Feature>
+  <Feature source="20260623-silent-autoroute-discovery.md" bd_id="aisw-2ra">
+    <feature>silent-autoroute</feature>
+    <module_id>M-TG-PIPELINE</module_id>
+    <status>stable</status>
+    <date>2026-06-23</date>
+    <risk>medium</risk>
+    <fr>
+      <Item>
+        <FR-1>When the hint fast-path is confident (is_confident(hint_match) == True — top_stem set AND top_score &gt;= MIN_SCORE(2.0) AND margin &gt;= MIN_MARGIN(1.0)), the pipeline MUST route the message into the matched &lt;Domain&gt;-WIKI WITHOUT the explicit Confirm/Cancel keyboard — replacing the request_explicit call at pipeline.py:1191-1193.</FR-1>
+      </Item>
+      <Item>
+        <FR-2>During the silent route the user MUST see a progress loader stating the project is being determined (&quot;🔍 Определяю проект…&quot;) instead of the generic &quot;⏳ Думаю…&quot; placeholder, for the duration of the librarian ingest.</FR-2>
+      </Item>
+      <Item>
+        <FR-3>After a successful silent ingest the user MUST receive the normal ingest reply PLUS a short ack naming the target (&quot;✅ &lt;Domain&gt;-WIKI&quot;) so the routing decision is never invisible.</FR-3>
+      </Item>
+      <Item>
+        <FR-4>The ack MUST carry a cheap correction affordance (&quot;↩️ Не туда&quot;) that lets the user redirect the just-routed item into a different existing WIKI — because a silent route gives no pre-confirmation chance to catch a misroute.</FR-4>
+      </Item>
+      <Item>
+        <FR-5>The confidence threshold form is UNCHANGED — absolute margin (MIN_SCORE=2.0 / MIN_MARGIN=1.0 in inbox/hint_match.py). No ratio (3x) gate is introduced.</FR-5>
+      </Item>
+      <Item>
+        <FR-6>Non-confident hint matches and the heavy Sonnet-router path are UNCHANGED — they keep the existing explicit route-confirm keyboard (request_explicit + build_route_confirm_keyboard).</FR-6>
+      </Item>
+      <Item>
+        <FR-7>A successful silent ingest MUST update the active-WIKI sticky pointer (_active_wiki_set), exactly as the confirmed route path does (pipeline.py:2279).</FR-7>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>Precision over recall (inherits hint fast-path NFR-2) — silent routing only fires on the existing confident predicate; no loosening of the bar.</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>Observability — a new structlog anchor distinguishes silent routes from confirmed ones (e.g. tg.pipeline.hint_fastpath.silent_route) carrying target_wiki, score, margin, correlation_id; the existing hint_fastpath.hit anchor semantics must stay clear.</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>Safety — a silent misroute MUST be correctable by the user in one tap/reply; the limitation that content is not git-reverted from the wrong WIKI (no revert API on IngestOutcome) MUST be documented, not silently ignored.</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4>mypy --strict + ruff + grace lint clean; all existing pipeline/confirm/handlers tests stay green.</NFR-4>
+      </Item>
+      <Item>
+        <NFR-5>Ru-only user-facing strings (D-032), no i18n.</NFR-5>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>No revert/undo handle exists — IngestOutcome (pipeline.py:613-621) exposes only status/reply/run_id/target_wiki/created. &quot;Cheap undo&quot; therefore CANNOT mean git-revert; it must be a redirect (re-route) affordance, reusing the existing wikipick machinery.</Item>
+      <Item>The silent ingest MUST call the SAME execution path as a confirmed route — self._librarian.ingest(decision, ...) then _active_wiki_set + _output.deliver (mirroring _handle_route_confirm, pipeline.py:2252-2287) — to avoid forking ingest logic (DRY).</Item>
+      <Item>D-023 graduated confirmation (auto / implicit / explicit) is the governing model; silent route == &quot;auto&quot; level (ack line, no decision keyboard). ConfirmationService.auto_ack(chat_id, line) already exists (confirm.py:176).</Item>
+      <Item>Change is localized to- START_BLOCK_HINT_FASTPATH (pipeline.py:1125-1222), the loader string (handlers.py PLACEHOLDER_TEXT_RU / a scoped variant), and a redirect callback path reusing build_route_confirm_keyboard / on_wikipick_callback.</Item>
+    </constraints>
+    <risks>
+      <Item>Silent misroute writes into the wrong git-backed WIKI before the user can object. Mitigation - the confident predicate already minimizes this (&gt;=2 keyword overlap + &gt;=1 lead); ack + &quot;↩️ Не туда&quot; redirect lets the user re-route immediately; mis-ingested copy in the wrong WIKI is a documented MVP limitation (follow-up bead for content relocation / wiki_lint cleanup).</Item>
+      <Item>Loader-string coupling — PLACEHOLDER_TEXT_RU is shared by all slow paths; blindly changing it would relabel every &quot;thinking&quot; placeholder as &quot;determining project&quot;. Mitigation - introduce a scoped loader for the route path, do not repurpose the global placeholder.</Item>
+      <Item>Redirect affordance without a persisted pending row — the silent path skips request_explicit, so there is no route_ingest pending row for on_wikipick_callback to load. Mitigation (design decision, Step 4) - either persist a lightweight post-route record, or have the redirect button open a fresh explicit picker bound to the original payload.</Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/tg/pipeline.py — START_BLOCK_HINT_FASTPATH confident branch- silent ingest + auto_ack + redirect affordance + active-WIKI set + structlog anchor</Item>
+      <Item>src/ai_steward_wiki/tg/handlers.py — scoped route loader text (&quot;🔍 Определяю проект…&quot;)</Item>
+      <Item>src/ai_steward_wiki/tg/confirm.py — only if a redirect-after-silent keyboard helper is needed (reuse build_route_confirm_keyboard where possible)</Item>
+      <Item>tests/unit/tg/ — silent-route hit, loader text, ack+redirect, sticky-pointer set, and the unchanged-paths regression (non-confident + heavy router still confirm)</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Git-revert / true content rollback from the wrong WIKI (no API; documented limitation + possible follow-up bead)</Item>
+      <Item>Changing the confidence threshold form (absolute margin stays; no 3x ratio — decided via /best-approach)</Item>
+      <Item>Touching the heavy Sonnet-router path, reminder fast-path, or digest fast-path confirmations</Item>
+      <Item>Per-candidate LLM confidence scores in ClassifierResult (rejected as Variant 3 in /best-approach)</Item>
+    </scope_out>
+  </Feature>
+  <Feature source="20260626-query-gap-discovery.md" bd_id="aisw-50z">
+    <feature>query-gap</feature>
+    <module_id>M-TG-PIPELINE</module_id>
+    <status>stable</status>
+    <date>2026-06-26</date>
+    <risk>medium</risk>
+    <evidence>strong</evidence>
+    <open_questions/>
+    <fr>
+      <Item>
+        <FR-1>A message classified by Stage-0 as intent=wiki_query MUST be ANSWERED in chat (assistant text delivered), NOT filed into a WIKI via the Stage-1a ingest router.</FR-1>
+      </Item>
+      <Item>
+        <FR-2>The wiki_query answer run MUST have read access across the owner's &lt;Domain&gt;-WIKI/ subdirs so it can read the relevant theme WIKI and answer from stored content (Karpathy LLM Wiki query op).</FR-2>
+      </Item>
+      <Item>
+        <FR-3>The wiki_query path MUST NOT present a Confirm/Cancel-to-file keyboard and MUST NOT silent-route into a WIKI via the '## Inbox hint' fast-path.</FR-3>
+      </Item>
+      <Item>
+        <FR-4>wiki_ingest and unknown intents MUST keep their current routing behaviour (Stage-1a router / hint fast-path) — only wiki_query changes.</FR-4>
+      </Item>
+      <Item>
+        <FR-5>The answer path MUST emit the existing observable log trace (tg.pipeline.runner.dispatched intent=wiki_query + tg.pipeline.deliver.sent) so the e2e log_watch scorer judges the turn as an answer, not an ingest ack.</FR-5>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>Localised change — touch only tg/pipeline.py routing predicate; no new module, no protocol change, no DB migration.</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>mypy --strict + ruff + ruff format + grace lint clean; make total-test fully green (coverage &gt;=80%).</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>Ru-only user-facing strings (D-032); no new user-facing copy needed (reuses the generic runner answer + ACK_TEXT_RU fallback).</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4>TDD — the bug is reproduced by a failing unit test (wiki_query with a wired router currently goes to router.route, not runner.run) before the fix.</NFR-4>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>The generic fall-through runner (_run_text_pipeline ~line 1404+, self._streaming.run_and_deliver / self._runner.run) is the established answer-capable path. _WikiRunnerAdapter.run (__main__.py:413) runs Claude with cwd = wiki_root/&lt;telegram_id&gt; (the user ROOT) and --add-dir on that root, so the run already has cross-WIKI read access. wiki_query answering is achieved by letting it fall through to this path.</Item>
+      <Item>The bug is at tg/pipeline.py:585 — _ROUTABLE_INTENTS = {WIKI_INGEST, WIKI_QUERY, UNKNOWN}. Both the HINT_FASTPATH block (line 1157) and the ROUTABLE_BRANCH (line 1278) gate on result.intent in _ROUTABLE_INTENTS, so wiki_query is funnelled to filing with no answer path (verified).</Item>
+      <Item>Stage-1a router (inbox/router.py:RouterIntent) only has filing outcomes route/create_wiki/clarify/reject — there is NO answer outcome there. Answering must happen on the generic runner path, not in the router.</Item>
+    </constraints>
+    <risks>
+      <Item>Running wiki_query in the user root could let Claude freelance-write to a WIKI. Mitigation - prompts/wiki.md principle 1 restricts content changes to explicit ingest/query/lint ops and instructs &quot;query =&gt; no changes / no confirmation line&quot;; the spec PASS criterion only requires an answer delivered. Hardening of write-prevention is out of scope (separate from the routing gap).</Item>
+      <Item>Theme-scoping (running the answer in ONE matched theme WIKI via score_catalog/is_confident) would require changing the WikiRunner protocol + _WikiRunnerAdapter + StreamingDelivery + pipeline (&gt;=4 modules) = HIGH risk. Out of scope for this medium-risk fix; reading across all WIKIs from root already satisfies FR-2 (theme-picking delegated to the Claude run).</Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/tg/pipeline.py — remove Intent.WIKI_QUERY from _ROUTABLE_INTENTS (line 585) + MODULE_CONTRACT header bump.</Item>
+      <Item>tests/unit/tg/test_pipeline_router.py — drop WIKI_QUERY from the routable parametrize; add a RED-&gt;GREEN test proving wiki_query (router wired) reaches runner.run / not router.route.</Item>
+    </scope_in>
+    <scope_out>
+      <Item>web_task (mode 8) and lifting the WebSearch tool denial — separate proposed mode in the e2e spec, not this bead.</Item>
+      <Item>Theme-scoping the answer run to a single matched WIKI (cwd scope) — deferred optimization; cross-WIKI root read is sufficient.</Item>
+      <Item>wiki_lint behaviour (mode 4, partial) — separate bead.</Item>
+      <Item>Hardening against Claude writing during a query run — separate concern.</Item>
+    </scope_out>
+  </Feature>
+  <Feature source="20260626-web-gap-discovery.md" bd_id="aisw-dqz">
+    <feature>web-gap</feature>
+    <module_id>M-TG-PIPELINE</module_id>
+    <status>stable</status>
+    <date>2026-06-26</date>
+    <risk>high</risk>
+    <evidence>strong</evidence>
+    <open_questions>
+      <Item>
+        <OQ-1>Approve enabling the WebSearch tool for web_task runs (Path B)? This is a security/permissions change that --auto-approve cannot waive (HIGH risk). Needs an explicit human yes/no.</OQ-1>
+      </Item>
+    </open_questions>
+    <fr>
+      <Item>
+        <FR-1>A &quot;найди в интернете …&quot; / &quot;search online for …&quot; message MUST be recognised by Stage-0 as a NEW intent web_task — today it has no mode and falls to unknown -&gt; Inbox Router -&gt; filed (verified cycle-1).</FR-1>
+      </Item>
+      <Item>
+        <FR-2>A web_task message MUST be ANSWERED in chat (assistant text delivered), NOT filed into a WIKI and NOT shown a Confirm/Cancel-to-file keyboard.</FR-2>
+      </Item>
+      <Item>
+        <FR-3__Path_B__gated_ key="FR-3 (Path B, gated)">To answer questions that require live web content (current recipes/prices/news), the web_task run MUST be allowed to use the WebSearch tool, which is currently denied for ALL WIKI/CLI runs (verified — produces wiki.run.permission_denied denied_tools=[&quot;WebSearch&quot;]).</FR-3__Path_B__gated_>
+      </Item>
+      <Item>
+        <FR-4>Enabling WebSearch MUST be scoped to web_task runs ONLY. The ingest / digest / librarian / router / query run configs MUST keep WebSearch denied.</FR-4>
+      </Item>
+      <Item>
+        <FR-5>WebFetch MUST remain denied for ALL runs including web_task (it is the SSRF / arbitrary-URL vector; runner.py:451 disallowed_tools default).</FR-5>
+      </Item>
+      <Item>
+        <FR-6>All other intents (reminder, wiki_ingest, wiki_query, wiki_lint, digest, admin, unknown) MUST keep their current behaviour — only the new web_task intent is added.</FR-6>
+      </Item>
+    </fr>
+    <nfr>
+      <Item>
+        <NFR-1>mypy --strict + ruff + ruff format + grace lint clean; make total-test fully green (coverage &gt;=80%).</NFR-1>
+      </Item>
+      <Item>
+        <NFR-2>Ru-only user-facing strings (D-032).</NFR-2>
+      </Item>
+      <Item>
+        <NFR-3>TDD — a failing unit test reproduces the gap (web_task reaches an answer runner with WebSearch allowed, not the router/filing path) before the fix.</NFR-3>
+      </Item>
+      <Item>
+        <NFR-4__security_ key="NFR-4 (security)">web_task runs MUST be observable — a structured log anchor recording WebSearch availability + any web egress, and permission_denials surfaced as today (runner.py:638-641).</NFR-4__security_>
+      </Item>
+      <Item>
+        <NFR-5__security_ key="NFR-5 (security)">web_task answer runs SHOULD be read-only (no WRITE_TOOLS) and SHOULD NOT receive --add-dir on the user's WIKI tree, to neutralise the prompt-injection -&gt; data-exfiltration / file-corruption chain from untrusted web content.</NFR-5__security_>
+      </Item>
+    </nfr>
+    <constraints>
+      <Item>WebSearch is denied today NOT by an explicit --disallowedTools entry but by the dontAsk allowlist model — verified path below.</Item>
+      <Item>
+        <Stage-0_intent_enum_is_a_CLOSED_list__classifier_schema.py_43_Intent___prompts_classifier.md_output_schema__semver_1.1.0_._Adding_a_value_is_a_cross-cutting_classifier-prompt_change key="Stage-0 intent enum is a CLOSED list (classifier/schema.py:43 Intent + prompts/classifier.md output schema, semver 1.1.0). Adding a value is a cross-cutting classifier-prompt change">every classification request now sees the new option, so it MUST be added in BOTH the Python enum and the prompt, and the prompt semver bumped (prompt_sha256 is recorded per result, so the change is auditable).</Stage-0_intent_enum_is_a_CLOSED_list__classifier_schema.py_43_Intent___prompts_classifier.md_output_schema__semver_1.1.0_._Adding_a_value_is_a_cross-cutting_classifier-prompt_change>
+      </Item>
+      <Item>The Stage-1a Inbox Router (inbox/router.py RouterIntent) only has FILING outcomes (route/create_wiki/clarify/reject) — there is NO answer outcome there. Answering happens on the generic fall-through runner (pipeline.py:1404+), the same path the sibling query-gap (aisw-50z) uses.</Item>
+      <Item>The _WikiRunnerAdapter (__main__.py:413) holds ONE fixed _RunConfig (allowed_tools=WRITE_TOOLS, __main__.py:1240). The intent already threads through WikiRunner.run / StreamingDelivery.run_and_deliver (pipeline.py:679,702), so a per-intent (web_task) run config can be selected WITHOUT any Protocol signature change.</Item>
+    </constraints>
+    <risks>
+      <Item>
+        <R-1__HIGH__prompt_injection_ key="R-1 (HIGH, prompt injection)">WebSearch results bring untrusted web text into the model context. On the current generic runner the run has WRITE_TOOLS + --add-dir on the user root, so an injected instruction in fetched content could try to corrupt/exfiltrate WIKI files. Mitigation — run web_task READ-ONLY with no WIKI --add-dir (NFR-5); treat search results as untrusted in the system prompt.</R-1__HIGH__prompt_injection_>
+      </Item>
+      <Item>
+        <R-2__MEDIUM__SSRF_ key="R-2 (MEDIUM, SSRF)">mitigated by keeping WebFetch denied (FR-5) — WebSearch is Anthropic-mediated search, not an arbitrary-URL fetcher, so it cannot be pointed at internal IPs / cloud-metadata endpoints.</R-2__MEDIUM__SSRF_>
+      </Item>
+      <Item>
+        <R-3__MEDIUM__exfiltration_ key="R-3 (MEDIUM, exfiltration)">WebSearch query strings are the only outbound channel and go to Anthropic's search backend (not an attacker endpoint); the dangerous exfil tool (WebFetch POST/GET to arbitrary URL) stays denied.</R-3__MEDIUM__exfiltration_>
+      </Item>
+      <Item>
+        <R-4__LOW_MEDIUM__cost___unbounded_egress_ key="R-4 (LOW/MEDIUM, cost / unbounded egress)">each web_task run incurs search cost + latency. Mitigation — per-call timeout (existing), optional WebSearch max_uses cap, per-user rate-limit (LATER if abused).</R-4__LOW_MEDIUM__cost___unbounded_egress_>
+      </Item>
+      <Item>
+        <R-5__scope_creep_ key="R-5 (scope creep)">enabling WebSearch globally instead of per-intent would widen the deny surface for every run. Mitigation — FR-4 scopes it to the web_task config only.</R-5__scope_creep_>
+      </Item>
+    </risks>
+    <scope_in>
+      <Item>src/ai_steward_wiki/classifier/schema.py — add Intent.WEB_TASK to the closed enum.</Item>
+      <Item>prompts/classifier.md — add web_task semantics + bump semver (prompt_sha256 auditable).</Item>
+      <Item>src/ai_steward_wiki/__main__.py — a web_task-scoped _RunConfig (WebSearch allowed, read-only, no WIKI add-dir) selected by intent in _WikiRunnerAdapter.run.</Item>
+      <Item>src/ai_steward_wiki/wiki/runner.py — likely a WEB_SEARCH_TOOLS constant + (optional) plumbing for the read-only / add-dir-suppressed web_task run.</Item>
+      <Item>tests/unit — RED-&gt;GREEN test that web_task reaches an answer runner with WebSearch allowed, not the router/filing path; classifier-prompt enum coverage.</Item>
+    </scope_in>
+    <scope_out>
+      <Item>Lifting WebSearch for any run other than web_task.</Item>
+      <Item>Re-enabling WebFetch (stays denied).</Item>
+      <Item>Per-user web rate-limiting / quota (LATER, only if abused).</Item>
+      <Item>Single-theme cwd-scoping (same deferral as query-gap).</Item>
+    </scope_out>
+    <scope_later>
+      <Item>Path A can ship alone (web_task answers from model knowledge, WebSearch still denied) to fix the &quot;filed instead of answered&quot; failures; Path B (WebSearch enabled) lands only after explicit human security approval (OQ-1).</Item>
+    </scope_later>
   </Feature>
 </Requirements>
