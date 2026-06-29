@@ -28,6 +28,17 @@
 
 ## 3. Upgrade
 
+> **Current prod (interim layout):** the live deploy runs as user `bgs` at
+> `/home/bgs/works/ai-steward-wiki` (NOT the `/opt` + `aisw-bot` target below).
+> Apply the same steps with those substitutions, e.g.
+> `git -C /home/bgs/works/ai-steward-wiki pull && ~/.local/bin/uv sync && sudo systemctl restart aisw-bot.service`.
+>
+> **`uv sync` is MANDATORY on every upgrade — never `git pull` + restart alone.**
+> A bare pull leaves `.venv` drifted from `uv.lock`, so a dependency added in the
+> pulled commit is silently absent at runtime. This shipped a broken voice STT
+> (faster-whisper's `requests` dep missing from the venv — bug aisw-32u). `uv sync`
+> reconciles the venv to the lock; use `--frozen` to install the lock exactly.
+
 1. `sudo -u aisw-bot git -C /opt/ai-steward-wiki fetch && sudo -u aisw-bot git -C /opt/ai-steward-wiki checkout <tag>`
 2. `sudo -u aisw-bot uv sync --frozen` in `/opt/ai-steward-wiki`.
 3. Run pending Alembic migrations per-DB:
