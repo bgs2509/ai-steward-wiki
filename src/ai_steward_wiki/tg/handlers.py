@@ -640,7 +640,7 @@ def build_router(
         section = parts[1].strip().lower() if len(parts) > 1 else ""
         if section not in EXPAND_SECTION_KEYS:
             _log.info("tg.command.expand.bad_section", owner_telegram_id=owner, got=section)
-            await message.answer(_EXPAND_USAGE_RU)
+            await message.answer(_EXPAND_USAGE_RU, parse_mode=None)
             return
         try:
             text = await firing.run_section_expand(owner, section)

@@ -25,9 +25,11 @@ class _FakeMessage:
         self.from_user = type("FU", (), {"id": 100, "username": "tester"})()
         self.chat = type("C", (), {"id": 100})()
         self.answers: list[str] = []
+        self.answer_calls: list[tuple[str, dict[str, Any]]] = []
 
     async def answer(self, text: str, **kw: Any) -> None:
         self.answers.append(text)
+        self.answer_calls.append((text, kw))
 
 
 # ---- _humanize_recurrence pure tests ---------------------------------------
@@ -96,6 +98,16 @@ async def test_no_pipe_returns_usage():
     msg = await _run_handler("/cron_add каждый день в 9")
     assert msg.answers
     assert CRON_ADD_USAGE_RU in msg.answers[0]
+
+
+async def test_usage_reply_is_plain_text_parse_mode_none():
+    # CRON_ADD_USAGE_RU has literal <расписание>/<команда> placeholders. Under the
+    # bot's default HTML parse_mode Telegram rejects them as invalid tags and the
+    # message is silently dropped (aisw-woc). The usage reply MUST go out plain text.
+    msg = await _run_handler("/cron_add каждый день в 9")
+    text, kw = msg.answer_calls[0]
+    assert CRON_ADD_USAGE_RU in text
+    assert kw.get("parse_mode") is None
 
 
 async def test_no_args_returns_usage():

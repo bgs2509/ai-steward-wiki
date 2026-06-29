@@ -28,9 +28,11 @@ class _Msg:
     from_user: _User
     text: str | None = None
     answers: list[str] = field(default_factory=list)
+    answer_kwargs: list[dict[str, Any]] = field(default_factory=list)
 
     async def answer(self, text: str, **kw: Any) -> None:
         self.answers.append(text)
+        self.answer_kwargs.append(kw)
 
 
 def _handler(router: Any, name: str) -> Any:
@@ -134,6 +136,9 @@ async def test_expand_bad_section_usage(monkeypatch: pytest.MonkeyPatch, text: s
     assert len(msg.answers) == 1
     assert "today" in msg.answers[0]
     assert "trackers" in msg.answers[0]
+    # _EXPAND_USAGE_RU has a literal <раздел>; must go out plain text or HTML mode
+    # drops it (aisw-woc).
+    assert msg.answer_kwargs[0].get("parse_mode") is None
     run.assert_not_awaited()
 
 

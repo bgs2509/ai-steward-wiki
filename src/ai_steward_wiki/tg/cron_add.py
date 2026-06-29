@@ -117,7 +117,7 @@ async def handle_cron_add(
     # START_BLOCK_CRON_ADD_PARSE_INPUT
     if "|" not in args:
         _log.info("tg.command.cron_add.usage", owner_telegram_id=owner, reason="no_pipe")
-        await message.answer(CRON_ADD_USAGE_RU)
+        await message.answer(CRON_ADD_USAGE_RU, parse_mode=None)
         return
     schedule_text, _, command_text = args.partition("|")
     schedule_text = schedule_text.strip()
@@ -130,7 +130,7 @@ async def handle_cron_add(
             empty_schedule=not schedule_text,
             empty_command=not command_text,
         )
-        await message.answer(CRON_ADD_USAGE_RU)
+        await message.answer(CRON_ADD_USAGE_RU, parse_mode=None)
         return
     # END_BLOCK_CRON_ADD_PARSE_INPUT
 
@@ -153,7 +153,7 @@ async def handle_cron_add(
             owner_telegram_id=owner,
             reason=result.reason,
         )
-        await message.answer(CRON_ADD_USAGE_RU)
+        await message.answer(CRON_ADD_USAGE_RU, parse_mode=None)
         return
     rec = result.recurrence
     _log.info(
