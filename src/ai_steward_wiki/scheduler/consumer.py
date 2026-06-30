@@ -1,9 +1,9 @@
 # FILE: src/ai_steward_wiki/scheduler/consumer.py
-# VERSION: 0.0.3
+# VERSION: 0.0.4
 # START_MODULE_CONTRACT
-#   PURPOSE: Single async drain loop over PriorityJobQueue — spawns
-#            `systemd-run --scope --collect`-wrapped Claude CLI per cron-user
-#            item, captures stdout (timeout 600s), delivers via aiogram.Bot
+#   PURPOSE: Single async drain loop over PriorityJobQueue — spawns the Claude CLI
+#            directly per cron-user item (no systemd-run wrapper, aisw-abc/ADR-010),
+#            captures stdout (timeout 600s), delivers via aiogram.Bot
 #            (chunked via ChainSplitter). Mutates jobs.Job status through the
 #            'queued' → 'running' → 'finished'|'failed' arc.
 #   SCOPE: CronConsumer (constructor-DI bot/queue/jobs_session_maker — R-1 mitigation);
@@ -20,7 +20,8 @@
 #            ai_steward_wiki.tg.output.ChainSplitter,
 #            ai_steward_wiki.storage.jobs.models.Job
 #   LINKS: M-SCHEDULER-CONSUMER, M-SCHEDULER, M-STORAGE-JOBS, M-TG-TEXT,
-#          M-CLAUDE-CLI-COMMON, aisw-02v, aisw-0j4, D-011 §3, D-021
+#          M-CLAUDE-CLI-COMMON, aisw-02v, aisw-0j4, aisw-abc, D-011 §3, D-021,
+#          ADR-010
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -31,7 +32,18 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - aisw-o3m: bring the cron path to defense-in-depth parity
+#   LAST_CHANGE: v0.0.4 - aisw-abc: drop the `systemd-run --scope --collect` wrapper
+#                from _build_argv — run the Claude CLI directly, matching
+#                wiki/runner._build_argv. The wrapper was D-038 per-UID-isolation
+#                infra; ADR-010 deferred that model for the life-MVP (simple
+#                single-user service under `bgs`). On the active deployment the
+#                wrapper failed with "Failed to start transient scope unit:
+#                Interactive authentication required" (polkit denies non-root
+#                manage-units without a session), breaking ALL cron-user jobs.
+#                Removed the now-dead `slice_name` constructor param,
+#                `cron_user_slice_name` setting, and `unit=`/`slice=` log fields.
+#                CLAUDE_CONFIG_DIR still reaches the child via build_env().
+#   PREVIOUS:    v0.0.3 - aisw-o3m: bring the cron path to defense-in-depth parity
 #                with wiki/runner._build_argv. _build_argv now adds, BEFORE the
 #                aisw-0j4 "--" command separator: --setting-sources "" (drop default
 #                settings + default Claude Code system prompt under OAuth),
@@ -161,7 +173,6 @@ class CronConsumer:
         prompt_path: Path,
         jobs_session_maker: async_sessionmaker[AsyncSession],
         timeout_s: float = 600.0,
-        slice_name: str = "aisw-cli.slice",
         spawner: Spawner | None = None,
     ) -> None:
         self._queue = queue
@@ -171,7 +182,6 @@ class CronConsumer:
         self._prompt_path = prompt_path
         self._jobs_session_maker = jobs_session_maker
         self._timeout_s = timeout_s
-        self._slice_name = slice_name
         self._spawner: Spawner = spawner if spawner is not None else _AsyncioSpawner()
 
     # ---- public lifecycle -------------------------------------------------
@@ -183,7 +193,7 @@ class CronConsumer:
         the task cleanly. Unexpected exceptions inside _execute_one are caught,
         logged, and the loop continues (one bad item must not crash the drain).
         """
-        _log.info("scheduler.consumer.started", slice=self._slice_name)
+        _log.info("scheduler.consumer.started")
         try:
             while True:
                 item = await self._queue.get()
@@ -233,7 +243,6 @@ class CronConsumer:
             job_id=msg.job_id,
             correlation_id=msg.correlation_id,
             chat_id=msg.chat_id,
-            unit=f"cli-{msg.job_id}",
         )
         start_t = datetime.now(UTC)
 
@@ -307,20 +316,21 @@ class CronConsumer:
 
     def _build_argv(self, msg: CronUserQueueMsg) -> list[str]:
         # START_BLOCK_CONSUMER_ARGV
+        # aisw-abc: run the Claude CLI DIRECTLY — no `systemd-run --scope` wrapper.
+        # The wrapper was D-038 per-UID-isolation infrastructure; ADR-010 deferred
+        # that model for the life-MVP (simple single-user service under `bgs`, no
+        # CAP_SETUID, no polkit rule). On the active deployment `systemd-run --scope`
+        # failed with "Failed to start transient scope unit: Interactive
+        # authentication required" (polkit denies non-root manage-units without a
+        # session). The interactive path (wiki/runner._build_argv) already spawns
+        # claude directly; this brings the cron path to parity. CLAUDE_CONFIG_DIR
+        # reaches the child via build_env() (claude_cli.common), no longer via
+        # systemd-run --setenv.
         binary = resolve_binary(self._claude_binary)
         argv: list[str] = [
-            "systemd-run",
-            "--scope",
-            "--collect",
-            f"--slice={self._slice_name}",
-            f"--unit=cli-{msg.job_id}",
-            f"--setenv=CLAUDE_CONFIG_DIR={self._claude_config_dir}",
-            "--",
             binary,
             *system_prompt_argv(self._prompt_path),
-            # aisw-o3m: defense-in-depth parity with wiki/runner._build_argv. The
-            # positional-prompt invocation model (and the aisw-0j4 "--" guard below)
-            # is unchanged; only the hardening flags compatible with it are added.
+            # aisw-o3m: defense-in-depth parity with wiki/runner._build_argv.
             # Flag names verified against `claude --help` (claude 2.1.175):
             #   --permission-mode dontAsk  -> explicit mode, matches runner.
             #   --setting-sources ""       -> drop default user/project settings &
@@ -339,14 +349,13 @@ class CronConsumer:
             "--disallowedTools",
             "WebFetch",
             # aisw-0j4: literal end-of-options separator BEFORE the user command.
-            # The "--" at index ~7 only terminates systemd-run's own option parsing,
-            # not claude's. Without this separator a msg.command starting with "-"
-            # (e.g. "--dangerously-skip-permissions", "--add-dir /") is parsed by the
-            # Claude CLI as a FLAG, widening the per-job tool/permission surface and
-            # bypassing the sandbox. This "--" forces claude to treat msg.command as a
-            # positional prompt, never an option. (runner.py avoids this by routing
-            # user input via stdin under -p; the consumer path uses a positional prompt,
-            # so the separator is the correct minimal guard here.)
+            # Without it a msg.command starting with "-" (e.g.
+            # "--dangerously-skip-permissions", "--add-dir /") is parsed by the
+            # Claude CLI as a FLAG, widening the per-job tool/permission surface.
+            # This "--" forces claude to treat msg.command as a positional prompt,
+            # never an option. (runner.py avoids this by routing user input via
+            # stdin under -p; the consumer path uses a positional prompt, so the
+            # separator is the correct minimal guard here.)
             "--",
             msg.command,
         ]

@@ -180,7 +180,6 @@ class Settings(BaseSettings):
     claude_cli_binary: str = "claude"
     cron_user_prompt_filename: str = "cron_user.md"
     cron_user_timeout_s: float = 600.0
-    cron_user_slice_name: str = "aisw-cli.slice"
 
     @property
     def tg_bot_token(self) -> SecretStr | None:

@@ -148,7 +148,6 @@ def _build_consumer(*, session_factory, bot, spawner) -> CronConsumer:
         prompt_path=Path(__file__).parent / "_fixtures_prompt.md",
         jobs_session_maker=session_factory,
         timeout_s=600,
-        slice_name="aisw-cli.slice",
         spawner=spawner,
     )
 
@@ -175,7 +174,6 @@ async def test_execute_one_happy_path(session_factory, fake_prompt_file) -> None
         prompt_path=fake_prompt_file,
         jobs_session_maker=session_factory,
         timeout_s=600,
-        slice_name="aisw-cli.slice",
         spawner=spawner,
     )
     msg = _msg(job_id, command="run me")
@@ -187,14 +185,16 @@ async def test_execute_one_happy_path(session_factory, fake_prompt_file) -> None
     assert chat_id == 100
     assert "hello" in text
 
-    # argv contains the systemd-run scope + claude binary + command.
+    # argv runs the Claude binary DIRECTLY — no systemd-run wrapper (aisw-abc,
+    # ADR-010 simple single-user model; parity with wiki/runner._build_argv).
     assert spawner.argv is not None
     argv = spawner.argv
-    assert argv[0] == "systemd-run"
-    assert "--scope" in argv
-    assert "--collect" in argv
-    assert "--slice=aisw-cli.slice" in argv
-    assert f"--unit=cli-{job_id}" in argv
+    assert argv[0] == "/usr/bin/echo"
+    assert "systemd-run" not in argv
+    assert "--scope" not in argv
+    assert "--collect" not in argv
+    assert not any(a.startswith("--slice=") for a in argv)
+    assert not any(a.startswith("--unit=") for a in argv)
     assert "--" in argv
     # The user command appears as the last argv element.
     assert argv[-1] == "run me"
@@ -222,7 +222,6 @@ async def test_execute_one_timeout(session_factory, fake_prompt_file) -> None:
         prompt_path=fake_prompt_file,
         jobs_session_maker=session_factory,
         timeout_s=0.05,
-        slice_name="aisw-cli.slice",
         spawner=spawner,
     )
     await consumer._execute_one(_msg(job_id))
@@ -256,7 +255,6 @@ async def test_execute_one_non_zero_exit(session_factory, fake_prompt_file) -> N
         prompt_path=fake_prompt_file,
         jobs_session_maker=session_factory,
         timeout_s=600,
-        slice_name="aisw-cli.slice",
         spawner=spawner,
     )
     await consumer._execute_one(_msg(job_id))
@@ -287,7 +285,6 @@ async def test_execute_one_long_stdout_chunked(session_factory, fake_prompt_file
         prompt_path=fake_prompt_file,
         jobs_session_maker=session_factory,
         timeout_s=600,
-        slice_name="aisw-cli.slice",
         spawner=spawner,
     )
     await consumer._execute_one(_msg(job_id))
@@ -314,7 +311,6 @@ async def test_execute_one_telegram_error_does_not_propagate(
         prompt_path=fake_prompt_file,
         jobs_session_maker=session_factory,
         timeout_s=600,
-        slice_name="aisw-cli.slice",
         spawner=spawner,
     )
     # Must not raise.
@@ -342,7 +338,6 @@ async def test_run_loop_drains_and_cancels(session_factory, fake_prompt_file) ->
         prompt_path=fake_prompt_file,
         jobs_session_maker=session_factory,
         timeout_s=600,
-        slice_name="aisw-cli.slice",
         spawner=spawner,
     )
     await queue.put(Lane.CRON_WRITE, _msg(job_id))

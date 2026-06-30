@@ -1349,7 +1349,6 @@ async def _amain() -> None:
         prompt_path=settings.cron_user_prompt_path,
         jobs_session_maker=jobs_maker,
         timeout_s=settings.cron_user_timeout_s,
-        slice_name=settings.cron_user_slice_name,
     )
     router_adapter = _RouterAdapter(
         wiki_root=settings.wiki_root,

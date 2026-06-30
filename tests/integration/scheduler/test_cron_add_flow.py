@@ -123,7 +123,6 @@ async def test_full_flow_producer_to_consumer_to_bot(session_factory, tmp_path: 
             prompt_path=prompt,
             jobs_session_maker=session_factory,
             timeout_s=10.0,
-            slice_name="aisw-cli.slice",
             spawner=stub,
         )
         await consumer._execute_one(item.payload)
@@ -134,11 +133,12 @@ async def test_full_flow_producer_to_consumer_to_bot(session_factory, tmp_path: 
         assert chat_id == 100
         assert "hello from aisw-02v" in text
 
-        # 6. argv has the systemd-run scope wrap.
+        # 6. argv runs the Claude binary directly — no systemd-run wrap (aisw-abc).
         assert stub.argv is not None
-        assert stub.argv[0] == "systemd-run"
-        assert "--scope" in stub.argv
-        assert "--collect" in stub.argv
+        assert stub.argv[0] == "/usr/bin/echo"
+        assert "systemd-run" not in stub.argv
+        assert "--scope" not in stub.argv
+        assert "--collect" not in stub.argv
         assert stub.argv[-1] == "echo aisw-02v"
 
         # 7. Job row reached terminal 'finished' status.
