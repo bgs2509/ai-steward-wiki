@@ -11,7 +11,7 @@
 | Restart | `sudo systemctl restart aisw-bot` |
 | Reload allowlist (SIGHUP) | `sudo systemctl kill --signal=SIGHUP aisw-bot` |
 | Dump stacks (SIGUSR1, on-demand diagnostics) | `sudo kill -USR1 $(systemctl show aisw-bot -p MainPID --value)` |
-| Status | `systemctl status aisw-bot aisw-bot.slice aisw-stt.slice` |
+| Status | `systemctl status aisw-bot` |
 
 `SIGHUP` triggers `users.toml` hot-reload (D-031). Watchdog fallback re-reads on file mtime change.
 
@@ -20,17 +20,25 @@
 1. **Live tail:** `journalctl -u aisw-bot -f -o cat`.
 2. **Last hour, JSON:** `journalctl -u aisw-bot --since "1 hour ago" -o json | jq .`.
 3. **By correlation_id:** `journalctl -u aisw-bot -o json | jq 'select(.MESSAGE | fromjson? | .correlation_id == "<cid>")'`.
-4. **Per-CLI scope:** `journalctl -u cli-<job_id>.scope`.
+4. **Per-CLI run:** there are NO per-CLI systemd units (ADR-010 simple model — see §3). Filter the bot's own log by `job_id`: `journalctl -u aisw-bot -o cat | grep '"job_id": <job_id>'`.
 5. structlog fields guaranteed: `ts, event, correlation_id, user_id, wiki_id, job_id`. Anchors follow `[Module][function][BLOCK_NAME]`.
 
-## 3. Per-CLI scope inspection
+## 3. Per-CLI run inspection
+
+> **Deployment model (ADR-010):** the bot runs as a simple single-user service
+> (`User=bgs`, `Slice=system.slice`). Each Claude CLI invocation — interactive
+> (`M-WIKI-RUNNER`) **and** cron-user (`M-SCHEDULER-CONSUMER`, aligned in aisw-abc) —
+> is a **direct child subprocess** of `aisw-bot`, NOT a `systemd-run --scope`
+> transient unit. There are no `cli-<job_id>.scope` units and no `aisw-*.slice`.
+> The per-UID / per-scope hardening model (D-038: dedicated slices, `MemoryMax=2G`
+> per CLI, `CAP_SETUID`) is **deferred** — see `deploy/systemd/*.d038-deferred`.
 
 | Question | Command |
 |----------|---------|
-| List active scopes | `systemctl list-units 'cli-*.scope' --no-legend` |
-| Show one scope's caps | `systemctl show cli-<job_id>.scope -p MemoryMax,TasksMax,ProtectSystem,ReadOnlyPaths,ReadWritePaths` |
-| Kill a runaway scope | `sudo systemctl stop cli-<job_id>.scope` |
-| Aggregate slice state | `systemctl show aisw-bot.slice -p MemoryCurrent,TasksCurrent` |
+| List live CLI children | `pgrep -a -P $(systemctl show aisw-bot -p MainPID --value)` |
+| Trace one job's run | `journalctl -u aisw-bot -o cat | grep '"job_id": <job_id>'` |
+| Kill a runaway CLI child | `kill -TERM <child_pid>` (the bot's D-021 timeout killer normally handles this) |
+| Service resource usage | `systemctl show aisw-bot -p MemoryCurrent,TasksCurrent` |
 
 ## 4. Common incidents
 
@@ -41,16 +49,20 @@
 3. If it's `.env` parse failure → fix `/etc/ai-steward-wiki/.env`, `systemctl restart aisw-bot`.
 4. If it's DB-locked / migration drift → `restore.md` §1 (single-DB) or full snapshot restore.
 
-### 4.2. CLI scopes hitting `MemoryMax=2G`
+### 4.2. A CLI run consuming excess memory
 
-1. `journalctl -u cli-<job_id>.scope | grep -i 'killed\|oom'`.
-2. If single user repeatedly OOMs → review prompts in `/opt/ai-steward-wiki/prompts/` for that domain; tune `wiki.md` to bound output.
-3. Do NOT raise `MemoryMax` ad-hoc — change source in `deploy/runbook/deploy.md` §5 + open a Beads issue for the limit change.
+> ADR-010: there is **no** per-CLI `MemoryMax` (no transient scope). A runaway
+> CLI is bounded only by host memory until the bot's D-021 timeout fires.
 
-### 4.3. Aggregate slice hitting `MemoryMax=16G`
+1. `systemctl show aisw-bot -p MemoryCurrent` and `pgrep -a -P $(systemctl show aisw-bot -p MainPID --value)` — spot the heavy child.
+2. Trace the offending job: `journalctl -u aisw-bot -o cat | grep '"job_id": <job_id>'`.
+3. If a single user/domain repeatedly bloats → review prompts in the deployed `prompts/` dir for that domain; tune `wiki.md` to bound output.
+4. Per-CLI memory caps return only with the deferred D-038 model (`deploy/systemd/*.d038-deferred`); do not improvise scope limits under ADR-010.
 
-1. `systemctl show aisw-bot.slice -p MemoryCurrent,TasksCurrent`.
-2. List concurrent scopes; expected ceiling = 4 active CLI per tech-spec §10.1.
+### 4.3. Host / service memory pressure
+
+1. `systemctl show aisw-bot -p MemoryCurrent,TasksCurrent` + `free -h`.
+2. Count concurrent CLI children (`pgrep -c -P <bot_pid>`); expected ceiling = 4 active CLI per tech-spec §10.1 (scheduler concurrency).
 3. If > 4 → backpressure regression in scheduler; halt new dispatches via `bd update <ops-bd-id> --notes="halt:scheduler"` and investigate.
 
 ### 4.4. Allowlist not picked up
@@ -59,11 +71,11 @@
 2. `journalctl -u aisw-bot -g 'allowlist' -n 20`.
 3. `sudo systemctl kill --signal=SIGHUP aisw-bot`. If still not visible, watchdog re-read on next mtime tick.
 
-### 4.5. Stuck `cli-<job_id>.scope` (CLI hang)
+### 4.5. Stuck CLI child process (CLI hang)
 
-1. `systemctl status cli-<job_id>.scope` — verify it's not making progress (no recent log lines).
-2. Cross-check `bd show <job_id>` — if status still `in_progress` past timeout (D-021), bot's killer should fire.
-3. Manual kill: `sudo systemctl stop cli-<job_id>.scope`. Bot emits a `[Scheduler][killed]` log line on next tick and updates Beads.
+1. Find the child: `pgrep -a -P $(systemctl show aisw-bot -p MainPID --value)`; cross-check its `job_id` via `journalctl -u aisw-bot -o cat | grep '"job_id": <job_id>'` (no recent lines = stalled).
+2. Cross-check `bd show <job_id>` — if status still `in_progress` past timeout (D-021), the bot's killer should fire (`scheduler.consumer.exec.timeout`).
+3. Manual kill: `kill -TERM <child_pid>` (escalate to `-KILL` if needed). The bot emits a killed/timeout log line on the next tick and updates Beads.
 
 ### 4.6. Bot frozen / unresponsive — event-loop hang (aisw-xbc)
 

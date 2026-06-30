@@ -89,6 +89,17 @@ Negative / trade-offs:
 - `D-038` in `docs/Spec-WIKI/decisions/` should be marked amended-by ADR-010
   (with a `log.md` entry), as a follow-up in the life-zone wiki.
 
+Implementation note:
+
+- The interactive path (`M-WIKI-RUNNER`) always ran the Claude CLI directly. The
+  cron-user path (`M-SCHEDULER-CONSUMER`) had retained a `systemd-run --scope`
+  wrapper from the D-038 era, which failed on the ADR-010 deployment with
+  *"Failed to start transient scope unit: Interactive authentication required"*
+  (polkit denies a non-root transient scope without a session) — breaking all
+  cron-user jobs. **aisw-abc** removed that wrapper so the cron path also spawns
+  the CLI directly, bringing the code fully in line with this decision. Operational
+  guidance updated in `docs/runbook/operations.md` §3.
+
 ## Sources
 
 - D-038 (per-user hard isolation — amended by this ADR)
