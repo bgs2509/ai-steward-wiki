@@ -10,6 +10,10 @@
 #   ROLE: TEST
 #   MAP_MODE: NONE
 # END_MODULE_CONTRACT
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.1.0 - aisw-o6m: initial tests for M-WIKI-SCOPE (ADR-034).
+# END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
