@@ -597,6 +597,19 @@ class _DigestRunnerAdapter:
             overlay_prompt_path = self._digest_prompt_path
             user_input = planner_context
             run_prefix = "digest"
+            # START_BLOCK_DIGEST_LAYOUTS_INJECT
+            # aisw-o6m (ADR-034, Phase A): the primary WIKI CLAUDE.md reaches the
+            # system prompt via assemble_prompt(wiki_path=...); non-primary WIKIs are
+            # only --add-dir, so append their managed-zone layouts to the digest
+            # context. Stems are the WIKI dir names by construction
+            # (_resolve_owner_wikis_factory). Never fail the digest over this block.
+            try:
+                layouts = collect_layouts([(p.name, p) for p in extra_add_dirs])
+                if layouts:
+                    user_input = f"{user_input}\n\n{layouts}" if user_input else layouts
+            except OSError:
+                logger.warning("wiki.run.scope.degraded", correlation_id=correlation_id)
+            # END_BLOCK_DIGEST_LAYOUTS_INJECT
         else:
             overlay_prompt_path = self._digest_expand_prompt_path
             user_input = f"Детализируй раздел сводки: {section}"
