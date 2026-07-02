@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.5.8
+# VERSION: 0.6.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -32,7 +32,13 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.8 - aisw-02v (walking skeleton): wire the cron-user vertical
+#   LAST_CHANGE: v0.6.0 - aisw-o6m (ADR-034): adaptive scoping for wiki_query in
+#                _WikiRunnerAdapter — confident hint-catalog match runs inside the
+#                matched WIKI (wiki_path swap, CLAUDE.md via assemble_prompt);
+#                ambiguous runs stay cross-root with the wiki.scope layouts block
+#                injected into the scratch overlay; wiki.run.scope anchor; both
+#                resolvers built once and shared with digest context + pipeline.
+#   PREVIOUS:    v0.5.8 - aisw-02v (walking skeleton): wire the cron-user vertical
 #                slice. Create one PriorityJobQueue shared between the
 #                APScheduler-fired producer callback
 #                (scheduler.cron_user.fire_cron_user_job; context installed via
@@ -241,6 +247,7 @@ from ai_steward_wiki.wiki.schema_gen import (
     SchemaGenerator,
     apply_generated_schema,
 )
+from ai_steward_wiki.wiki.scope import collect_layouts, resolve_query_scope
 from ai_steward_wiki.wiki.streaming import StreamEvent
 
 logger = structlog.get_logger("ai_steward_wiki.runtime")
@@ -404,6 +411,8 @@ class _WikiRunnerAdapter:
         spawner: AsyncioSpawner,
         run_config: _RunConfig,
         web_run_config: _RunConfig | None = None,
+        hint_catalog_resolver: Callable[[int], Awaitable[dict[str, str]]] | None = None,
+        owner_wikis_resolver: Callable[[int], Awaitable[Sequence[tuple[str, Path]]]] | None = None,
     ) -> None:
         self._wiki_root = wiki_root
         self._base_prompt_path = base_prompt_path
@@ -415,6 +424,11 @@ class _WikiRunnerAdapter:
         # aisw-dqz (Path B): intent-scoped WebSearch config selected for Intent.WEB_TASK
         # only. None → web_task falls back to the default read-only run (no WebSearch).
         self._web_run_config = web_run_config
+        # aisw-o6m (ADR-034): both resolvers wired → wiki_query runs get adaptive
+        # scoping (confident single-domain → run inside that WIKI; else cross-root
+        # run with the layouts block). Either None → legacy cross-root behaviour.
+        self._hint_catalog_resolver = hint_catalog_resolver
+        self._owner_wikis_resolver = owner_wikis_resolver
 
     async def run(
         self,
@@ -435,9 +449,51 @@ class _WikiRunnerAdapter:
         # runner; do NOT mix it into the system-prompt overlay. The per-run
         # overlay stays as a stable, semver-valid placeholder until proper
         # Inbox staging lands in chunks 21+.
+        overlay_text = "semver: 1.0.0\n\n# User turn\n"
+        # START_BLOCK_QUERY_SCOPE_RESOLVE
+        # aisw-o6m (ADR-034): adaptive scoping for wiki_query. Confident single-domain
+        # match → run inside that WIKI (its CLAUDE.md is appended by assemble_prompt,
+        # same mechanics as ingest). Ambiguous/long/failed → cross-root run with the
+        # layouts block so the model knows every WIKI's Data layout paths. A scope
+        # decision can never fail the run (FR-6).
+        if (
+            intent is Intent.WIKI_QUERY
+            and self._hint_catalog_resolver is not None
+            and self._owner_wikis_resolver is not None
+        ):
+            try:
+                catalog = await self._hint_catalog_resolver(owner_telegram_id)
+                wiki_pairs = list(await self._owner_wikis_resolver(owner_telegram_id))
+                decision = resolve_query_scope(text, catalog, dict(wiki_pairs))
+                if decision.kind == "scoped" and decision.target_path is not None:
+                    wiki_id = f"{owner_telegram_id}/{decision.target_stem}"
+                    wiki_path = decision.target_path
+                else:
+                    layouts = collect_layouts(wiki_pairs)
+                    if layouts:
+                        overlay_text = f"{overlay_text}\n{layouts}\n"
+                logger.info(
+                    "wiki.run.scope",
+                    correlation_id=correlation_id,
+                    telegram_id=owner_telegram_id,
+                    intent=intent.value,
+                    scope=decision.kind,
+                    target_wiki=decision.target_stem,
+                    top_score=decision.top_score,
+                    margin=decision.margin,
+                )
+            except Exception:
+                logger.warning(
+                    "wiki.run.scope.degraded",
+                    correlation_id=correlation_id,
+                    telegram_id=owner_telegram_id,
+                    intent=intent.value,
+                    exc_info=True,
+                )
+        # END_BLOCK_QUERY_SCOPE_RESOLVE
         scratch = self._runtime_dir / "overlays" / f"{run_id}.md"
         scratch.parent.mkdir(parents=True, exist_ok=True)
-        scratch.write_text("semver: 1.0.0\n\n# User turn\n", encoding="utf-8")
+        scratch.write_text(overlay_text, encoding="utf-8")
         # aisw-dqz (Path B): web_task answers from the live web with WebSearch enabled,
         # read-only, no WIKI add-dir. Every other intent keeps the default writing config.
         run_config = (
@@ -541,6 +597,19 @@ class _DigestRunnerAdapter:
             overlay_prompt_path = self._digest_prompt_path
             user_input = planner_context
             run_prefix = "digest"
+            # START_BLOCK_DIGEST_LAYOUTS_INJECT
+            # aisw-o6m (ADR-034, Phase A): the primary WIKI CLAUDE.md reaches the
+            # system prompt via assemble_prompt(wiki_path=...); non-primary WIKIs are
+            # only --add-dir, so append their managed-zone layouts to the digest
+            # context. Stems are the WIKI dir names by construction
+            # (_resolve_owner_wikis_factory). Never fail the digest over this block.
+            try:
+                layouts = collect_layouts([(p.name, p) for p in extra_add_dirs])
+                if layouts:
+                    user_input = f"{user_input}\n\n{layouts}" if user_input else layouts
+            except OSError:
+                logger.warning("wiki.run.scope.degraded", correlation_id=correlation_id)
+            # END_BLOCK_DIGEST_LAYOUTS_INJECT
         else:
             overlay_prompt_path = self._digest_expand_prompt_path
             user_input = f"Детализируй раздел сводки: {section}"
@@ -1280,6 +1349,14 @@ async def _amain() -> None:
     runtime_dir = settings.workspace_root / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     lock_manager = WikiLockManager()
+    # aisw-o6m (ADR-034): shared scope-resolution inputs — built once, reused by the
+    # runner adapter (query scoping), digest context and the pipeline hint fast-path.
+    owner_wikis_resolver = _resolve_owner_wikis_factory(settings.wiki_root)
+    hint_catalog_resolver = make_hint_catalog_resolver(
+        hint_repo=InboxHintCacheRepo(sessions_maker),
+        owner_wikis_resolver=owner_wikis_resolver,
+        surrogate_id_of=lambda tid: resolve_user_id(sessions_maker, tid),
+    )
     runner_adapter = _WikiRunnerAdapter(
         wiki_root=settings.wiki_root,
         base_prompt_path=settings.prompts_dir / "wiki.md",
@@ -1306,6 +1383,8 @@ async def _amain() -> None:
             allowed_tools=WEB_SEARCH_TOOLS,
             web_search=True,
         ),
+        hint_catalog_resolver=hint_catalog_resolver,
+        owner_wikis_resolver=owner_wikis_resolver,
     )
     # aisw-oqq: recurring-digest fast-path parser + digest firing context.
     recurrence_parser_adapter = _RecurrenceParserAdapter()
@@ -1324,7 +1403,6 @@ async def _amain() -> None:
             allowed_tools=WRITE_TOOLS,  # aisw-t6w: digest expand writes into WIKIs
         ),
     )
-    owner_wikis_resolver = _resolve_owner_wikis_factory(settings.wiki_root)
     firing.set_digest_context(
         scheduler=scheduler,
         runner=digest_runner_adapter,
@@ -1428,11 +1506,6 @@ async def _amain() -> None:
     # END_BLOCK_MEDIA_PIPELINE_WIRING
 
     streaming_delivery = DefaultStreamingDelivery(sender=sender)
-    hint_catalog_resolver = make_hint_catalog_resolver(
-        hint_repo=InboxHintCacheRepo(sessions_maker),
-        owner_wikis_resolver=owner_wikis_resolver,
-        surrogate_id_of=lambda tid: resolve_user_id(sessions_maker, tid),
-    )
     pipeline = DefaultPipeline(
         sender=sender,
         idempotency=IdempotencyService(
