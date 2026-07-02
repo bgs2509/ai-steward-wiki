@@ -14,7 +14,7 @@ fr:
   - FR-4: Appending to diet/food_log.csv MUST NOT require explicit user consent — confirm remains only for deletions (per existing Pre-flight rule, D-041). Removes the consent round-trip that stateless per-message CLI runs cannot survive.
   - FR-5: templates/medical.md Inbox hint keywords MUST include food/calorie terms (еда, калории, ккал, съел, порция) so Stage-1a routing of "съел X" messages is deterministic toward Medical.
   - FR-6: templates/cooking.md MUST carry a one-line demarcation — рецепты/меню → Cooking; факт съеденного и калории → Medical — because cooking keywords (завтрак, обед, ужин) currently overlap with food-fact messages.
-  - FR-7: The live Medical WIKI on the prod VPS MUST be cleaned up — delete history/NUTRITION_GUIDE.md (user decision 2026-07-02: one-off artifact, misplaced per layout rule "history/ = визиты + MEDICAL_SUMMARY.md"), migrate the calorie entries from daily/2026-07-01.md into diet/food_log.csv, and re-render the managed zone via scripts/backfill_managed_zone.py so the new template reaches the existing WIKI.
+  - FR-7: The live Medical WIKI on the prod VPS MUST be cleaned up — delete history/NUTRITION_GUIDE.md (user decision 2026-07-02 — one-off artifact, misplaced per layout rule "history/ = визиты + MEDICAL_SUMMARY.md"), migrate the calorie entries from daily/2026-07-01.md into diet/food_log.csv, and re-render the managed zone via scripts/backfill_managed_zone.py so the new template reaches the existing WIKI.
 nfr:
   - NFR-1: make lint green (ruff + format + mypy + grace lint); no lint-baseline drift.
   - NFR-2: Ru-only user-facing template/prompt strings (D-032).
@@ -23,13 +23,13 @@ nfr:
 constraints:
   - Per-WIKI CLAUDE.md is rendered from templates/<slug>.md at create time with template_sha256 pinned (wiki/lifecycle.py _render_claude_md); existing WIKIs receive template updates ONLY via scripts/backfill_managed_zone.py → migration.repair_managed_zone (idempotent, preserves user zone).
   - Inbox hint keywords are read from the per-WIKI CLAUDE.md via the metadata-guarded hint cache (inbox/hint_cache.py), NOT from templates/ directly — backfill on prod is therefore mandatory for FR-5 to take effect.
-  - No Python code changes: all four defects are prompt/template/data-level. templates.py slug loader is NOT involved (domain presets bypass it).
+  - No Python code changes — all four defects are prompt/template/data-level. templates.py slug loader is NOT involved (domain presets bypass it).
   - No macros (protein/fat/carb) in the CSV schema — user decision 2026-07-02, YAGNI; columns can be added later.
   - No photo/OCR branch in the guardrail wording — user decision 2026-07-02, YAGNI.
 risks:
-  - R-1 (LOW): calorie estimates are inherently imprecise (industry data: crowdsourced estimates average ~38% error) — mitigated by the mandatory source=estimated flag distinguishing estimates from user-stated values.
+  - R-1 (LOW): calorie estimates are inherently imprecise (industry data — crowdsourced estimates average ~38% error) — mitigated by the mandatory source=estimated flag distinguishing estimates from user-stated values.
   - R-2 (LOW): keyword overlap Medical↔Cooking could still misroute ambiguous messages ("что приготовить на ужин при диете") — mitigated by FR-6 demarcation lines in both templates; residual ambiguity falls to the LLM router as today.
-  - R-3 (LOW): prod cleanup touches live user medical data — mitigation: file operations are additive/reversible except NUTRITION_GUIDE.md deletion, which the user explicitly ordered; per-WIKI git history (deploy §5) preserves recovery path.
+  - R-3 (LOW): prod cleanup touches live user medical data — mitigation is that file operations are additive/reversible except NUTRITION_GUIDE.md deletion, which the user explicitly ordered (no per-WIKI git on prod, so the deletion is permanent).
 scope_in:
   - templates/medical.md — Data layout diet/, File resolution rule, Inbox hint keywords, nutrition boundary note.
   - prompts/domain-medical.md — nutrition boundary rule + semver bump.
@@ -38,7 +38,7 @@ scope_in:
 scope_out:
   - Macros (protein/fat/carb) columns.
   - Photo → OCR calorie estimation.
-  - Separate Nutrition-WIKI domain (rejected in /best-approach: third food domain, YAGNI, adds a new classifier fork).
+  - Separate Nutrition-WIKI domain (rejected in /best-approach — third food domain, YAGNI, adds a new classifier fork).
   - BMR/TDEE reference file (NUTRITION_GUIDE.md deleted, not relocated — user decision).
 scope_later:
   - Macros columns if the user starts asking for белки/жиры/углеводы.
