@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <KnowledgeGraph>
-  <Project NAME="ai-steward-wiki" VERSION="0.0.8">
+  <Project NAME="ai-steward-wiki" VERSION="0.0.9">
     <keywords>telegram, claude-code, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
     <annotation>Isolated multi-user Telegram service that wraps Claude Code CLI as a personal WIKI assistant (Karpathy LLM Wiki method). Full module map: foundation (settings, logging), three-DB storage (jobs/audit/sessions), auth/onboarding/admin, scheduler core, Stage-0 classifier, Stage-1 wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer, voice STT, photo ingest, ingest pipeline (classifier + streaming), runtime wiring.</annotation>
 
@@ -131,9 +131,9 @@
     </M-STORAGE-SESSIONS>
 
     <M-RUNTIME-WIRING NAME="Runtime wiring / __main__" TYPE="RUNTIME" STATUS="done">
-      <purpose>Process entrypoint (python -m ai_steward_wiki). Composes Settings, per-DB alembic migrations, engines, allowlist sync, APScheduler (incl. the daily media _staging sweep job), classifier+runner+output adapters, VoiceHandler/PhotoIngestor, aiogram Bot+Dispatcher; runs long-polling with graceful SIGINT/SIGTERM shutdown. The runner adapter promotes staged media into &lt;wiki&gt;/raw/media after a successful Stage-1 run (D-022).</purpose>
+      <purpose>Process entrypoint (python -m ai_steward_wiki). Composes Settings, per-DB alembic migrations, engines, allowlist sync, APScheduler (incl. the daily media _staging sweep job), classifier+runner+output adapters, VoiceHandler/PhotoIngestor, aiogram Bot+Dispatcher; runs long-polling with graceful SIGINT/SIGTERM shutdown. The runner adapter promotes staged media into &lt;wiki&gt;/raw/media after a successful Stage-1 run (D-022). aisw-o6m (ADR-034): _WikiRunnerAdapter.run resolves group-2 (wiki_query) scope via wiki.scope.resolve_query_scope before assembling the prompt — a confident single-domain match swaps wiki_path/wiki_id to run scoped inside that WIKI, else the run stays cross-root with a wiki.scope.collect_layouts block injected into the scratch overlay; _DigestRunnerAdapter injects the same layouts block for non-primary WIKIs (extra_add_dirs) on full-digest runs (section-expand runs skip it). Both degrade to legacy cross-root behaviour on any resolver error (FR-6, wiki.run.scope.degraded).</purpose>
       <path>src/ai_steward_wiki/__main__.py</path>
-      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-SCHEDULER-FIRING, M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-OPS-PII</depends>
+      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-SCHEDULER-FIRING, M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-WIKI-SCOPE, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-OPS-PII</depends>
       <verification-ref>V-M-RUNTIME-WIRING</verification-ref>
       <annotations>
         <fn-main PURPOSE="sync wrapper: asyncio.run(_amain())"/>
@@ -149,6 +149,8 @@
         <fn-_on_job_missed PURPOSE="APScheduler EVENT_JOB_MISSED listener → logs scheduler.reminder.misfired (aisw-kcz)"/>
         <type-_RecurrenceParserAdapter PURPOSE="binds classifier.recurrence.parse_recurrence with the Stage-0 backend + prompts/recurrence.md Haiku-fallback prompt (None → escalate-on-miss); passed into DefaultPipeline (aisw-oqq)"/>
         <fn-_resolve_owner_wikis PURPOSE="list the owner's &lt;Name&gt;-WIKI/ dirs under the workspace root (minus Inbox-WIKI) for fire_digest_job's --add-dir set; bound into firing.set_digest_context (aisw-oqq)"/>
+        <type-_WikiRunnerAdapter PURPOSE="Stage-1a/1b runner adapter; gained hint_catalog_resolver + owner_wikis_resolver ctor params (aisw-o6m, ADR-034) — .run() calls wiki.scope.resolve_query_scope for WIKI_QUERY only (WEB_TASK and other intents untouched); confident match swaps wiki_path/wiki_id to run scoped inside that WIKI (CLAUDE.md arrives via assemble_prompt, no layouts injection); ambiguous/unwired/resolver-error stays cross-root with wiki.scope.collect_layouts appended to the scratch overlay text; logs wiki.run.scope / wiki.run.scope.degraded"/>
+        <type-_DigestRunnerAdapter PURPOSE="digest runner adapter; full-digest calls (section=None) append wiki.scope.collect_layouts over extra_add_dirs (non-primary WIKIs) to planner_context before user_input assembly (aisw-o6m, ADR-034) — the primary WIKI's CLAUDE.md still arrives via assemble_prompt; section-expand calls (/expand) skip layouts injection (scoped re-run, no cross-WIKI ambiguity); OSError degrades silently (wiki.run.scope.degraded)"/>
       </annotations>
     </M-RUNTIME-WIRING>
 
@@ -346,6 +348,19 @@
         <type-PreflightReport PURPOSE="aggregated pre-flight report (checks tuple + ok)"/>
       </annotations>
     </M-WIKI-LIFECYCLE>
+
+    <M-WIKI-SCOPE NAME="WIKI / adaptive scope resolution for group-2 intents" TYPE="RUNTIME" STATUS="done">
+      <purpose>Scope resolution for group-2 (adaptive) intents — wiki_query and digest — which, unlike wiki_ingest, had no mechanism to decide "one WIKI or several" and always ran cross-WIKI at the user root with no domain CLAUDE.md/Data-layout context (root cause of aisw-o6m: a calorie query missed diet/food_log.csv). resolve_query_scope reuses the prod ingest fast-path thresholds (hint_match.is_confident, MIN_SCORE/MIN_MARGIN/MAX_FASTPATH_CHARS) to decide a confident single-domain wiki_query should run scoped inside that WIKI (Phase B); collect_layouts renders a bounded ru "Карта WIKI пользователя" block from each WIKI's managed CLAUDE.md zone, injected into cross-WIKI wiki_query and digest runs so the model sees every WIKI's Data layout (Phase A). Adapter-side only (ADR-034) — the WikiRunner Protocol is unchanged; M-RUNTIME-WIRING's _WikiRunnerAdapter/_DigestRunnerAdapter call in and degrade to legacy cross-root behaviour on any resolver error (FR-6).</purpose>
+      <path>src/ai_steward_wiki/wiki/scope.py</path>
+      <depends>M-INBOX, M-WIKI-LIFECYCLE</depends>
+      <verification-ref>V-M-WIKI-SCOPE</verification-ref>
+      <annotations>
+        <fn-resolve_query_scope PURPOSE="(text, catalog, wikis) -&gt; ScopeDecision; cross unless hint_match.is_confident AND text within MAX_FASTPATH_CHARS AND the matched stem has a wiki dir"/>
+        <fn-collect_layouts PURPOSE="(stem, wiki dir) pairs -&gt; ru layouts block from each WIKI's managed CLAUDE.md zone (MANAGED_START/MANAGED_END), per-WIKI excerpt capped at MAX_LAYOUT_CHARS_PER_WIKI; '' when wikis is empty; missing file/markers/empty body -&gt; '(схема не описана)' fallback per WIKI"/>
+        <type-ScopeDecision PURPOSE="frozen result: kind Literal['scoped','cross'], target_stem/target_path (None on cross), top_score, margin"/>
+        <type-MAX_LAYOUT_CHARS_PER_WIKI PURPOSE="per-WIKI excerpt cap (4000) guarding the prompt budget against a pathological hand-edited CLAUDE.md"/>
+      </annotations>
+    </M-WIKI-SCOPE>
 
     <M-INBOX NAME="Inbox-WIKI materialise + hint cache" TYPE="RUNTIME" STATUS="done">
       <purpose>Per-user Inbox-WIKI/ first-contact materialise, "## Inbox hint" Markdown parser + sessions.inbox_hint_cache repo (stat→cache-hit hot path), deterministic hint-catalog token-overlap scorer for the pre-router fast-path, media staging+promotion for voice/photo ingest (D-004, D-016, D-022).</purpose>
@@ -649,6 +664,7 @@
     <CrossLink from="M-RUNTIME-WIRING" to="M-SCHEDULER" relation="build_scheduler + WikiLockManager + register_all_retention_jobs"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-CLASSIFIER-STAGE0" relation="builds ClaudeCliBackend/AnthropicApiBackend + PromptCache; _ClassifierAdapter calls classify()"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-WIKI-RUNNER" relation="_WikiRunnerAdapter.run → run_wiki_session via AsyncioSpawner + WikiLockAdapter"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-WIKI-SCOPE" relation="_WikiRunnerAdapter.run resolves wiki_query scope via resolve_query_scope; both adapters inject collect_layouts for cross-WIKI/multi-WIKI runs (aisw-o6m, ADR-034)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-TG-TEXT" relation="build_bot/build_dispatcher + deliver_output via _OutputDeliveryAdapter"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-TG-PIPELINE-CLASSIFIER" relation="constructs DefaultPipeline (+ DefaultStreamingDelivery)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-OPS-PII" relation="PIIRedactor structlog processor + register_all_retention_jobs"/>

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.9">
+<VerificationPlan VERSION="0.0.10">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -129,9 +129,11 @@
         <test path="tests/unit/test_router_adapter.py"/>
         <test path="tests/unit/test_librarian_adapter.py"/>
         <test path="tests/unit/test_main_hint_catalog.py"/>
+        <test path="tests/unit/test_main_runner_adapter.py"/>
+        <test path="tests/unit/test_main_digest_adapter.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/test_runtime_wiring.py tests/unit/test_router_adapter.py tests/unit/test_librarian_adapter.py tests/unit/test_main_hint_catalog.py -q</cmd>
+        <cmd>uv run pytest tests/unit/test_runtime_wiring.py tests/unit/test_router_adapter.py tests/unit/test_librarian_adapter.py tests/unit/test_main_hint_catalog.py tests/unit/test_main_runner_adapter.py tests/unit/test_main_digest_adapter.py -q</cmd>
         <cmd>uv run python -m ai_steward_wiki  # manual smoke with AISW_TG_BOT_TOKEN_LOCAL</cmd>
       </commands>
       <log-markers>
@@ -159,8 +161,10 @@
         <marker>inbox.route.ingest.begin</marker>
         <marker>inbox.route.ingest.done</marker>
         <marker>inbox.route.ingest_failed</marker>
+        <marker>wiki.run.scope</marker>
+        <marker>wiki.run.scope.degraded</marker>
       </log-markers>
-      <evidence>Unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. aisw-5sd: make_hint_catalog_resolver — telegram_id → {wiki_stem: hint_text} via surrogate_id_of + owner_wikis_resolver + get_or_refresh_hint per domain CLAUDE.md; unknown sender (surrogate None) → {} (fast-path falls through); a domain with no '## Inbox hint' → omitted; no domain WIKIs → {} without touching the cache (get_or_refresh_hint monkeypatched in the unit). aisw-hcl: VoiceHandler/PhotoIngestor wired into DefaultPipeline; media _staging sweep job registered; _WikiRunnerAdapter.run promotes staged media into &lt;wiki&gt;/raw/media after a successful run. aisw-dsg: _RouterAdapter — ensure_inbox_wiki, _render_raw_sidecar, run_wiki_session in Inbox-WIKI/ with prompts/inbox.md, parse_router_reply, WikiRunnerError→RouterError, inbox.router.* markers. aisw-zd9: _LibrarianAdapter — resolve_target_wiki (create new dir; ROUTE-missing → create + warning; cap → rejected; bad name → rejected), stage_raw_into_wiki (raw/&lt;ts&gt;_text.md + promote media), run_wiki_session with wiki_id=f"{tid}/&lt;Name&gt;" + overlay=domain-default.md + timeout_s=None, IngestOutcome(ok|run_failed|rejected), WikiRunnerError→run_failed keeps the raw, inbox.route.* markers via capsys. Manual smoke: `python -m ai_steward_wiki` starts, logs runtime.media_pipeline.wired + polling.start, Ctrl-C → shutdown.done, exit 0.</evidence>
+      <evidence>Unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. aisw-o6m (ADR-034): test_main_runner_adapter.py — a confident WIKI_QUERY match runs wiki_path/wiki_id scoped to the matched WIKI with no layouts block in the overlay (CLAUDE.md arrives via assemble_prompt); an ambiguous match runs cross-root at the user root with "Карта WIKI пользователя" + every WIKI's Data-layout excerpt in the overlay; a hint_catalog_resolver raising degrades to cross-root with the legacy placeholder overlay (no exception propagates); WEB_TASK never calls either resolver and keeps legacy behaviour; an adapter constructed without the two resolvers (back-compat) also keeps legacy cross-root behaviour. test_main_digest_adapter.py — a full-digest call (section=None) with extra_add_dirs appends the layouts block (header + one "## &lt;stem&gt;" section per extra WIKI) to planner_context before user_input; a section-expand call (/expand) with the same extra_add_dirs never injects layouts. aisw-5sd: make_hint_catalog_resolver — telegram_id → {wiki_stem: hint_text} via surrogate_id_of + owner_wikis_resolver + get_or_refresh_hint per domain CLAUDE.md; unknown sender (surrogate None) → {} (fast-path falls through); a domain with no '## Inbox hint' → omitted; no domain WIKIs → {} without touching the cache (get_or_refresh_hint monkeypatched in the unit). aisw-hcl: VoiceHandler/PhotoIngestor wired into DefaultPipeline; media _staging sweep job registered; _WikiRunnerAdapter.run promotes staged media into &lt;wiki&gt;/raw/media after a successful run. aisw-dsg: _RouterAdapter — ensure_inbox_wiki, _render_raw_sidecar, run_wiki_session in Inbox-WIKI/ with prompts/inbox.md, parse_router_reply, WikiRunnerError→RouterError, inbox.router.* markers. aisw-zd9: _LibrarianAdapter — resolve_target_wiki (create new dir; ROUTE-missing → create + warning; cap → rejected; bad name → rejected), stage_raw_into_wiki (raw/&lt;ts&gt;_text.md + promote media), run_wiki_session with wiki_id=f"{tid}/&lt;Name&gt;" + overlay=domain-default.md + timeout_s=None, IngestOutcome(ok|run_failed|rejected), WikiRunnerError→run_failed keeps the raw, inbox.route.* markers via capsys. Manual smoke: `python -m ai_steward_wiki` starts, logs runtime.media_pipeline.wired + polling.start, Ctrl-C → shutdown.done, exit 0.</evidence>
     </V-M-RUNTIME-WIRING>
 
     <V-M-TG-HANDLERS-WIRING MODULE="M-TG-HANDLERS-WIRING">
@@ -465,6 +469,17 @@
       </log-markers>
       <evidence>normalize_wiki_name Cyrillic→Latin ISO 9 + PascalCase + slug (D-008); WikiLifecycleManager owner-scoped create/lookup/list/soft_delete/restore with AntiSpamCapError + NearDuplicateMatch (Levenshtein ≤2) + TrashRetentionExpiredError (D-041); parse/render_frontmatter + managed/user-zone markers + load_template sha256 (D-039); preflight 5-step grounding → PreflightReport.</evidence>
     </V-M-WIKI-LIFECYCLE>
+
+    <V-M-WIKI-SCOPE MODULE="M-WIKI-SCOPE">
+      <tests>
+        <test path="tests/unit/wiki/test_scope.py"/>
+      </tests>
+      <commands>
+        <cmd>uv run pytest tests/unit/wiki/test_scope.py -q</cmd>
+      </commands>
+      <log-markers/>
+      <evidence>resolve_query_scope: confident single-domain match (hint_match.is_confident, MIN_SCORE/MIN_MARGIN gates) with a matching wikis dir entry → ScopeDecision(kind='scoped', target_stem, target_path, top_score, margin); ambiguous (margin below threshold), empty catalog, text over MAX_FASTPATH_CHARS, or a confidently-matched stem missing from the wikis dir mapping (race: WIKI deleted) → ScopeDecision(kind='cross', target_stem=None, target_path=None); ScopeDecision is frozen (AttributeError on mutation). collect_layouts: renders "# Карта WIKI пользователя" + one "## &lt;stem&gt;" section per (stem, wiki_dir) pair sourced from each WIKI's managed CLAUDE.md zone (MANAGED_START/MANAGED_END); missing CLAUDE.md, absent markers, or an empty managed body all fall back to "(схема не описана)" per WIKI; per-WIKI excerpt capped at MAX_LAYOUT_CHARS_PER_WIKI; empty wikis sequence → "". Module is pure logic — no logging of its own; wiki.run.scope / wiki.run.scope.degraded are logged at the M-RUNTIME-WIRING call sites (aisw-o6m, ADR-034).</evidence>
+    </V-M-WIKI-SCOPE>
 
     <V-M-INBOX MODULE="M-INBOX">
       <tests>

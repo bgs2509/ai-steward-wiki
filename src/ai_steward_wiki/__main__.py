@@ -21,12 +21,12 @@
 #            scheduler.maintenance, scheduler.firing, inbox.materialize, inbox.router,
 #            inbox.route, inbox.staging, inbox.hint_cache,
 #            classifier.{backend,schema,stage0,time_parse,recurrence},
-#            wiki.{runner,acquire,lifecycle},
+#            wiki.{runner,acquire,lifecycle,scope},
 #            storage.{jobs,audit,sessions}.engine, storage.sessions.users, auth.{allowlist,users_toml}}
 #   LINKS: M-FOUNDATION, M-STORAGE, M-AUTH-USERS, M-SCHEDULER, M-SCHEDULER-FIRING,
 #          M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-WIKI-LIFECYCLE,
-#          M-TG-OUTPUT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX,
-#          M-INBOX-ROUTER, M-INBOX-ROUTE, M-DEPLOY
+#          M-WIKI-SCOPE, M-TG-OUTPUT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO,
+#          M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-DEPLOY
 #   ROLE: RUNTIME
 #   MAP_MODE: NONE
 # END_MODULE_CONTRACT
