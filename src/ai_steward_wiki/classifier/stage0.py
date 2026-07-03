@@ -1,9 +1,9 @@
 # FILE: src/ai_steward_wiki/classifier/stage0.py
-# VERSION: 0.0.2
+# VERSION: 0.0.3
 # START_MODULE_CONTRACT
 #   PURPOSE: Stage-0 orchestrator — load+cache prompt, invoke backend, validate, audit.
-#   SCOPE: classify() public API (with graceful timeout fallback to intent=unknown);
-#          _PromptCache; idempotent prompt_versions audit upsert.
+#   SCOPE: classify() public API (with graceful timeout/transient-error fallback to
+#          intent=unknown); _PromptCache; idempotent prompt_versions audit upsert.
 #   DEPENDS: pydantic, sqlalchemy.async, structlog, ai_steward_wiki.classifier.{schema,backend},
 #            ai_steward_wiki.storage.audit.models
 #   LINKS: M-CLASSIFIER-STAGE0, D-009, D-015
@@ -19,7 +19,13 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-32p: graceful Stage-0 timeout fallback. classify() catches
+#   LAST_CHANGE: v0.0.3 - aisw-l3h: retry a bare ClassifierError (CLI rc!=0, e.g. a transient
+#                `.claude.json` write race — see 2026-07-02T19:03 prod incident) once before
+#                falling back to intent=unknown, same shape as the timeout fallback.
+#                ClassifierSchemaError (permanent) still propagates unretried. New log anchor
+#                classifier.stage0.error_fallback; distilled_payload fallback marker
+#                "stage0_error".
+#   PREVIOUS:    v0.0.2 - aisw-32p: graceful Stage-0 timeout fallback. classify() catches
 #                ClassifierTimeoutError from backend.call() and returns a safe
 #                intent=unknown ClassifierResult (confidence 0.0, distilled_payload
 #                {"fallback":"stage0_timeout"}) instead of raising — unknown is routable so
@@ -30,12 +36,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import structlog
 from pydantic import ValidationError
@@ -44,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_steward_wiki.classifier.backend import ClassifierBackend
 from ai_steward_wiki.classifier.schema import (
+    ClassifierError,
     ClassifierResult,
     ClassifierSchemaError,
     ClassifierTimeoutError,
@@ -62,6 +71,10 @@ __all__ = [
 
 _log = structlog.get_logger("classifier.stage0")
 _SEMVER_RE = re.compile(r"^semver:\s*(\d+\.\d+\.\d+)\s*$", re.MULTILINE)
+# aisw-l3h: pause before the single retry of a bare ClassifierError (CLI rc!=0). Observed
+# prod failures (2026-07-02T13:18, 19:03) were config-file write races that self-resolve in
+# well under a second — this gives the race a chance to clear without adding user-visible lag.
+_ERROR_RETRY_DELAY_S: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -100,6 +113,53 @@ class PromptCache:
 
 
 _default_cache = PromptCache()
+
+
+async def _call_with_error_retry(
+    *, backend: ClassifierBackend, text: str, prompt_path: Path, correlation_id: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Invoke `backend.call`, retrying a bare ClassifierError once.
+
+    Returns (raw, None) on success, or (None, fallback_reason) when the backend never
+    produced usable output. TIMEOUT degrades on the first hit — retrying a 30s timeout would
+    double the user's wait. A bare ClassifierError (CLI rc!=0, e.g. a `.claude.json` write
+    race — aisw-l3h, prod incident 2026-07-02T19:03) gets one retry, since observed failures
+    resolve in a few seconds. ClassifierSchemaError (malformed model output) is a PERMANENT
+    fault — re-raised unretried, so the pipeline's existing error ack stays correct for it.
+    """
+    attempts_left = 2
+    while True:
+        attempts_left -= 1
+        try:
+            raw = await backend.call(
+                text=text, prompt_path=prompt_path, correlation_id=correlation_id
+            )
+            return raw, None
+        except ClassifierTimeoutError:
+            return None, "stage0_timeout"
+        except ClassifierError as e:
+            if type(e) is not ClassifierError:
+                raise
+            if attempts_left <= 0:
+                return None, "stage0_error"
+            await asyncio.sleep(_ERROR_RETRY_DELAY_S)
+
+
+def _fallback_result(
+    *, reason: str, backend: ClassifierBackend, meta: PromptMeta, latency_ms: int
+) -> ClassifierResult:
+    return ClassifierResult.model_validate(
+        {
+            "intent": Intent.UNKNOWN.value,
+            "confidence": 0.0,
+            "distilled_payload": {"fallback": reason},
+            "backend": backend.name,
+            "model": backend.model,
+            "prompt_semver": meta.semver,
+            "prompt_sha256": meta.sha256,
+            "latency_ms": latency_ms,
+        }
+    )
 
 
 async def record_prompt_version(session: AsyncSession, meta: PromptMeta) -> None:
@@ -143,42 +203,37 @@ async def classify(
     meta = cache.get(prompt_path)
 
     started = time.monotonic()
-    # START_BLOCK_TIMEOUT_FALLBACK (aisw-32p)
-    # A Stage-0 Haiku TIMEOUT is transient — never let it drop the user's message.
-    # Instead of propagating ClassifierTimeoutError (which the tg pipeline turns into a
-    # dead-end "не удалось распознать" ack), return a safe fallback result with
-    # intent=unknown. `unknown` is a ROUTABLE intent (tg.pipeline._ROUTABLE_INTENTS), so the
-    # message degrades gracefully to the Inbox router (or, if no router is wired, the generic
-    # answer runner). ClassifierSchemaError (genuinely malformed output) is NOT caught — that
-    # is a permanent fault for which the existing error ack is correct.
-    try:
-        raw = await backend.call(text=text, prompt_path=prompt_path, correlation_id=correlation_id)
-    except ClassifierTimeoutError:
+    # START_BLOCK_TRANSIENT_FALLBACK (aisw-32p, aisw-l3h)
+    # Never let a transient Stage-0 Haiku failure drop the user's message — degrade to a
+    # safe intent=unknown result instead of propagating an exception (which the tg pipeline
+    # turns into a dead-end "не удалось распознать" ack). `unknown` is a ROUTABLE intent
+    # (tg.pipeline._ROUTABLE_INTENTS), so the message still reaches the Inbox router (or the
+    # generic answer runner). See _call_with_error_retry for the retry/fallback policy per
+    # exception type. ClassifierSchemaError is NOT degraded — it is a permanent fault.
+    raw, fallback_reason = await _call_with_error_retry(
+        backend=backend, text=text, prompt_path=prompt_path, correlation_id=correlation_id
+    )
+    if fallback_reason is not None:
         latency_ms = int((time.monotonic() - started) * 1000)
-        _log.warning(
-            "classifier.stage0.timeout_fallback",
-            correlation_id=correlation_id,
-            backend=backend.name,
-            model=backend.model,
-            prompt_name=meta.name,
-            prompt_semver=meta.semver,
-            prompt_sha8=meta.sha256[:8],
-            latency_ms=latency_ms,
-            intent=Intent.UNKNOWN.value,
+        log_kwargs: dict[str, Any] = {
+            "correlation_id": correlation_id,
+            "backend": backend.name,
+            "model": backend.model,
+            "prompt_name": meta.name,
+            "prompt_semver": meta.semver,
+            "prompt_sha8": meta.sha256[:8],
+            "latency_ms": latency_ms,
+            "intent": Intent.UNKNOWN.value,
+        }
+        if fallback_reason == "stage0_timeout":
+            _log.warning("classifier.stage0.timeout_fallback", **log_kwargs)
+        else:
+            _log.warning("classifier.stage0.error_fallback", **log_kwargs)
+        return _fallback_result(
+            reason=fallback_reason, backend=backend, meta=meta, latency_ms=latency_ms
         )
-        return ClassifierResult.model_validate(
-            {
-                "intent": Intent.UNKNOWN.value,
-                "confidence": 0.0,
-                "distilled_payload": {"fallback": "stage0_timeout"},
-                "backend": backend.name,
-                "model": backend.model,
-                "prompt_semver": meta.semver,
-                "prompt_sha256": meta.sha256,
-                "latency_ms": latency_ms,
-            }
-        )
-    # END_BLOCK_TIMEOUT_FALLBACK
+    # END_BLOCK_TRANSIENT_FALLBACK
+    assert raw is not None
     latency_ms = int((time.monotonic() - started) * 1000)
 
     payload = {
