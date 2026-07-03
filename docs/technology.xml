@@ -1790,6 +1790,30 @@ QueueMsg = Annotated[CronUserQueueMsg, Field(discriminator=&quot;kind&quot;)]
       </Item>
     </decisions>
   </Feature>
+  <Feature source="20260702-adaptive-scope-design.md" bd_id="aisw-o6m">
+    <feature>adaptive-scope</feature>
+    <module_id>M-WIKI-SCOPE</module_id>
+    <status>stable</status>
+    <date>2026-07-02</date>
+    <risk>medium</risk>
+    <evidence>strong</evidence>
+    <open_questions/>
+    <stack>
+      <Item>Python 3.11 stdlib only for the new module (re, dataclasses, pathlib) — mirrors inbox/hint_match.py which is deliberately stdlib-only.</Item>
+      <Item>Reused in-project machinery — inbox/hint_match (score_catalog, is_confident, MIN_SCORE, MIN_MARGIN, MAX_FASTPATH_CHARS), wiki/migration (MANAGED_START/MANAGED_END markers), __main__.py factories (make_hint_catalog_resolver, _resolve_owner_wikis_factory), wiki/runner assemble_prompt CLAUDE.md append.</Item>
+      <Item>structlog for the wiki.run.scope anchor (existing logging_setup pipeline).</Item>
+      <Item>No new external dependencies; no Context7 triggers (stdlib + in-repo APIs only).</Item>
+    </stack>
+    <decisions>
+      <Item>DEC-1 Scope resolution lives in the runner adapter (__main__.py), NOT in tg/pipeline.py — the adapter already receives text, intent, owner_telegram_id; WikiRunner Protocol and dispatch stay untouched (kills the aisw-50z Protocol-change blocker). ADR-034.</Item>
+      <Item>DEC-2 New module src/ai_steward_wiki/wiki/scope.py (M-WIKI-SCOPE) holds the pure logic — ScopeDecision frozen dataclass, resolve_query_scope(text, catalog), collect_layouts(wikis) — so __main__.py keeps only thin wiring and the logic is unit-testable without adapters.</Item>
+      <Item>DEC-3 Scoped run = wiki_path swap only. When confident, the adapter passes the matched WIKI dir as wiki_path to run_wiki_session — cwd, --add-dir and CLAUDE.md-append all follow automatically (runner.py:552-556, 271-274). No changes inside wiki/runner.py.</Item>
+      <Item>DEC-4 Cross run injection point = the existing per-run scratch overlay (__main__.py:438-440). Overlay becomes semver line + &quot;# User turn&quot; + &quot;# Карта WIKI пользователя&quot; block with managed-zone excerpts of every domain WIKI.</Item>
+      <Item>DEC-5 Digest injection point = planner_context (adapter-level, _DigestRunnerAdapter.__call__), appending layouts of non-primary WIKIs only — primary CLAUDE.md already arrives via assemble_prompt.</Item>
+      <Item>DEC-6 Same confidence gates as prod ingest fast-path — score_catalog + is_confident + len(text) &lt;= MAX_FASTPATH_CHARS. No new thresholds, no settings knobs (hint_match.py YAGNI precedent).</Item>
+      <Item>DEC-7 Graceful degradation — any resolver/IO error in scope resolution logs and falls back to today's cross-root behaviour; a scope decision can never fail a run.</Item>
+    </decisions>
+  </Feature>
   <Feature source="20260702-nutrition-tracking-design.md" bd_id="aisw-2si">
     <feature>nutrition-tracking</feature>
     <module_id>M-WIKI-LIFECYCLE</module_id>
@@ -1811,6 +1835,48 @@ QueueMsg = Annotated[CronUserQueueMsg, Field(discriminator=&quot;kind&quot;)]
       <Item>DEC-4 No consent for food_log appends — explicit confirm remains deletion-only (D-041 pre-flight unchanged); consent dialogs are structurally broken over stateless per-message CLI runs.</Item>
       <Item>DEC-5 Routing determinism via Inbox hint keywords (Medical gains еда/калории/ккал/съел/порция) + reciprocal demarcation lines in both medical.md and cooking.md.</Item>
       <Item>DEC-6 No macros, no OCR, delete NUTRITION_GUIDE.md — user decisions 2026-07-02 (YAGNI).</Item>
+    </decisions>
+  </Feature>
+  <Feature source="20260703-codex-subscription-fallback-design.md" bd_id="aisw-8gw">
+    <feature>codex-subscription-fallback</feature>
+    <module_id>M-LLM-FAILOVER</module_id>
+    <status>stable</status>
+    <date>2026-07-03</date>
+    <risk>high</risk>
+    <evidence>strong</evidence>
+    <open_questions/>
+    <stack>
+      <Item>Python 3.11 stdlib asyncio, dataclasses, enum, pathlib, and typing for provider state, concurrency, and typed results.</Item>
+      <Item>Existing Pydantic v2 schemas remain the validation boundary for Stage-0 structured output.</Item>
+      <Item>Existing structlog JSON logging remains the observability boundary.</Item>
+      <Item>Claude Code CLI remains the primary subscription provider through the existing saved authentication.</Item>
+      <Item>Codex CLI 0.142.5 is the pinned fallback runtime, authenticated through ChatGPT subscription login in a dedicated CODEX_HOME.</Item>
+      <Item>gpt-5.4-mini with low reasoning serves Stage-0 classification and lightweight structured parsers.</Item>
+      <Item>gpt-5.5 with medium reasoning serves WIKI, router, digest, web, schema-generation, and cron fallback flows.</Item>
+      <Item>codex exec uses JSON Schema output for structured mode and JSONL output for agent mode.</Item>
+      <Item>No new Python dependency and no database migration are required by the selected design.</Item>
+    </stack>
+    <decisions>
+      <Item>DEC-1 Use a shared provider-neutral failover policy with separate Claude and Codex adapters. Do not duplicate fallback logic in each call site and do not add a sidecar service.</Item>
+      <Item>DEC-2 Keep mode-specific adapters for structured, agent, and text execution. Each adapter preserves the existing consumer contract.</Item>
+      <Item>DEC-3 The circuit states are named claude, codex, and probe. Conventional closed/open/half-open names are intentionally not used.</Item>
+      <Item>DEC-4 Only a typed Claude subscription-limit error may move the circuit from claude to codex. Timeout, malformed output, permission denial, and generic process failures keep their current handling.</Item>
+      <Item>DEC-5 Parse the provider reset time when available. Otherwise use a 15-minute codex interval followed by one single-flight probe.</Item>
+      <Item>DEC-6 A successful probe moves the circuit to claude. Another subscription limit moves it back to codex.</Item>
+      <Item>DEC-7 Hold the existing WIKI lock across the Claude attempt and any safe Codex fallback attempt.</Item>
+      <Item>DEC-8 Replay is allowed only before mutation evidence. Write, Edit, file-change events, mutation-capable shell commands, and unknown actions block replay.</Item>
+      <Item>DEC-9 Structured mode maps Claude Haiku work to gpt-5.4-mini with low reasoning and validates the existing Pydantic result schema.</Item>
+      <Item>DEC-10 Agent and text modes map Claude Sonnet work to gpt-5.5 with medium reasoning.</Item>
+      <Item>DEC-11 Codex write flows use workspace-write restricted to the selected WIKI. Read-only, web, structured, and cron flows use narrower capability profiles.</Item>
+      <Item>DEC-12 Web fallback uses a neutral empty working directory, read-only sandbox, enabled web search, and no WIKI directory access.</Item>
+      <Item>DEC-13 Production Codex authentication uses ChatGPT subscription login in a dedicated CODEX_HOME under the existing service user. API-key billing is excluded.</Item>
+      <Item>DEC-14 Every Codex invocation uses explicit model, reasoning, sandbox, working directory, ignore-user-config, and ephemeral settings.</Item>
+      <Item>DEC-15 Codex JSONL is normalized into provider-neutral events before existing WIKI aggregation, transcript, and delivery logic consumes it.</Item>
+      <Item>DEC-16 If both providers are unavailable, preserve the source operation and return one Russian diagnostic. Do not schedule automatic replay.</Item>
+      <Item>DEC-17 Provider state is process-local for this feature. Durable state across restarts remains later scope.</Item>
+      <Item>DEC-18 Startup preflight checks binary, pinned version, login status, and CODEX_HOME readability without invoking a model.</Item>
+      <Item>DEC-19 Deployment smoke tests verify both models, structured output, JSONL, read-only isolation, and workspace-write containment.</Item>
+      <Item>DEC-20 Emit provider selection, failover, circuit transition, failure, recovery, and replay-blocked events without prompts or credentials.</Item>
     </decisions>
   </Feature>
 </Technology>
