@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from ai_steward_wiki.classifier import (
+    ClassifierError,
     ClassifierSchemaError,
     ClassifierTimeoutError,
     FakeClaudeRunner,
@@ -134,6 +135,74 @@ async def test_classify_timeout_falls_back_to_unknown(tmp_path: Path) -> None:
     assert res.backend == "fake"
     assert res.prompt_semver == "1.0.0"
     assert res.latency_ms >= 0
+
+
+async def test_classify_error_retries_once_then_succeeds(tmp_path: Path) -> None:
+    # aisw-l3h: a bare ClassifierError (CLI rc!=0, e.g. a `.claude.json` write race) is
+    # transient — one retry should recover without the caller ever seeing an exception.
+    prompt = _write_prompt(tmp_path)
+
+    def _flaky(_text: str) -> dict[str, object]:
+        if len(runner.calls) == 1:
+            raise ClassifierError("claude CLI exited with rc=1; stderr=")
+        return {"intent": "reminder", "confidence": 0.8, "distilled_payload": {}}
+
+    runner = FakeClaudeRunner(responses=_flaky)
+    res = await classify(
+        "remind me tomorrow",
+        correlation_id="c-retry-ok",
+        backend=runner,
+        prompt_path=prompt,
+        cache=PromptCache(),
+    )
+    assert res.intent.value == "reminder"
+    assert len(runner.calls) == 2, "must retry exactly once before succeeding"
+
+
+async def test_classify_error_falls_back_to_unknown_after_retry_exhausted(
+    tmp_path: Path,
+) -> None:
+    # aisw-l3h: two bare ClassifierError failures in a row degrade to intent=unknown
+    # (routable), same shape as the timeout fallback — the message is never dropped.
+    prompt = _write_prompt(tmp_path)
+
+    def _always_fails(_text: str) -> dict[str, object]:
+        raise ClassifierError("claude CLI exited with rc=1; stderr=")
+
+    runner = FakeClaudeRunner(responses=_always_fails)
+    res = await classify(
+        "Сколько у меня акций Сбербанка?",
+        correlation_id="c-retry-exhausted",
+        backend=runner,
+        prompt_path=prompt,
+        cache=PromptCache(),
+    )
+    assert res.intent is Intent.UNKNOWN
+    assert res.confidence == 0.0
+    assert res.distilled_payload == {"fallback": "stage0_error"}
+    assert res.backend == "fake"
+    assert res.latency_ms >= 0
+    assert len(runner.calls) == 2, "must retry exactly once, not more"
+
+
+async def test_classify_schema_error_does_not_retry(tmp_path: Path) -> None:
+    # aisw-l3h: ClassifierSchemaError is a PERMANENT fault (malformed model output) — it
+    # must never trigger the transient-error retry, and it still propagates unretried.
+    prompt = _write_prompt(tmp_path)
+
+    def _schema_err(_text: str) -> dict[str, object]:
+        raise ClassifierSchemaError("backend returned garbage")
+
+    runner = FakeClaudeRunner(responses=_schema_err)
+    with pytest.raises(ClassifierSchemaError):
+        await classify(
+            "x",
+            correlation_id="c-schema-no-retry",
+            backend=runner,
+            prompt_path=prompt,
+            cache=PromptCache(),
+        )
+    assert len(runner.calls) == 1, "schema errors are permanent — no retry attempt"
 
 
 async def test_classify_schema_error_still_raises(tmp_path: Path) -> None:
