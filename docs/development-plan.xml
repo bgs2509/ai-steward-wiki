@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<DevelopmentPlan VERSION="0.0.12">
+<DevelopmentPlan VERSION="0.0.13">
   <ArchitectureNotes>
     <objective>Multi-user Telegram → Claude Code CLI WIKI assistant (Karpathy LLM Wiki method). MVP delivers: foundation (settings/logging/three-DB SQLite), auth + onboarding + admin, scheduler core, Stage-0 Haiku classifier, Stage-1 Sonnet wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer + voice STT + photo ingest, ingest pipeline (classifier + streaming), runtime wiring, integration E2E.</objective>
     <non-goal>No i18n catalog (ru-only, D-032); off-site backup deferred; web UI / non-Telegram channels out of scope.</non-goal>
@@ -490,11 +490,11 @@
       <step-2 module="M-LLM-CODEX" status="done" verification="V-M-LLM-CODEX">Implement restricted argv, environment, structured, agent, text, cancellation, and timeout paths.</step-2>
       <step-3 module="M-LLM-CODEX" status="done" verification="V-M-LLM-CODEX">Implement non-model readiness and deterministic fake-CLI containment checks.</step-3>
     </Phase-G.2>
-    <Phase-G.3 name="Structured and text failover integration" status="pending" bd_id="aisw-8gw">
+    <Phase-G.3 name="Structured and text failover integration" status="done" bd_id="aisw-8gw">
       <goal>Preserve existing Stage-0, schema, and cron consumer contracts under safe fallback.</goal>
       <step-1 module="M-CLASSIFIER-STAGE0" status="done" verification="V-M-CLASSIFIER-STAGE0">Add typed Claude limit parsing and gpt-5.4-mini structured fallback.</step-1>
-      <step-2 module="M-WIKI-MIGRATION" status="pending" verification="V-M-WIKI-MIGRATION">Add gpt-5.5 medium text fallback before schema mutation.</step-2>
-      <step-3 module="M-SCHEDULER-CONSUMER" status="pending" verification="V-M-SCHEDULER-CONSUMER">Add gpt-5.5 medium text fallback before Telegram delivery.</step-3>
+      <step-2 module="M-WIKI-MIGRATION" status="done" verification="V-M-WIKI-MIGRATION">Add gpt-5.5 medium text fallback before schema mutation.</step-2>
+      <step-3 module="M-SCHEDULER-CONSUMER" status="done" verification="V-M-SCHEDULER-CONSUMER">Add gpt-5.5 medium text fallback before Telegram delivery.</step-3>
     </Phase-G.3>
     <Phase-G.4 name="WIKI agent failover and replay safety" status="pending" bd_id="aisw-8gw">
       <goal>Preserve WIKI locking, streaming, transcript, cancellation, and capability boundaries across a safe fallback.</goal>
