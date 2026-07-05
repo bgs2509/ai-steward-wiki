@@ -1,16 +1,19 @@
 # FILE: src/ai_steward_wiki/classifier/__init__.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Public surface of the Stage-0 classifier module (M-CLASSIFIER-STAGE0, chunk 5).
 #   SCOPE: Re-export schema, backends, classify, parse_time, errors.
 #   DEPENDS: ai_steward_wiki.classifier.{schema,backend,stage0,time_parse}
-#   LINKS: M-CLASSIFIER-STAGE0
+#   LINKS: M-CLASSIFIER-STAGE0, aisw-xi8
 #   ROLE: BARREL
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
 #   Intent - closed enum of Stage-0 intents
+#   WikiSlots - frozen slot model: action (ingest|query|lint|catalog|None)
+#   JobSlots - frozen slot model: action/kind/time_expr/schedule_expr/text/needle
+#   parse_slots - lenient boundary parser: unknown keys ignored, bad values -> default instance
 #   ClassifierResult - frozen result schema with audit fields
 #   TimeParseResult - frozen NL-time result schema with escalate flag
 #   ClassifierBackend - Protocol for backends
@@ -29,7 +32,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - initial barrel for chunk 5
+#   LAST_CHANGE: v0.0.2 - aisw-xi8 (Phase-A): re-export WikiSlots/JobSlots/parse_slots.
+#   PREVIOUS:    v0.0.1 - initial barrel for chunk 5
 # END_CHANGE_SUMMARY
 
 from ai_steward_wiki.classifier.backend import (
