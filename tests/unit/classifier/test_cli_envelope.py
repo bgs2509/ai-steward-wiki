@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 from ai_steward_wiki.classifier.backend import ClaudeCliBackend, Spawner
-from ai_steward_wiki.classifier.schema import ClassifierSchemaError
+from ai_steward_wiki.classifier.schema import ClassifierError, ClassifierSchemaError
+from ai_steward_wiki.llm.failover import ProviderLimitError
 
 
 class _StubSpawner:
@@ -90,6 +91,41 @@ async def test_error_envelope_raises(prompt_file: Path) -> None:
     backend = _make_backend(spawner)
     with pytest.raises(ClassifierSchemaError, match="not success"):
         await backend.call(text="t", prompt_path=prompt_file, correlation_id="c")
+
+
+async def test_structured_429_raises_typed_limit_before_nonzero_exit(
+    prompt_file: Path,
+) -> None:
+    spawner = _StubSpawner(
+        stdout=json.dumps(
+            {
+                "type": "result",
+                "subtype": "error",
+                "is_error": True,
+                "api_error_status": 429,
+                "result": "subscription limit reached; resets at 2026-07-05T18:00:00Z",
+            }
+        ).encode("utf-8"),
+        rc=1,
+    )
+    backend = _make_backend(spawner)
+
+    with pytest.raises(ProviderLimitError) as captured:
+        await backend.call(text="t", prompt_path=prompt_file, correlation_id="c")
+
+    assert captured.value.provider == "claude"
+    assert captured.value.reset_at is not None
+    assert captured.value.evidence.replay_safe is True
+
+
+async def test_unstructured_429_text_does_not_trigger_limit(prompt_file: Path) -> None:
+    spawner = _StubSpawner(stdout=b"", rc=1, stderr=b"HTTP 429 in arbitrary stderr")
+    backend = _make_backend(spawner)
+
+    with pytest.raises(ClassifierError) as captured:
+        await backend.call(text="t", prompt_path=prompt_file, correlation_id="c")
+
+    assert not isinstance(captured.value, ProviderLimitError)
 
 
 async def test_inlines_system_prompt_and_neutral_cwd(prompt_file: Path) -> None:
