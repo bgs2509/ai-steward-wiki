@@ -82,13 +82,18 @@ class FakeAcquirer:
     """No-op LockAcquirer recording (wiki_id, wiki_path) on each acquire."""
 
     calls: list[tuple[str, Path]] = field(default_factory=list)
+    active: bool = False
 
     def acquire(self, wiki_id: str, wiki_path: Path) -> AbstractAsyncContextManager[None]:
         self.calls.append((wiki_id, wiki_path))
 
         @asynccontextmanager
         async def _cm() -> AsyncIterator[None]:
-            yield
+            self.active = True
+            try:
+                yield
+            finally:
+                self.active = False
 
         return _cm()
 
