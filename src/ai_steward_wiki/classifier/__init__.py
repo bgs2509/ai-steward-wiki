@@ -46,7 +46,10 @@ from ai_steward_wiki.classifier.schema import (
     ClassifierSchemaError,
     ClassifierTimeoutError,
     Intent,
+    JobSlots,
     TimeParseResult,
+    WikiSlots,
+    parse_slots,
 )
 from ai_steward_wiki.classifier.stage0 import PromptCache, classify, record_prompt_version
 from ai_steward_wiki.classifier.time_parse import parse_time
@@ -62,10 +65,13 @@ __all__ = [
     "ClaudeCliBackend",
     "FakeClaudeRunner",
     "Intent",
+    "JobSlots",
     "PromptCache",
     "Spawner",
     "TimeParseResult",
+    "WikiSlots",
     "classify",
+    "parse_slots",
     "parse_time",
     "record_prompt_version",
 ]

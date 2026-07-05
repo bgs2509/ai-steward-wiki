@@ -16,12 +16,12 @@ from ai_steward_wiki.classifier.schema import unwrap_fenced_json
 
 def _ok_payload(**overrides: object) -> dict[str, object]:
     base: dict[str, object] = {
-        "intent": "reminder",
+        "intent": "job",
         "confidence": 0.92,
-        "distilled_payload": {"when": "tomorrow 9am"},
+        "distilled_payload": {"action": "create", "kind": "once", "time_expr": "tomorrow 9am"},
         "backend": "fake",
         "model": "fake-haiku",
-        "prompt_semver": "1.0.0",
+        "prompt_semver": "2.0.0",
         "prompt_sha256": "a" * 64,
         "latency_ms": 42,
     }
@@ -31,27 +31,24 @@ def _ok_payload(**overrides: object) -> dict[str, object]:
 
 def test_intent_enum_closed() -> None:
     assert {i.value for i in Intent} == {
-        "reminder",
-        "wiki_ingest",
-        "wiki_query",
-        "wiki_lint",
-        "digest",
-        "web_task",
-        "smalltalk",
+        "wiki",
+        "job",
+        "web",
+        "chat",
         "admin",
         "unknown",
     }
 
 
-def test_smalltalk_intent_validates() -> None:
-    """aisw-df4: a smalltalk-classified result is accepted by the schema."""
-    r = ClassifierResult.model_validate(_ok_payload(intent="smalltalk", confidence=0.9))
-    assert r.intent is Intent.SMALLTALK
+def test_chat_intent_validates() -> None:
+    """aisw-xi8: a chat-classified result is accepted by the schema (ex-SMALLTALK)."""
+    r = ClassifierResult.model_validate(_ok_payload(intent="chat", confidence=0.9))
+    assert r.intent is Intent.CHAT
 
 
 def test_classifier_result_happy() -> None:
     r = ClassifierResult.model_validate(_ok_payload())
-    assert r.intent is Intent.REMINDER
+    assert r.intent is Intent.JOB
     assert r.confidence == 0.92
 
 
