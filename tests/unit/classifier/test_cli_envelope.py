@@ -121,3 +121,48 @@ async def test_inlines_system_prompt_and_neutral_cwd(prompt_file: Path) -> None:
     assert argv[t + 1] == ""
     # old long --disallowedTools list replaced by --tools "".
     assert "--disallowedTools" not in argv
+
+
+# --- aisw-xi8: thinking-off env knob + fence-with-prose robustness ---------
+
+
+async def test_fence_with_trailing_prose_unwraps(prompt_file: Path) -> None:
+    """aisw-xi8: with thinking disabled the model sometimes appends explanatory
+    prose AFTER the fenced JSON (observed live on «Через 20 минут»). The old
+    anchored fence regex choked on it; unwrapping must SEARCH for the fence
+    (same failure shape schema.unwrap_fenced_json already solved — aisw-7j3)."""
+    inner = {"intent": "unknown", "confidence": 0.85, "distilled_payload": {}}
+    reply = (
+        f"```json\n{json.dumps(inner)}\n```\n\n"
+        "The message is a bare time expression with no actionable intent attached."
+    )
+    spawner = _StubSpawner(stdout=_envelope(reply))
+    backend = _make_backend(spawner)
+    out = await backend.call(text="Через 20 минут", prompt_path=prompt_file, correlation_id="c")
+    assert out == inner
+
+
+async def test_max_thinking_tokens_env_when_set(prompt_file: Path) -> None:
+    """aisw-xi8: Stage-0 classification is recognition, not computation — the
+    backend must pass MAX_THINKING_TOKENS to the CLI when the field is set."""
+    inner = {"intent": "chat", "confidence": 0.99, "distilled_payload": {}}
+    spawner = _StubSpawner(stdout=_envelope(json.dumps(inner)))
+    backend = ClaudeCliBackend(
+        claude_config_dir=Path("/tmp/fake-claude-config"),
+        binary="claude",
+        spawner=spawner,
+        max_thinking_tokens=0,
+    )
+    await backend.call(text="привет", prompt_path=prompt_file, correlation_id="c")
+    assert spawner.calls[0]["env"]["MAX_THINKING_TOKENS"] == "0"
+
+
+async def test_max_thinking_tokens_env_absent_by_default(prompt_file: Path) -> None:
+    """Default None → env untouched (time-parse fallback NEEDS thinking for date
+    arithmetic — verified live: «за месяц до 25 июня следующего года» degrades
+    to a past-year date without it)."""
+    inner = {"intent": "chat", "confidence": 0.99, "distilled_payload": {}}
+    spawner = _StubSpawner(stdout=_envelope(json.dumps(inner)))
+    backend = _make_backend(spawner)
+    await backend.call(text="привет", prompt_path=prompt_file, correlation_id="c")
+    assert "MAX_THINKING_TOKENS" not in spawner.calls[0]["env"]

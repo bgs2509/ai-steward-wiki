@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/classifier/backend.py
-# VERSION: 0.0.7
+# VERSION: 0.0.8
 # START_MODULE_CONTRACT
 #   PURPOSE: Backend abstraction for Stage-0 classifier — Claude CLI default + optional API + Fake.
 #   SCOPE: ClassifierBackend Protocol; ClaudeCliBackend (subprocess); AnthropicApiBackend stub;
@@ -21,7 +21,17 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.7 - aisw-nrt (chunk 2): emit claude_cli.spawn/exit/error in
+#   LAST_CHANGE: v0.0.8 - aisw-xi8: (1) ClaudeCliBackend.max_thinking_tokens field —
+#                         when set, passes MAX_THINKING_TOKENS to the CLI env. Stage-0
+#                         wiring sets 0 (classification = recognition, not computation;
+#                         unbounded thinking made complex phrasings systematically cross
+#                         the 30s timeout — 8/100 corpus cases in 3 live runs, 0/100 with
+#                         budget=0 at ~2.5s/call). Default None keeps thinking for callers
+#                         that compute (time-parse date arithmetic degrades without it).
+#                         (2) _unwrap_cli_envelope delegates to schema.unwrap_fenced_json
+#                         (search, aisw-7j3) — a fenced JSON with trailing prose now parses
+#                         (observed live once thinking was disabled).
+#   PREVIOUS:    v0.0.7 - aisw-nrt (chunk 2): emit claude_cli.spawn/exit/error in
 #                         AsyncioSpawner.spawn (bytes-counts + duration only, PII-safe).
 #   PREVIOUS:    v0.0.6 - aisw-0mg: add -p (required for --output-format json),
 #                         --setting-sources "", --disable-slash-commands, --tools "".
@@ -48,7 +58,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -59,6 +68,7 @@ from ai_steward_wiki.classifier.schema import (
     ClassifierError,
     ClassifierSchemaError,
     ClassifierTimeoutError,
+    unwrap_fenced_json,
 )
 from ai_steward_wiki.claude_cli.common import (
     build_env,
@@ -185,6 +195,15 @@ class ClaudeCliBackend:
     model: str = "claude-haiku-4-5"
     name: str = "claude_cli"
     spawner: Spawner = field(default_factory=AsyncioSpawner)
+    # aisw-xi8: thinking budget for the CLI (MAX_THINKING_TOKENS env). None → CLI
+    # default (extended thinking ON). Stage-0 classification is RECOGNITION against
+    # explicit prompt rules, not computation — unbounded thinking made complex
+    # phrasings («напомни за неделю до…») generate 3-6k invisible tokens = 25-50s,
+    # systematically crossing timeout_s (measured: same 8/100 corpus cases timed out
+    # in 3 live runs; 0/100 with budget=0, same answers, ~2.5s/call). Callers that
+    # NEED thinking (time-parse date arithmetic: «за месяц до 25 июня следующего
+    # года» degrades to a past-year date without it, verified live) keep None.
+    max_thinking_tokens: int | None = None
 
     def _argv(self, prompt_path: Path) -> list[str]:
         return [
@@ -208,6 +227,8 @@ class ClaudeCliBackend:
 
     async def call(self, *, text: str, prompt_path: Path, correlation_id: str) -> dict[str, Any]:
         env = build_env(self.claude_config_dir)
+        if self.max_thinking_tokens is not None:
+            env["MAX_THINKING_TOKENS"] = str(self.max_thinking_tokens)
         argv = self._argv(prompt_path)
         argv[0] = resolve_binary(self.binary)
         rc, stdout, stderr = await self.spawner.spawn(
@@ -232,15 +253,16 @@ class ClaudeCliBackend:
         return _unwrap_cli_envelope(envelope)
 
 
-_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
-
-
 def _unwrap_cli_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
     """Extract the inner classifier JSON from a Claude CLI result envelope.
 
     The CLI envelope looks like {type:"result", subtype:"success", result:"<text>", ...}.
     The model is instructed (prompts/classifier.md) to put a strict JSON object into
-    `result`. Defensive: strip code fences if the model adds them anyway.
+    `result`. Defensive: unwrapping delegates to schema.unwrap_fenced_json (SEARCH,
+    not full-string anchor — aisw-7j3), so a fenced JSON block with surrounding
+    prose still parses. Observed live (aisw-xi8, thinking disabled): the model
+    sometimes appends an explanation AFTER the fence; the previous anchored regex
+    rejected those replies even though the JSON was present and correct.
     """
     if envelope.get("is_error") is True or envelope.get("subtype") != "success":
         raise ClassifierSchemaError(
@@ -252,21 +274,13 @@ def _unwrap_cli_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
         raise ClassifierSchemaError(
             f"claude CLI envelope missing string 'result': got {type(result_text).__name__}"
         )
-    candidate = result_text.strip()
-    fence_match = _FENCE_RE.match(candidate)
-    if fence_match is not None:
-        candidate = fence_match.group(1).strip()
     try:
-        inner = json.loads(candidate)
-    except json.JSONDecodeError as e:
+        return unwrap_fenced_json(result_text)
+    except ClassifierSchemaError as e:
+        # Preserve the envelope-specific message shape (log/tests contract).
         raise ClassifierSchemaError(
             f"claude CLI inner JSON parse failed: {result_text[:256]!r}"
         ) from e
-    if not isinstance(inner, dict):
-        raise ClassifierSchemaError(
-            f"claude CLI inner JSON is not an object: {type(inner).__name__}"
-        )
-    return inner
 
 
 @dataclass
