@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/llm/__init__.py
-# VERSION: 0.2.0
+# VERSION: 0.2.1
 # START_MODULE_CONTRACT
 #   PURPOSE: Public package boundary for subscription-backed LLM provider failover.
 #   SCOPE: Re-export provider policy types and, after adapter implementation, Codex interfaces.
@@ -20,6 +20,7 @@
 #   ProvidersUnavailableError - typed dual-provider failure
 #   ReplayBlockedError - unsafe replay rejection
 #   CodexCliAdapter - restricted subscription-backed Codex CLI adapter
+#   CodexEvent - provider-neutral Codex agent event
 #   CodexReadiness - non-model Codex readiness result
 #   CodexRequest - validated provider invocation request
 #   CodexRunKind - fixed Codex capability profiles
@@ -28,7 +29,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.2.0 - aisw-8gw: export Codex adapter request, readiness,
+#   LAST_CHANGE: v0.2.1 - aisw-8gw: export provider-neutral CodexEvent.
+#   PREVIOUS:    v0.2.0 - aisw-8gw: export Codex adapter request, readiness,
 #                capability, and error types.
 #   PREVIOUS:    v0.1.0 - aisw-8gw: export implemented failover policy types.
 #   PREVIOUS:    v0.0.0 - aisw-8gw: contract-only planning stub.
@@ -36,6 +38,7 @@
 
 from ai_steward_wiki.llm.codex import (
     CodexCliAdapter,
+    CodexEvent,
     CodexOutputError,
     CodexReadiness,
     CodexRequest,
@@ -57,6 +60,7 @@ from ai_steward_wiki.llm.failover import (
 __all__ = [
     "AttemptEvidence",
     "CodexCliAdapter",
+    "CodexEvent",
     "CodexOutputError",
     "CodexReadiness",
     "CodexRequest",

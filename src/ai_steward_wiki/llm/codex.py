@@ -1,11 +1,11 @@
 # FILE: src/ai_steward_wiki/llm/codex.py
-# VERSION: 0.1.0
+# VERSION: 0.1.1
 # START_MODULE_CONTRACT
 #   PURPOSE: Run Codex CLI through ChatGPT subscription authentication under explicit least-privilege profiles.
 #   SCOPE: Restricted environment and argv builders; structured, agent, and text execution;
 #          JSON Schema output; JSONL normalization; readiness checks without model invocation.
 #   DEPENDS: asyncio, dataclasses, json, os, pathlib, shlex, shutil, tempfile,
-#            typing, ai_steward_wiki.llm.failover, ai_steward_wiki.wiki.streaming
+#            typing, ai_steward_wiki.llm.failover
 #   LINKS: M-LLM-CODEX, M-LLM-FAILOVER, ADR-035, aisw-8gw, FR-5, FR-6, FR-11, FR-12, FR-13, FR-15
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
@@ -13,6 +13,7 @@
 #
 # START_MODULE_MAP
 #   CodexRunKind - structured, text, read, write, and web capability profiles
+#   CodexEvent - provider-neutral agent event without WIKI-layer dependency
 #   CodexRequest - validated invocation request without credentials
 #   ProcessResult - sanitized subprocess bytes and exit code
 #   CodexReadiness - non-model binary, version, auth, and CLI capability status
@@ -22,11 +23,13 @@
 #   CodexSpawner - injectable subprocess boundary
 #   AsyncioCodexSpawner - timeout and cancellation-safe asyncio implementation
 #   CodexCliAdapter - restricted structured, text, agent, and readiness entry points
-#   normalize_codex_event - map one Codex JSONL object to StreamEvent and evidence
+#   normalize_codex_event - map one Codex JSONL object to CodexEvent and evidence
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - aisw-8gw: implement restricted subscription-backed
+#   LAST_CHANGE: v0.1.1 - aisw-8gw: keep normalized events provider-local to
+#                prevent an M-LLM-CODEX to M-WIKI-RUNNER dependency cycle.
+#   PREVIOUS:    v0.1.0 - aisw-8gw: implement restricted subscription-backed
 #                Codex invocation, output parsing, event normalization, and readiness.
 #   PREVIOUS:    v0.0.0 - aisw-8gw: contract-only planning stub.
 # END_CHANGE_SUMMARY
@@ -49,12 +52,12 @@ from typing import Any, Literal, Protocol
 import structlog
 
 from ai_steward_wiki.llm.failover import AttemptEvidence, EvidenceKind
-from ai_steward_wiki.wiki.streaming import StreamEvent
 
 __all__ = [
     "AsyncioCodexSpawner",
     "CodexCliAdapter",
     "CodexError",
+    "CodexEvent",
     "CodexOutputError",
     "CodexReadiness",
     "CodexRequest",
@@ -68,6 +71,7 @@ __all__ = [
 _log = structlog.get_logger("llm.codex")
 
 ReasoningEffort = Literal["low", "medium", "high"]
+CodexEventType = Literal["assistant_chunk", "tool_use", "final", "raw"]
 _AGENT_KINDS = {
     "agent_read",
     "agent_write",
@@ -122,6 +126,12 @@ class CodexRunKind(StrEnum):
     AGENT_READ = "agent_read"
     AGENT_WRITE = "agent_write"
     WEB = "web"
+
+
+@dataclass(frozen=True, slots=True)
+class CodexEvent:
+    type: CodexEventType
+    payload: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,11 +362,11 @@ class CodexCliAdapter:
         except UnicodeDecodeError as exc:
             raise CodexOutputError("codex text output is not UTF-8") from exc
 
-    async def run_agent(self, request: CodexRequest) -> list[StreamEvent]:
+    async def run_agent(self, request: CodexRequest) -> list[CodexEvent]:
         if request.run_kind.value not in _AGENT_KINDS:
             raise ValueError("run_agent requires an agent or web request")
         result = await self._execute(request, self.build_argv(request))
-        events: list[StreamEvent] = []
+        events: list[CodexEvent] = []
         try:
             text = result.stdout.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -498,7 +508,7 @@ class CodexCliAdapter:
 
 def normalize_codex_event(
     raw: Mapping[str, Any],
-) -> tuple[StreamEvent, AttemptEvidence]:
+) -> tuple[CodexEvent, AttemptEvidence]:
     """Map one Codex JSONL event into the existing runner event contract."""
     raw_type = raw.get("type")
     if raw_type == "item.completed":
@@ -512,27 +522,27 @@ def normalize_codex_event(
             if not isinstance(text, str):
                 raise CodexOutputError("codex agent message has no text")
             return (
-                StreamEvent(type="assistant_chunk", payload={"text": text}),
+                CodexEvent(type="assistant_chunk", payload={"text": text}),
                 AttemptEvidence(EvidenceKind.READ_ONLY, "agent message"),
             )
         if item_type == "file_change":
             return (
-                StreamEvent(type="tool_use", payload=payload),
+                CodexEvent(type="tool_use", payload=payload),
                 AttemptEvidence(EvidenceKind.MUTATION, "file change"),
             )
         if item_type == "web_search":
             return (
-                StreamEvent(type="tool_use", payload=payload),
+                CodexEvent(type="tool_use", payload=payload),
                 AttemptEvidence(EvidenceKind.READ_ONLY, "web search"),
             )
         if item_type == "command_execution":
-            return StreamEvent(type="tool_use", payload=payload), _command_evidence(
+            return CodexEvent(type="tool_use", payload=payload), _command_evidence(
                 item.get("command")
             )
         return _raw_event(raw), AttemptEvidence(EvidenceKind.UNKNOWN, "unknown item")
     if raw_type == "turn.completed":
         return (
-            StreamEvent(type="final", payload=dict(raw)),
+            CodexEvent(type="final", payload=dict(raw)),
             AttemptEvidence(EvidenceKind.READ_ONLY, "turn completed"),
         )
     if raw_type in {"turn.failed", "error"}:
@@ -540,8 +550,8 @@ def normalize_codex_event(
     return _raw_event(raw), AttemptEvidence(EvidenceKind.UNKNOWN, "unknown event")
 
 
-def _raw_event(raw: Mapping[str, Any]) -> StreamEvent:
-    return StreamEvent(type="raw", payload=dict(raw))
+def _raw_event(raw: Mapping[str, Any]) -> CodexEvent:
+    return CodexEvent(type="raw", payload=dict(raw))
 
 
 def _command_evidence(command_value: object) -> AttemptEvidence:

@@ -11,6 +11,7 @@ import ai_steward_wiki.llm as llm_package
 from ai_steward_wiki.llm.codex import (
     AsyncioCodexSpawner,
     CodexCliAdapter,
+    CodexEvent,
     CodexOutputError,
     CodexRequest,
     CodexRunKind,
@@ -213,6 +214,7 @@ def test_environment_is_subscription_only(tmp_path: Path) -> None:
 
 def test_llm_package_exports_codex_contract() -> None:
     assert llm_package.CodexCliAdapter is CodexCliAdapter
+    assert llm_package.CodexEvent is CodexEvent
     assert llm_package.CodexRequest is CodexRequest
     assert llm_package.CodexRunKind is CodexRunKind
 
