@@ -1189,10 +1189,32 @@ def _build_classifier_backend(settings: Settings) -> ClassifierBackend:
         return AnthropicApiBackend(
             credential_path=settings.stage0_api_credential_path,
         )
+    # aisw-xi8: classification is recognition, not computation — disable extended
+    # thinking for Stage-0 (unbounded thinking made complex phrasings systematically
+    # cross the 30s timeout; 0/100 timeouts and ~2.5s/call with the budget at 0).
     return ClaudeCliBackend(
         claude_config_dir=default_claude_config_dir(),
         timeout_s=settings.classifier_stage0_timeout_s,
+        max_thinking_tokens=0,
     )
+
+
+def _build_time_parse_backend(
+    settings: Settings, classifier_backend: ClassifierBackend
+) -> ClassifierBackend:
+    """Backend for the NL-time Haiku fallback — thinking stays ENABLED.
+
+    Date arithmetic («за месяц до 25 июня следующего года») genuinely needs
+    reasoning: with the thinking budget at 0 the model returned a past-year date
+    (verified live, aisw-xi8). The CLI branch therefore gets its own instance
+    without max_thinking_tokens; the API branch reuses the shared backend.
+    """
+    if isinstance(classifier_backend, ClaudeCliBackend):
+        return ClaudeCliBackend(
+            claude_config_dir=default_claude_config_dir(),
+            timeout_s=settings.classifier_stage0_timeout_s,
+        )
+    return classifier_backend
 
 
 # END_BLOCK_TEXT_PIPELINE_ADAPTERS
@@ -1337,7 +1359,8 @@ async def _amain() -> None:
     # escalates (the file is shipped in prompts/, so this path is normally taken).
     time_parse_prompt = settings.prompts_dir / "time-parse.md"
     time_parser_adapter = _TimeParserAdapter(
-        backend=classifier_backend,
+        # aisw-xi8: separate instance WITH thinking (date arithmetic needs it).
+        backend=_build_time_parse_backend(settings, classifier_backend),
         prompt_path=time_parse_prompt if time_parse_prompt.exists() else None,
     )
     _users_by_id = {u.telegram_id: u for u in users_cfg.users}
