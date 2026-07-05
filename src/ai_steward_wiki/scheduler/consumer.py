@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/scheduler/consumer.py
-# VERSION: 0.0.5
+# VERSION: 0.1.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Single async drain loop over PriorityJobQueue — executes each cron-user
 #            item through Claude with safe Codex fallback,
@@ -30,11 +30,13 @@
 #
 # START_MODULE_MAP
 #   Spawner - Protocol seam: async spawn(argv, *, cwd, env) -> _Killable + communicate
-#   CronConsumer - constructor-DI drain loop; .run() blocking; ._execute_one per-item
+#   CronConsumer - constructor-DI drain loop; Claude-first text generation; one delivery
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.5 - aisw-8gw: contract-only plan for safe Codex text fallback.
+#   LAST_CHANGE: v0.1.0 - aisw-8gw: normalize Claude JSON text envelopes and
+#                execute safe gpt-5.5 medium fallback before one Telegram delivery.
+#   PREVIOUS:    v0.0.5 - aisw-8gw: contract-only plan for safe Codex text fallback.
 #   PREVIOUS:    v0.0.4 - aisw-abc: drop the `systemd-run --scope --collect` wrapper
 #                from _build_argv — run the Claude CLI directly, matching
 #                wiki/runner._build_argv. The wrapper was D-038 per-UID-isolation
@@ -74,6 +76,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -88,9 +91,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ai_steward_wiki.claude_cli.common import (
     build_env,
     neutral_cwd,
+    parse_claude_subscription_limit,
     resolve_binary,
     system_prompt_argv,
     truncate_stderr,
+)
+from ai_steward_wiki.llm.codex import CodexCliAdapter, CodexRequest, CodexRunKind
+from ai_steward_wiki.llm.failover import (
+    AttemptEvidence,
+    EvidenceKind,
+    FailoverPolicy,
+    ProviderLimitError,
+    ProvidersUnavailableError,
 )
 from ai_steward_wiki.scheduler.core import (
     DEFAULT_TERM_GRACE_SECONDS,
@@ -113,6 +125,16 @@ _log = structlog.get_logger("scheduler.consumer")
 _TIMEOUT_MSG_RU = "❌ Тайм-аут: команда выполнялась дольше {seconds} с."
 _ERROR_MSG_RU = "❌ Ошибка ({code}): {stderr}"
 _EMPTY_OUTPUT_RU = "✅ Команда выполнена (без вывода)."
+_PROVIDERS_UNAVAILABLE_RU = (
+    "Claude и Codex сейчас недоступны. Исходная команда сохранена — повторите позже."
+)
+
+
+class _CronExecutionError(RuntimeError):
+    def __init__(self, *, user_message: str | None, last_error: str) -> None:
+        super().__init__(last_error)
+        self.user_message = user_message
+        self.last_error = last_error
 
 
 class _Killable(Protocol):
@@ -177,6 +199,8 @@ class CronConsumer:
         jobs_session_maker: async_sessionmaker[AsyncSession],
         timeout_s: float = 600.0,
         spawner: Spawner | None = None,
+        failover_policy: FailoverPolicy | None = None,
+        codex_adapter: CodexCliAdapter | None = None,
     ) -> None:
         self._queue = queue
         self._bot = bot
@@ -186,6 +210,8 @@ class CronConsumer:
         self._jobs_session_maker = jobs_session_maker
         self._timeout_s = timeout_s
         self._spawner: Spawner = spawner if spawner is not None else _AsyncioSpawner()
+        self._failover_policy = failover_policy
+        self._codex_adapter = codex_adapter
 
     # ---- public lifecycle -------------------------------------------------
 
@@ -238,6 +264,63 @@ class CronConsumer:
 
         await self._set_status(msg.job_id, status="running", started=True)
 
+        try:
+            text = await self._execute_text(msg)
+        except ProvidersUnavailableError:
+            await self._deliver(
+                msg,
+                _PROVIDERS_UNAVAILABLE_RU,
+                status="failed",
+                last_error="providers_unavailable",
+            )
+            return
+        except _CronExecutionError as exc:
+            if exc.user_message is None:
+                await self._set_status(
+                    msg.job_id,
+                    status="failed",
+                    finished=True,
+                    last_error=exc.last_error,
+                )
+            else:
+                await self._deliver(
+                    msg,
+                    exc.user_message,
+                    status="failed",
+                    last_error=exc.last_error,
+                )
+            return
+        await self._deliver(msg, text, status="finished")
+
+    async def _execute_text(self, msg: CronUserQueueMsg) -> str:
+        policy = self._failover_policy
+        codex = self._codex_adapter
+        if policy is None or codex is None:
+            return await self._execute_claude_text(msg)
+        system_prompt = self._prompt_path.read_text(encoding="utf-8")
+        return await policy.execute(
+            run_kind="text",
+            correlation_id=msg.correlation_id,
+            claude=lambda: self._execute_claude_text(msg),
+            codex=lambda: codex.run_text(
+                CodexRequest(
+                    prompt=(
+                        f"{system_prompt}\n\n"
+                        "<cron_user_command>\n"
+                        f"{msg.command}\n"
+                        "</cron_user_command>"
+                    ),
+                    model=codex.complex_model,
+                    reasoning=codex.complex_reasoning,
+                    run_kind=CodexRunKind.TEXT,
+                    correlation_id=msg.correlation_id,
+                    timeout_s=self._timeout_s,
+                    cwd=codex.neutral_cwd,
+                )
+            ),
+        )
+
+    async def _execute_claude_text(self, msg: CronUserQueueMsg) -> str:
         argv = self._build_argv(msg)
         env = build_env(self._claude_config_dir)
         cwd = neutral_cwd(self._claude_config_dir)
@@ -248,11 +331,23 @@ class CronConsumer:
             chat_id=msg.chat_id,
         )
         start_t = datetime.now(UTC)
-
-        proc = await self._spawner.spawn(argv, cwd=cwd, env=env)
+        try:
+            proc = await self._spawner.spawn(argv, cwd=cwd, env=env)
+        except Exception as exc:
+            _log.warning(
+                "scheduler.consumer.exec.failed",
+                job_id=msg.job_id,
+                correlation_id=msg.correlation_id,
+                error_class=type(exc).__name__,
+                reason="spawn",
+            )
+            raise _CronExecutionError(
+                user_message=None,
+                last_error=f"spawn: {type(exc).__name__}",
+            ) from exc
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout_s)
-        except TimeoutError:
+        except TimeoutError as exc:
             await kill_with_sequence(proc, grace_seconds=DEFAULT_TERM_GRACE_SECONDS)
             _log.warning(
                 "scheduler.consumer.exec.timeout",
@@ -260,43 +355,38 @@ class CronConsumer:
                 correlation_id=msg.correlation_id,
                 timeout_s=self._timeout_s,
             )
-            await self._deliver(
-                msg,
-                _TIMEOUT_MSG_RU.format(seconds=int(self._timeout_s)),
-                status="failed",
+            raise _CronExecutionError(
+                user_message=_TIMEOUT_MSG_RU.format(seconds=int(self._timeout_s)),
                 last_error=f"timeout after {self._timeout_s}s",
-            )
-            return
+            ) from exc
         except Exception as exc:
             _log.warning(
                 "scheduler.consumer.exec.failed",
                 job_id=msg.job_id,
                 correlation_id=msg.correlation_id,
                 error_class=type(exc).__name__,
-                reason="spawn_or_communicate",
+                reason="communicate",
             )
-            await self._set_status(
-                msg.job_id,
-                status="failed",
-                finished=True,
-                last_error=f"spawn/communicate: {type(exc).__name__}",
-            )
-            return
+            raise _CronExecutionError(
+                user_message=None,
+                last_error=f"communicate: {type(exc).__name__}",
+            ) from exc
 
         duration_ms = int((datetime.now(UTC) - start_t).total_seconds() * 1000)
         exit_code = proc.returncode if proc.returncode is not None else -1
-
-        if exit_code == 0:
-            _log.info(
-                "scheduler.consumer.exec.done",
-                job_id=msg.job_id,
-                correlation_id=msg.correlation_id,
-                duration_ms=duration_ms,
-                bytes_stdout=len(stdout),
-            )
-            text = stdout.decode("utf-8", "replace").strip() or _EMPTY_OUTPUT_RU
-            await self._deliver(msg, text, status="finished")
-        else:
+        try:
+            envelope = json.loads(stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            envelope = None
+        if isinstance(envelope, dict):
+            limit = parse_claude_subscription_limit(envelope)
+            if limit is not None:
+                raise ProviderLimitError(
+                    provider="claude",
+                    reset_at=limit.reset_at,
+                    evidence=AttemptEvidence(EvidenceKind.READ_ONLY, "cron text generation"),
+                )
+        if exit_code != 0:
             _log.warning(
                 "scheduler.consumer.exec.failed",
                 job_id=msg.job_id,
@@ -308,12 +398,28 @@ class CronConsumer:
                 code=exit_code,
                 stderr=truncate_stderr(stderr, limit=512),
             )
-            await self._deliver(
-                msg,
-                err_text,
-                status="failed",
+            raise _CronExecutionError(
+                user_message=err_text,
                 last_error=f"exit={exit_code}; stderr={truncate_stderr(stderr, limit=200)}",
             )
+        if isinstance(envelope, dict):
+            result = envelope.get("result")
+            if envelope.get("subtype") != "success" or not isinstance(result, str):
+                raise _CronExecutionError(
+                    user_message=_ERROR_MSG_RU.format(code=exit_code, stderr="invalid output"),
+                    last_error="invalid claude JSON envelope",
+                )
+            text = result.strip()
+        else:
+            text = stdout.decode("utf-8", "replace").strip()
+        _log.info(
+            "scheduler.consumer.exec.done",
+            job_id=msg.job_id,
+            correlation_id=msg.correlation_id,
+            duration_ms=duration_ms,
+            bytes_stdout=len(stdout),
+        )
+        return text or _EMPTY_OUTPUT_RU
 
     # ---- argv builder ------------------------------------------------------
 
@@ -332,6 +438,9 @@ class CronConsumer:
         binary = resolve_binary(self._claude_binary)
         argv: list[str] = [
             binary,
+            "-p",
+            "--output-format",
+            "json",
             *system_prompt_argv(self._prompt_path),
             # aisw-o3m: defense-in-depth parity with wiki/runner._build_argv.
             # Flag names verified against `claude --help` (claude 2.1.175):
@@ -347,6 +456,8 @@ class CronConsumer:
             "--setting-sources",
             "",
             "--disable-slash-commands",
+            "--tools",
+            "",
             "--permission-mode",
             "dontAsk",
             "--disallowedTools",
