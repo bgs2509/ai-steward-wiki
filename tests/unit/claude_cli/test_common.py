@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ai_steward_wiki.claude_cli.common import (
     build_env,
     neutral_cwd,
+    parse_claude_subscription_limit,
     resolve_binary,
     system_prompt_argv,
     truncate_stderr,
@@ -71,3 +73,55 @@ def test_truncate_stderr_caps_long() -> None:
 def test_truncate_stderr_handles_invalid_utf8() -> None:
     out = truncate_stderr(b"\xff\xfe bad")
     assert "bad" in out
+
+
+def test_parse_subscription_limit_accepts_structured_429_with_reset() -> None:
+    result = parse_claude_subscription_limit(
+        {
+            "is_error": True,
+            "api_error_status": 429,
+            "result": "subscription limit reached; resets at 2026-07-05T18:00:00Z",
+        }
+    )
+
+    assert result is not None
+    assert result.reset_at == datetime(2026, 7, 5, 18, tzinfo=UTC)
+
+
+def test_parse_subscription_limit_accepts_structured_429_without_reset() -> None:
+    result = parse_claude_subscription_limit(
+        {
+            "is_error": True,
+            "api_error_status": 429,
+            "result": "subscription limit reached",
+        }
+    )
+
+    assert result is not None
+    assert result.reset_at is None
+
+
+def test_parse_subscription_limit_accepts_offset_reset() -> None:
+    result = parse_claude_subscription_limit(
+        {
+            "is_error": True,
+            "api_error_status": 429,
+            "result": "resets at 2026-07-05T21:00:00+03:00",
+        }
+    )
+
+    assert result is not None
+    assert result.reset_at == datetime(2026, 7, 5, 21, tzinfo=result.reset_at.tzinfo)
+    assert result.reset_at.utcoffset() is not None
+    assert result.reset_at.utcoffset().total_seconds() == 3 * 3600
+
+
+def test_parse_subscription_limit_rejects_unconfirmed_shapes() -> None:
+    payloads = [
+        {"is_error": False, "api_error_status": 429},
+        {"is_error": True, "api_error_status": 500},
+        {"is_error": True, "result": "429 in arbitrary text"},
+        {"api_error_status": 429},
+    ]
+
+    assert all(parse_claude_subscription_limit(payload) is None for payload in payloads)

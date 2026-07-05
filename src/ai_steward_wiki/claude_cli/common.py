@@ -1,10 +1,11 @@
 # FILE: src/ai_steward_wiki/claude_cli/common.py
-# VERSION: 0.0.3
+# VERSION: 0.1.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Pure-function primitives shared by Stage-0 (classifier) and Stage-1 (wiki) Claude CLI backends.
-#   SCOPE: resolve_binary, build_env, neutral_cwd, system_prompt_argv, truncate_stderr.
+#   SCOPE: resolve_binary, build_env, neutral_cwd, system_prompt_argv, truncate_stderr,
+#          structured Claude subscription-limit recognition.
 #          No subprocess spawning; system_prompt_argv reads the prompt file (small text I/O).
-#   DEPENDS: shutil, pathlib
+#   DEPENDS: collections.abc, dataclasses, datetime, pathlib, re, shutil
 #   LINKS: M-CLAUDE-CLI-COMMON, M-CLASSIFIER-STAGE0, M-WIKI-RUNNER, aisw-d3i, aisw-adj
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
@@ -17,10 +18,14 @@
 #   neutral_cwd - working directory that does NOT auto-discover project CLAUDE.md
 #   system_prompt_argv - inlines prompt file content via --system-prompt (replaces default)
 #   truncate_stderr - UTF-8 decode + length cap for error log lines
+#   ClaudeSubscriptionLimit - confirmed structured HTTP 429 with optional reset time
+#   parse_claude_subscription_limit - recognize confirmed limit envelopes without stderr heuristics
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - aisw-d3h: add default_claude_config_dir() = ~/.claude. The
+#   LAST_CHANGE: v0.1.0 - aisw-8gw: recognize structured subscription HTTP 429
+#                envelopes and parse an optional ISO 8601 reset timestamp.
+#   PREVIOUS:    v0.0.3 - aisw-d3h: add default_claude_config_dir() = ~/.claude. The
 #                bot uses bgs's default Claude dir; the dedicated dir + AISW_CLAUDE_CONFIG_DIR
 #                were dropped (revised ADR-009).
 #   PREVIOUS:    v0.0.2 - aisw-adj: switch system_prompt_argv from --system-prompt-file
@@ -32,17 +37,55 @@
 
 from __future__ import annotations
 
+import re
 import shutil
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 __all__ = [
+    "ClaudeSubscriptionLimit",
     "build_env",
     "default_claude_config_dir",
     "neutral_cwd",
+    "parse_claude_subscription_limit",
     "resolve_binary",
     "system_prompt_argv",
     "truncate_stderr",
 ]
+
+_RESET_AT_RE = re.compile(
+    r"resets?\s+at\s+"
+    r"(?P<value>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?"
+    r"(?:Z|[+-]\d{2}:\d{2}))",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeSubscriptionLimit:
+    """Confirmed Claude subscription HTTP 429 with an optional reset time."""
+
+    reset_at: datetime | None
+
+
+def parse_claude_subscription_limit(
+    payload: Mapping[str, object],
+) -> ClaudeSubscriptionLimit | None:
+    """Return a typed limit only for a structured Claude HTTP 429 envelope."""
+    # START_BLOCK_CLAUDE_LIMIT_PARSE
+    if payload.get("is_error") is not True or payload.get("api_error_status") != 429:
+        return None
+    result = payload.get("result")
+    if not isinstance(result, str):
+        return ClaudeSubscriptionLimit(reset_at=None)
+    match = _RESET_AT_RE.search(result)
+    if match is None:
+        return ClaudeSubscriptionLimit(reset_at=None)
+    value = match.group("value").replace("Z", "+00:00")
+    return ClaudeSubscriptionLimit(reset_at=datetime.fromisoformat(value))
+    # END_BLOCK_CLAUDE_LIMIT_PARSE
 
 
 def default_claude_config_dir() -> Path:
