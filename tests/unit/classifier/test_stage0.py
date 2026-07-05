@@ -40,7 +40,7 @@ async def test_classify_happy(tmp_path: Path) -> None:
     runner = FakeClaudeRunner(
         responses=[
             {
-                "intent": "reminder",
+                "intent": "job",
                 "confidence": 0.91,
                 "distilled_payload": {"when": "tomorrow"},
             }
@@ -53,7 +53,7 @@ async def test_classify_happy(tmp_path: Path) -> None:
         prompt_path=prompt,
         cache=PromptCache(),
     )
-    assert res.intent.value == "reminder"
+    assert res.intent.value == "job"
     assert res.confidence == 0.91
     assert res.backend == "fake"
     assert res.prompt_semver == "1.0.0"
@@ -77,7 +77,7 @@ async def test_classify_schema_violation(tmp_path: Path) -> None:
 async def test_classify_audit_idempotent(tmp_path: Path, audit_session) -> None:
     prompt = _write_prompt(tmp_path)
     payload = {
-        "intent": "wiki_query",
+        "intent": "wiki",
         "confidence": 0.7,
         "distilled_payload": {},
     }
@@ -145,7 +145,7 @@ async def test_classify_error_retries_once_then_succeeds(tmp_path: Path) -> None
     def _flaky(_text: str) -> dict[str, object]:
         if len(runner.calls) == 1:
             raise ClassifierError("claude CLI exited with rc=1; stderr=")
-        return {"intent": "reminder", "confidence": 0.8, "distilled_payload": {}}
+        return {"intent": "job", "confidence": 0.8, "distilled_payload": {}}
 
     runner = FakeClaudeRunner(responses=_flaky)
     res = await classify(
@@ -155,7 +155,7 @@ async def test_classify_error_retries_once_then_succeeds(tmp_path: Path) -> None
         prompt_path=prompt,
         cache=PromptCache(),
     )
-    assert res.intent.value == "reminder"
+    assert res.intent.value == "job"
     assert len(runner.calls) == 2, "must retry exactly once before succeeding"
 
 
