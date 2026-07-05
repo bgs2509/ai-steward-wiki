@@ -1,18 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <KnowledgeGraph>
-  <Project NAME="ai-steward-wiki" VERSION="0.0.10">
+  <Project NAME="ai-steward-wiki" VERSION="0.0.11">
     <keywords>telegram, claude-code, codex, provider-failover, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
     <annotation>Isolated multi-user Telegram WIKI assistant with Claude as primary and subscription-backed Codex failover. The graph covers provider policy and adapters, foundation, storage, auth, scheduler, classifiers, WIKI runtime, inbox, ops, Telegram I/O, media, pipelines, and runtime wiring.</annotation>
 
-    <M-LLM-FAILOVER NAME="LLM provider failover policy" TYPE="CORE_LOGIC" STATUS="planned">
+    <M-LLM-FAILOVER NAME="LLM provider failover policy" TYPE="CORE_LOGIC" STATUS="done">
       <purpose>Select Claude, Codex, or one Claude probe and permit fallback only for typed subscription limits and proven-safe replay.</purpose>
       <path>src/ai_steward_wiki/llm/failover.py</path>
       <depends>none</depends>
       <verification-ref>V-M-LLM-FAILOVER</verification-ref>
       <annotations>
         <type-ProviderState PURPOSE="Fixed enum with claude, codex, and probe values."/>
+        <type-EvidenceKind PURPOSE="Fixed read-only, mutation, delivered, and unknown effect categories."/>
         <type-ProviderLimitError PURPOSE="Typed subscription-limit error with provider and optional reset time."/>
         <type-AttemptEvidence PURPOSE="Fail-closed side-effect evidence for replay decisions."/>
+        <type-ReplayBlockedError PURPOSE="Unsafe same-operation replay rejection carrying observed evidence."/>
+        <type-ProvidersUnavailableError PURPOSE="Typed primary and fallback failure pair."/>
+        <type-FailoverEvent PURPOSE="Sanitized provider selection, transition, failure, and recovery event."/>
+        <type-FailoverMetrics PURPOSE="Process-local primary, fallback, dual-failure, replay, and recovery counters."/>
         <type-FailoverPolicy PURPOSE="Atomic process-local selection, transition, cooldown, probe, and replay orchestration."/>
       </annotations>
     </M-LLM-FAILOVER>
@@ -205,8 +210,10 @@
         <fn-resolve_binary PURPOSE="shutil.which absolute-path resolver with /-path short-circuit"/>
         <fn-build_env PURPOSE="restricted env dict (CLAUDE_CONFIG_DIR + minimal PATH) for CLI subprocess"/>
         <fn-neutral_cwd PURPOSE="working directory that does NOT auto-discover project CLAUDE.md"/>
-        <fn-system_prompt_argv PURPOSE="flag fragment --system-prompt-file &lt;path&gt; replacing default Claude Code system prompt"/>
+        <fn-system_prompt_argv PURPOSE="inline --system-prompt flag fragment replacing the default Claude Code system prompt"/>
         <fn-truncate_stderr PURPOSE="UTF-8 decode + length cap for error log lines"/>
+        <type-ClaudeSubscriptionLimit PURPOSE="Confirmed structured Claude HTTP 429 with optional reset time"/>
+        <fn-parse_claude_subscription_limit PURPOSE="Recognize confirmed limit envelopes without stderr heuristics"/>
       </annotations>
     </M-CLAUDE-CLI-COMMON>
 

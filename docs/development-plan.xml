@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<DevelopmentPlan VERSION="0.0.9">
+<DevelopmentPlan VERSION="0.0.10">
   <ArchitectureNotes>
     <objective>Multi-user Telegram → Claude Code CLI WIKI assistant (Karpathy LLM Wiki method). MVP delivers: foundation (settings/logging/three-DB SQLite), auth + onboarding + admin, scheduler core, Stage-0 Haiku classifier, Stage-1 Sonnet wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer + voice STT + photo ingest, ingest pipeline (classifier + streaming), runtime wiring, integration E2E.</objective>
     <non-goal>No i18n catalog (ru-only, D-032); off-site backup deferred; web UI / non-Telegram channels out of scope.</non-goal>
@@ -364,7 +364,7 @@
       </target>
       <verification-ref>V-M-TG-CRON-ADD</verification-ref>
     </M-TG-CRON-ADD>
-    <M-LLM-FAILOVER NAME="LLM provider failover policy" TYPE="CORE_LOGIC" LAYER="0" ORDER="1" STATUS="planned" bd_id="aisw-8gw">
+    <M-LLM-FAILOVER NAME="LLM provider failover policy" TYPE="CORE_LOGIC" LAYER="0" ORDER="1" STATUS="done" bd_id="aisw-8gw">
       <contract>
         <purpose>Select Claude, Codex, or one Claude probe and allow fallback only after a typed limit with proven-safe replay.</purpose>
         <inputs>
@@ -479,10 +479,10 @@
   </DataFlow>
 
   <ImplementationOrder>
-    <Phase-G.1 name="Codex fallback core circuit and typed errors" status="pending" bd_id="aisw-8gw">
+    <Phase-G.1 name="Codex fallback core circuit and typed errors" status="done" bd_id="aisw-8gw">
       <goal>Prove deterministic provider state, typed limit handling, replay safety, and one probe under concurrency.</goal>
-      <step-1 module="M-LLM-FAILOVER" status="pending" verification="V-M-LLM-FAILOVER">Implement provider state, typed errors, evidence, and generic policy through TDD.</step-1>
-      <step-2 module="M-LLM-FAILOVER" status="pending" verification="V-M-LLM-FAILOVER">Verify reset parsing, bounded cooldown, single-flight probe, replay blocking, and selection overhead.</step-2>
+      <step-1 module="M-LLM-FAILOVER" status="done" verification="V-M-LLM-FAILOVER">Implement provider state, typed errors, evidence, and generic policy through TDD.</step-1>
+      <step-2 module="M-LLM-FAILOVER" status="done" verification="V-M-LLM-FAILOVER">Verify reset parsing, bounded cooldown, single-flight probe, replay blocking, and selection overhead.</step-2>
     </Phase-G.1>
     <Phase-G.2 name="Codex CLI adapter, readiness, and settings" status="pending" bd_id="aisw-8gw">
       <goal>Provide one isolated Codex adapter with explicit models, capabilities, auth location, and output modes.</goal>
