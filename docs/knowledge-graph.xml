@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <KnowledgeGraph>
-  <Project NAME="ai-steward-wiki" VERSION="0.0.14">
+  <Project NAME="ai-steward-wiki" VERSION="0.0.15">
     <keywords>telegram, claude-code, codex, provider-failover, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
     <annotation>Isolated multi-user Telegram WIKI assistant with Claude as primary and subscription-backed Codex failover. The graph covers provider policy and adapters, foundation, storage, auth, scheduler, classifiers, WIKI runtime, inbox, ops, Telegram I/O, media, pipelines, and runtime wiring.</annotation>
 
@@ -353,12 +353,12 @@
     </M-CLASSIFIER-RECURRENCE>
 
     <M-WIKI-RUNNER NAME="WIKI / Stage-1 runner" TYPE="RUNTIME" STATUS="done">
-      <purpose>Stage-1a/1b Sonnet runner orchestrator — assemble prompt (base+overlay+per-WIKI CLAUDE.md), acquire WIKI lock, spawn `claude --output-format stream-json`, parse stream events, hard timeout + kill-sequence, aggregate assistant text (D-007, D-011, D-012, D-021).</purpose>
+      <purpose>Stage-1a/1b agent runner — assemble prompts, hold one WIKI lock across Claude and safe Codex fallback, enforce fail-closed replay evidence, normalize provider events, persist one transcript, and preserve timeout and cancellation behavior.</purpose>
       <path>src/ai_steward_wiki/wiki/runner.py, src/ai_steward_wiki/wiki/streaming.py, src/ai_steward_wiki/wiki/acquire.py</path>
       <depends>M-CLAUDE-CLI-COMMON, M-SCHEDULER, M-LLM-FAILOVER, M-LLM-CODEX</depends>
       <verification-ref>V-M-WIKI-RUNNER</verification-ref>
       <annotations>
-        <fn-run_wiki_session PURPOSE="public entrypoint orchestrating one Stage-1a/1b run; extra_add_dirs kwarg appends read-only --add-dir paths after the primary WIKI (digest multi-WIKI, aisw-oqq), alongside media_dirs"/>
+        <fn-run_wiki_session PURPOSE="public Stage-1a/1b entrypoint holding one WIKI lock across Claude and safe Codex fallback; maps read, write, web, media, and additional-WIKI capabilities"/>
         <fn-assemble_prompt PURPOSE="concat base+overlay (+per-WIKI CLAUDE.md if present) → atomic write"/>
         <fn-aggregate_text PURPOSE="extract assistant text from WikiRunResult.events (stream-json shapes)"/>
         <fn-parse_stream_json PURPOSE="async iterator over an asyncio.StreamReader → StreamEvent"/>
@@ -367,6 +367,7 @@
         <type-Spawner PURPOSE="Protocol; spawn(argv, env, cwd) → SpawnedProcess; AsyncioSpawner default"/>
         <type-WikiLockAdapter PURPOSE="default LockAcquirer wrapping scheduler.locks.WikiLockManager"/>
         <type-WikiRunnerError PURPOSE="base exception; WikiRunnerTimeoutError after kill-sequence"/>
+        <type-AttemptEvidenceTracker PURPOSE="monotonic fail-closed Claude mutation, delivery, unknown-effect, and read-only evidence"/>
       </annotations>
     </M-WIKI-RUNNER>
 

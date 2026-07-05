@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.15">
+<VerificationPlan VERSION="0.0.16">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -546,13 +546,14 @@
         <test path="tests/unit/wiki/test_runner.py"/>
         <test path="tests/unit/wiki/test_runner_aggregate.py"/>
         <test path="tests/unit/wiki/test_runner_on_event.py"/>
+        <test path="tests/unit/wiki/test_runner_failover.py"/>
         <test path="tests/unit/wiki/test_streaming.py"/>
         <test path="tests/unit/wiki/test_acquire.py"/>
         <test path="tests/unit/wiki/test_spawn_logging.py"/>
         <test path="tests/integration/classifier/test_real_cli.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/wiki/test_runner.py tests/unit/wiki/test_runner_aggregate.py tests/unit/wiki/test_runner_on_event.py tests/unit/wiki/test_streaming.py tests/unit/wiki/test_acquire.py -q</cmd>
+        <cmd>uv run pytest tests/unit/wiki -q</cmd>
       </commands>
       <log-markers>
         <marker>wiki.run.start</marker>
@@ -567,7 +568,7 @@
         <marker>claude_cli.exit</marker>
         <marker>claude_cli.error</marker>
       </log-markers>
-      <evidence>run_wiki_session: assemble_prompt (base+overlay+per-WIKI CLAUDE.md atomic write), WikiLockAdapter acquire, spawn `claude --output-format stream-json`, parse_stream_json events, hard timeout + kill-sequence (WikiRunnerTimeoutError), on_event callback (per-event delivery, exception swallow); aggregate_text across stream-json shapes; classify_line pure mapping; AsyncioSpawner default.</evidence>
+      <evidence>131 unit tests pass. Failover tests prove one WIKI lock spans Claude and Codex, typed limits alone trigger fallback, mutation, delivered output, unknown tools, and callback failures block replay, generic failures remain on Claude, cancellation propagates, and read, write, web, media, and additional-WIKI paths preserve capability boundaries. Existing transcript, streaming, timeout, aggregation, acquisition, and spawn behavior remains covered.</evidence>
     </V-M-WIKI-RUNNER>
 
     <V-M-WIKI-LIFECYCLE MODULE="M-WIKI-LIFECYCLE">
