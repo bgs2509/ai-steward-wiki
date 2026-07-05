@@ -7,6 +7,39 @@ date: 2026-07-03
 risk: high
 evidence: strong
 open_questions: []
+UseCases:
+  UC-LLM-FAILOVER-1:
+    Actor: Telegram user
+    Action: Sends an operation while Claude reports a confirmed subscription limit
+    Goal: Continue the same safe operation through the mapped Codex subscription model
+    Preconditions: Claude is primary, Codex fallback is ready, and no mutation evidence exists
+    AcceptanceCriteria: One Telegram operation produces one final response without requiring resubmission
+    Priority: high
+    RelatedFlows: DF-LLM-SAFE-FAILOVER
+  UC-LLM-FAILOVER-2:
+    Actor: Telegram user
+    Action: Sends operations while the circuit is in codex or probe state
+    Goal: Avoid repeated Claude failures and automatically restore Claude after a successful probe
+    Preconditions: A prior typed Claude subscription-limit error established the codex interval
+    AcceptanceCriteria: Requests use Codex until one single-flight Claude probe succeeds
+    Priority: high
+    RelatedFlows: DF-LLM-CIRCUIT-RECOVERY
+  UC-LLM-FAILOVER-3:
+    Actor: Runtime system
+    Action: Detects a Claude subscription limit after possible agent actions
+    Goal: Prevent duplicate writes or external effects during failover
+    Preconditions: The primary attempt produced provider events or side-effect evidence
+    AcceptanceCriteria: Codex replay occurs only when all observed evidence is proven read-only
+    Priority: high
+    RelatedFlows: DF-LLM-REPLAY-GUARD
+  UC-LLM-FAILOVER-4:
+    Actor: Operator
+    Action: Provisions and verifies the Codex subscription fallback
+    Goal: Enable fallback without API-key billing or interactive runtime login
+    Preconditions: Codex CLI is installed and a dedicated CODEX_HOME exists
+    AcceptanceCriteria: Startup preflight verifies binary, version, and ChatGPT login; deployment smoke verifies both configured models
+    Priority: high
+    RelatedFlows: DF-LLM-READINESS
 fr:
   - FR-1 — Every Claude subscription-backed model call MUST use one provider chain. Claude remains primary. Codex becomes the fallback only after a confirmed Claude subscription-limit error.
   - FR-2 — The system MUST recognize Claude subscription exhaustion from structured CLI output. Detection MUST support classifier JSON envelopes and WIKI stream events carrying HTTP 429.
