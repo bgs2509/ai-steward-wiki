@@ -1,4 +1,4 @@
-.PHONY: help install lint ruff-check ruff-format-check mypy grace-lint inv-lint format test test-unit test-integration test-cov total-test clean
+.PHONY: help install lint ruff-check ruff-format-check mypy grace-lint inv-lint format test test-unit test-integration test-cov total-test classifier-regress clean
 
 # Fail-fast: cheapest checks first, then heavier ones.
 # Order rationale (Google/Stripe SRE Make conventions):
@@ -22,6 +22,7 @@ help:
 	@echo "make test-unit        - pytest tests/unit"
 	@echo "make test-integration - RUN_INTEGRATION=1 pytest tests/integration"
 	@echo "make test-cov         - pytest unit + coverage report (--cov-fail-under=80)"
+	@echo "make classifier-regress - MANUAL gate: run the 100-case classifier corpus against the real Haiku backend"
 	@echo "make total-test       - pre-merge gate: ruff + mypy + grace + inv-lint + coverage (NO integration)"
 	@echo "make clean            - remove caches and build artifacts"
 
@@ -64,6 +65,9 @@ inv-lint:
 
 test-cov:
 	uv run pytest tests/unit --cov=src/ai_steward_wiki --cov-report=term-missing --cov-fail-under=80
+
+classifier-regress:
+	uv run python scripts/classifier_regress.py
 
 # Full quality gate. Order is intentional: cheapest checks first so the
 # pipeline fails as early as possible. Each step's output is captured to
