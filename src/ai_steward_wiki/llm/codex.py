@@ -5,7 +5,7 @@
 #   SCOPE: Restricted environment and argv builders; structured, agent, and text execution;
 #          JSON Schema output; JSONL normalization; readiness checks without model invocation.
 #   DEPENDS: asyncio, dataclasses, json, pathlib, shutil, typing, ai_steward_wiki.llm.failover
-#   LINKS: M-LLM-CODEX, M-LLM-FAILOVER, aisw-8gw, FR-5, FR-6, FR-11, FR-12, FR-13, FR-15
+#   LINKS: M-LLM-CODEX, M-LLM-FAILOVER, ADR-035, aisw-8gw, FR-5, FR-6, FR-11, FR-12, FR-13, FR-15
 #   ROLE: RUNTIME
 #   MAP_MODE: NONE
 # END_MODULE_CONTRACT

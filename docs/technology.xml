@@ -1845,6 +1845,7 @@ QueueMsg = Annotated[CronUserQueueMsg, Field(discriminator=&quot;kind&quot;)]
     <risk>high</risk>
     <evidence>strong</evidence>
     <open_questions/>
+    <adr>ADR-035</adr>
     <stack>
       <Item>Python 3.11 stdlib asyncio, dataclasses, enum, pathlib, and typing for provider state, concurrency, and typed results.</Item>
       <Item>Existing Pydantic v2 schemas remain the validation boundary for Stage-0 structured output.</Item>

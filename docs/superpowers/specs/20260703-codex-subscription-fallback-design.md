@@ -7,6 +7,7 @@ date: 2026-07-03
 risk: high
 evidence: strong
 open_questions: []
+adr: ADR-035
 stack:
   - Python 3.11 stdlib asyncio, dataclasses, enum, pathlib, and typing for provider state, concurrency, and typed results.
   - Existing Pydantic v2 schemas remain the validation boundary for Stage-0 structured output.
@@ -278,6 +279,8 @@ The implementation updates:
 3. `knowledge-graph.xml` and `verification-plan.xml`.
 4. Deployment and operations runbooks.
 5. Completion report after verified implementation.
+
+The accepted architecture decision is recorded in `docs/adr/ADR-035-codex-subscription-fallback.md`.
 
 ## 14. Official references
 

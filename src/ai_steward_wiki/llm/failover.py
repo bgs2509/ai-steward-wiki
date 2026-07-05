@@ -5,7 +5,7 @@
 #   SCOPE: ProviderState; ProviderLimitError; AttemptEvidence; process-local circuit;
 #          single-flight probe; generic typed execution policy; structured transition logs.
 #   DEPENDS: asyncio, dataclasses, datetime, enum, typing
-#   LINKS: M-LLM-FAILOVER, M-LLM-CODEX, aisw-8gw, FR-1, FR-3, FR-7, FR-8, FR-9, FR-10
+#   LINKS: M-LLM-FAILOVER, M-LLM-CODEX, ADR-035, aisw-8gw, FR-1, FR-3, FR-7, FR-8, FR-9, FR-10
 #   ROLE: RUNTIME
 #   MAP_MODE: NONE
 # END_MODULE_CONTRACT
