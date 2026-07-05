@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <KnowledgeGraph>
-  <Project NAME="ai-steward-wiki" VERSION="0.0.12">
+  <Project NAME="ai-steward-wiki" VERSION="0.0.13">
     <keywords>telegram, claude-code, codex, provider-failover, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
     <annotation>Isolated multi-user Telegram WIKI assistant with Claude as primary and subscription-backed Codex failover. The graph covers provider policy and adapters, foundation, storage, auth, scheduler, classifiers, WIKI runtime, inbox, ops, Telegram I/O, media, pipelines, and runtime wiring.</annotation>
 
@@ -334,6 +334,7 @@
         <type-ClassifierResult PURPOSE="frozen Pydantic v2 result with intent/confidence/audit fields"/>
         <type-TimeParseResult PURPOSE="frozen Pydantic v2 NL-time result with when_utc + escalate flag"/>
         <type-ClassifierBackend PURPOSE="Protocol; ClaudeCliBackend default, AnthropicApiBackend optional, FakeClaudeRunner test double"/>
+        <type-FailoverClassifierBackend PURPOSE="Preserve ClassifierBackend while typed Claude limits use gpt-5.4-mini structured Codex output"/>
         <type-Spawner PURPOSE="subprocess spawn primitive seam (chunk 16 injects systemd-run prefix)"/>
         <type-ClassifierError PURPOSE="base error; ClassifierTimeoutError (transient) / ClassifierSchemaError (permanent) subclasses"/>
       </annotations>

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.13">
+<VerificationPlan VERSION="0.0.14">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -508,6 +508,7 @@
         <test path="tests/unit/classifier/test_schema.py"/>
         <test path="tests/unit/classifier/test_time_parse.py"/>
         <test path="tests/unit/classifier/test_cli_envelope.py"/>
+        <test path="tests/unit/classifier/test_failover_backend.py"/>
         <test path="tests/unit/classifier/test_fake_runner.py"/>
         <test path="tests/unit/classifier/test_settings_inv6.py"/>
         <test path="tests/unit/classifier/test_spawn_logging.py"/>
@@ -524,7 +525,7 @@
         <marker>claude_cli.exit</marker>
         <marker>claude_cli.error</marker>
       </log-markers>
-      <evidence>classify orchestrates backend call + Pydantic validation + audit prompt_versions upsert + structlog; PromptCache semver+sha256 with reload(); Intent closed enum (D-009); parse_time dateparser→Haiku-fallback→escalate (D-010); ClaudeCliBackend resolves binary + JSON-mode envelope; AnthropicApiBackend optional; FakeClaudeRunner deterministic; INV-6 settings guard; ClassifierTimeoutError/SchemaError taxonomy.</evidence>
+      <evidence>classify orchestrates backend call + Pydantic validation + audit prompt_versions upsert + structlog; PromptCache semver+sha256 with reload(); Intent closed enum (D-009); parse_time dateparser→Haiku-fallback→escalate (D-010); ClaudeCliBackend raises only structured HTTP 429 as ProviderLimitError; FailoverClassifierBackend maps safe limits to gpt-5.4-mini low while preserving name, model, and dict output; generic failures never fall back.</evidence>
     </V-M-CLASSIFIER-STAGE0>
 
     <V-M-CLASSIFIER-RECURRENCE MODULE="M-CLASSIFIER-RECURRENCE">
