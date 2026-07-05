@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.10">
+<VerificationPlan VERSION="0.0.11">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -11,9 +11,130 @@
       <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration -q</cmd>
       <cmd>make lint</cmd>
     </commands>
+    <deterministic-first>true</deterministic-first>
+    <wave-level-focus>Run touched module tests after every validated implementation wave.</wave-level-focus>
+    <phase-level-focus>Run make lint, relevant integration tests, and full unit regression before phase completion.</phase-level-focus>
+    <redaction>Never log credentials, session identifiers, prompts, user content, or provider authentication payloads.</redaction>
   </GlobalPolicy>
 
+  <CriticalFlows>
+    <VF-LLM-SAFE-FAILOVER NAME="Safe same-operation failover" USE_CASES="UC-LLM-FAILOVER-1" DATA_FLOW="DF-LLM-SAFE-FAILOVER" PRIORITY="high">
+      <scenario>A confirmed Claude subscription limit occurs before any side effect.</scenario>
+      <expected-outcome>The same operation completes once through the mapped Codex model.</expected-outcome>
+      <required-signals>
+        <log-marker-1>llm.failover.triggered</log-marker-1>
+        <log-marker-2>llm.circuit.changed</log-marker-2>
+        <trace-sequence>Claude limit -&gt; safe evidence -&gt; codex -&gt; one consumer result</trace-sequence>
+      </required-signals>
+    </VF-LLM-SAFE-FAILOVER>
+    <VF-LLM-CIRCUIT-RECOVERY NAME="Automatic Claude recovery" USE_CASES="UC-LLM-FAILOVER-2" DATA_FLOW="DF-LLM-CIRCUIT-RECOVERY" PRIORITY="high">
+      <scenario>The codex interval expires while concurrent requests arrive.</scenario>
+      <expected-outcome>Exactly one Claude probe runs; other requests continue through Codex.</expected-outcome>
+      <required-signals>
+        <log-marker-1>llm.provider.recovered</log-marker-1>
+        <trace-sequence>codex -&gt; one probe -&gt; claude or bounded codex retry</trace-sequence>
+      </required-signals>
+    </VF-LLM-CIRCUIT-RECOVERY>
+    <VF-LLM-REPLAY-GUARD NAME="Unsafe replay prevention" USE_CASES="UC-LLM-FAILOVER-3" DATA_FLOW="DF-LLM-REPLAY-GUARD" PRIORITY="high">
+      <scenario>Claude reaches its limit after mutating, unknown, or delivered evidence.</scenario>
+      <expected-outcome>No Codex process starts for that operation and existing partial-failure handling remains active.</expected-outcome>
+      <required-signals>
+        <log-marker-1>llm.replay.blocked</log-marker-1>
+        <trace-sequence>mutation evidence -&gt; replay blocked -&gt; zero fallback attempts</trace-sequence>
+      </required-signals>
+    </VF-LLM-REPLAY-GUARD>
+    <VF-LLM-READINESS NAME="Subscription fallback readiness" USE_CASES="UC-LLM-FAILOVER-4" DATA_FLOW="DF-LLM-READINESS" PRIORITY="high">
+      <scenario>Service startup and deployment verify the Codex fallback.</scenario>
+      <expected-outcome>Startup never consumes quota; deployment smoke verifies both models and capability profiles.</expected-outcome>
+      <required-signals>
+        <log-marker-1>llm.provider.failed</log-marker-1>
+        <trace-sequence>binary -&gt; version -&gt; login -&gt; non-blocking readiness; deployment model smoke</trace-sequence>
+      </required-signals>
+    </VF-LLM-READINESS>
+  </CriticalFlows>
+
   <Modules>
+    <V-M-LLM-FAILOVER MODULE="M-LLM-FAILOVER" PRIORITY="high">
+      <test-files>
+        <file-1>tests/unit/llm/test_failover.py</file-1>
+      </test-files>
+      <module-checks>
+        <check-1>uv run pytest tests/unit/llm/test_failover.py -q</check-1>
+      </module-checks>
+      <scenarios>
+        <scenario-1 kind="success">Claude success stays in claude and never starts Codex.</scenario-1>
+        <scenario-2 kind="failure">Only typed subscription limits transition claude to codex.</scenario-2>
+        <scenario-3 kind="concurrency">Concurrent requests observe one state and at most one probe.</scenario-3>
+        <scenario-4 kind="safety">Mutation, delivery, and unknown evidence block replay.</scenario-4>
+        <scenario-5 kind="performance">Provider selection remains below the approved 100 ms p95 budget.</scenario-5>
+      </scenarios>
+      <required-log-markers>
+        <marker-1>llm.provider.selected</marker-1>
+        <marker-2>llm.failover.triggered</marker-2>
+        <marker-3>llm.circuit.changed</marker-3>
+        <marker-4>llm.provider.failed</marker-4>
+        <marker-5>llm.provider.recovered</marker-5>
+        <marker-6>llm.replay.blocked</marker-6>
+      </required-log-markers>
+      <required-trace-assertions>
+        <assertion-1>A blocked replay records zero fallback calls.</assertion-1>
+        <assertion-2>One Telegram operation yields at most one successful provider result.</assertion-2>
+      </required-trace-assertions>
+      <wave-follow-up>Run Stage-0, WIKI runner, schema generation, and cron consumer failover tests.</wave-follow-up>
+      <phase-follow-up>Run all unit tests, make lint, and the fake-CLI integration matrix.</phase-follow-up>
+      <evidence>Deterministic fake clocks and async barriers prove state transitions, cooldown, reset parsing, single-flight probe, replay safety, and overhead.</evidence>
+    </V-M-LLM-FAILOVER>
+
+    <V-M-LLM-CODEX MODULE="M-LLM-CODEX" PRIORITY="high">
+      <test-files>
+        <file-1>tests/unit/llm/test_codex.py</file-1>
+        <file-2>tests/integration/llm/test_fake_codex_cli.py</file-2>
+      </test-files>
+      <module-checks>
+        <check-1>uv run pytest tests/unit/llm/test_codex.py -q</check-1>
+        <check-2>RUN_INTEGRATION=1 uv run pytest tests/integration/llm/test_fake_codex_cli.py -q</check-2>
+      </module-checks>
+      <scenarios>
+        <scenario-1 kind="configuration">Every argv pins model, reasoning, sandbox, neutral cwd, ephemeral mode, ignored config, and ignored rules.</scenario-1>
+        <scenario-2 kind="structured">gpt-5.4-mini output conforms to JSON Schema and existing Pydantic validation.</scenario-2>
+        <scenario-3 kind="agent">gpt-5.5 medium JSONL normalizes text, usage, commands, file changes, and failures.</scenario-3>
+        <scenario-4 kind="security">Read-only cannot write; workspace-write reaches only the selected WIKI.</scenario-4>
+        <scenario-5 kind="readiness">Binary, exact version, login, and non-interactive checks never invoke a model.</scenario-5>
+      </scenarios>
+      <required-log-markers>
+        <marker-1>llm.provider.selected</marker-1>
+        <marker-2>llm.provider.failed</marker-2>
+      </required-log-markers>
+      <required-trace-assertions>
+        <assertion-1>No API key, auth payload, prompt, user content, or provider session identifier enters logs.</assertion-1>
+        <assertion-2>Structured and text modes emit no mutation evidence.</assertion-2>
+      </required-trace-assertions>
+      <wave-follow-up>Run classifier and WIKI adapter compatibility tests against the fake Codex CLI.</wave-follow-up>
+      <phase-follow-up>Run deployment smoke for both subscription models and all capability profiles.</phase-follow-up>
+      <evidence>Fake subprocess fixtures validate exact argv, environment allowlist, output parsing, cancellation, timeout, and containment.</evidence>
+    </V-M-LLM-CODEX>
+
+    <V-M-WIKI-MIGRATION MODULE="M-WIKI-MIGRATION" PRIORITY="high">
+      <test-files>
+        <file-1>tests/unit/wiki/test_schema_gen.py</file-1>
+      </test-files>
+      <module-checks>
+        <check-1>uv run pytest tests/unit/wiki/test_schema_gen.py -q</check-1>
+      </module-checks>
+      <scenarios>
+        <scenario-1 kind="success">Claude schema generation remains unchanged while healthy.</scenario-1>
+        <scenario-2 kind="fallback">A typed pre-write limit uses Codex text mode and validates before mutation.</scenario-2>
+        <scenario-3 kind="failure">Dual failure preserves the existing default schema.</scenario-3>
+      </scenarios>
+      <required-log-markers>
+        <marker-1>wiki.schema_gen.failed</marker-1>
+        <marker-2>wiki.schema_gen.invalid</marker-2>
+        <marker-3>wiki.schema_gen.applied</marker-3>
+      </required-log-markers>
+      <wave-follow-up>Run M-LLM-FAILOVER and M-LLM-CODEX module checks.</wave-follow-up>
+      <phase-follow-up>Run the WIKI unit suite and full lint gate.</phase-follow-up>
+      <evidence>Generation remains side-effect free until validate_schema succeeds and apply_generated_schema writes once.</evidence>
+    </V-M-WIKI-MIGRATION>
     <V-M-FOUNDATION-SETTINGS MODULE="M-FOUNDATION-SETTINGS">
       <tests>
         <test path="tests/unit/test_settings.py"/>
@@ -375,7 +496,7 @@
         <marker>scheduler.reminder.skipped</marker>
         <marker>scheduler.reminder.misfired</marker>
       </log-markers>
-      <evidence>Pipeline reminder fast-path (BEFORE the Stage-1a router): intent==REMINDER & confidence≥THRESHOLD + future time → ConfirmationService.request_explicit with category='reminder' draft (when_utc, message, lead_time_min) + 2-button keyboard, no Job row yet; message resolution = distilled_payload['reminder_text'] if non-empty str else raw text; prefer_future=True rolls a bare past wall-clock time forward; explicitly-past absolute date → ru rejection, no confirm; escalate → ru clarification, no confirm; recurring-digest phrasing → ru "not yet", no confirm. on_confirm_callback category=='reminder' + resolve→'confirmed' → create_reminder_job writes a jobs.Job(kind='reminder_job', payload round-trips through parse_job_payload, scheduled_at_utc==when_utc) + scheduler.add_job once with a DateTrigger at when_utc, id=='reminder:&lt;id&gt;', misfire_grace_time is None; ack sent. cancel→ru cancelled, no Job row; resolve→None→ru stale; double-confirm idempotent. firing.fire_job: context set + Job pending → sender.send_message(chat_id, '🔔 Напоминание: &lt;message&gt;') + row done; Job not pending → skipped, no send; send raises → row failed + last_error + scheduler.reminder.deliver_failed; context not set → RuntimeError. ReminderPayload in parse_job_payload: valid → ReminderPayload, extra key → ValidationError. Integration: reminder message → request_explicit → simulate confirm → jobs.jobs row with kind='reminder_job' & matching scheduled_at_utc → invoke fire_job(job_id) with a fake sender → one send_message + row done. Known limitation (documented, no MVP reconciliation): a crash between the Job commit and scheduler.add_job leaves a pending row with no trigger → silent miss. (aisw-kcz; D-002/D-010/D-022; tech-spec §3/§6; ADR-006.)
+      <evidence>Pipeline reminder fast-path (BEFORE the Stage-1a router): intent==REMINDER &amp; confidence≥THRESHOLD + future time → ConfirmationService.request_explicit with category='reminder' draft (when_utc, message, lead_time_min) + 2-button keyboard, no Job row yet; message resolution = distilled_payload['reminder_text'] if non-empty str else raw text; prefer_future=True rolls a bare past wall-clock time forward; explicitly-past absolute date → ru rejection, no confirm; escalate → ru clarification, no confirm; recurring-digest phrasing → ru "not yet", no confirm. on_confirm_callback category=='reminder' + resolve→'confirmed' → create_reminder_job writes a jobs.Job(kind='reminder_job', payload round-trips through parse_job_payload, scheduled_at_utc==when_utc) + scheduler.add_job once with a DateTrigger at when_utc, id=='reminder:&lt;id&gt;', misfire_grace_time is None; ack sent. cancel→ru cancelled, no Job row; resolve→None→ru stale; double-confirm idempotent. firing.fire_job: context set + Job pending → sender.send_message(chat_id, '🔔 Напоминание: &lt;message&gt;') + row done; Job not pending → skipped, no send; send raises → row failed + last_error + scheduler.reminder.deliver_failed; context not set → RuntimeError. ReminderPayload in parse_job_payload: valid → ReminderPayload, extra key → ValidationError. Integration: reminder message → request_explicit → simulate confirm → jobs.jobs row with kind='reminder_job' &amp; matching scheduled_at_utc → invoke fire_job(job_id) with a fake sender → one send_message + row done. Known limitation (documented, no MVP reconciliation): a crash between the Job commit and scheduler.add_job leaves a pending row with no trigger → silent miss. (aisw-kcz; D-002/D-010/D-022; tech-spec §3/§6; ADR-006.)
       Digest path (aisw-oqq, Phase-D.b.1): pipeline digest fast-path (replaces the reminder branch's recurring-keyword stub): recurring-digest phrasing → parse_recurrence; on escalate → ru clarification, no confirm; else → ConfirmationService.request_explicit with category='digest' draft (recurrence serialised, wiki_scope='all', window_hours=24) + 2-button keyboard, no Job row yet. on_confirm_callback category=='digest' + resolve→'confirmed' → create_digest_job writes a jobs.Job(kind='digest_job', status='scheduled', priority==Lane.DIGEST, payload round-trips through parse_job_payload) + scheduler.add_job once with a CronTrigger (kwargs == recurrence.to_cron(), timezone == recurrence.tz), id=='digest:&lt;id&gt;', replace_existing=True; ack sent. cancel→ru cancelled, no Job row; resolve→None→ru stale; double-confirm idempotent. firing.fire_digest_job: context set + Job 'scheduled' → resolve owner WIKI set (minus Inbox-WIKI) → run_wiki_session called once with extra_add_dirs == the non-primary WIKI paths, under the Semaphore + WikiLockManager(primary), timeout_s==600 → assistant text (or the ru empty-digest line) delivered via tg/output (send_message or send_document); row stays status='scheduled', retry_count==0, finished_at_utc set. Job not 'scheduled' → skipped, no run. Owner has no *-WIKI → friendly ru line, finished, no strike. run_wiki_session raises (WikiRunnerError / WikiRunnerTimeoutError) → retry_count++; third consecutive failure → status='disabled' + scheduler.remove_job('digest:&lt;id&gt;') called + jobs_dlq row written; scheduler.digest.failed logged with error_class/retry_count/disabled. Bad/parse-failing payload → status='disabled' + DLQ immediately. context not set → DigestNotInitialisedError. DigestPayload in parse_job_payload: valid (with a Recurrence) → DigestPayload, extra key → ValidationError. run_wiki_session: extra_add_dirs paths appear in argv immediately after the primary '--add-dir &lt;wiki_path&gt;'; None → unchanged argv. e2e (in-process slow unit, mirrors the reminder e2e): recurring-digest text → request_explicit → simulate confirm → jobs.jobs row kind='digest_job' status='scheduled' + add_job with a CronTrigger → set_digest_context + fire_digest_job(job_id) with a fake runner-adapter (canned assistant events) → one delivery through tg/output → row still 'scheduled', retry_count==0. (aisw-oqq; D-002/D-019/D-024/D-025; tech-spec §3; ADR-007.)
       Digest interactive (aisw-269, Phase-D.b.2b): DigestRunner Protocol gains section:str|None=None — fire_digest_job still calls runner(...) with the default (full digest), byte-identical. fire_digest_job after resolving the owner WIKI set, when payload.wiki_scope is a list[str]: keep only (wid, path) whose wid (case-insensitive) ∈ the list → run_wiki_session gets the filtered set; scheduler.digest.scope_filter logged requested/kept/vanished; empty kept list → ru "all scoped WIKIs vanished" notice via send_message, finished_at_utc set, status stays 'scheduled' (NO strike — config drift, not a run failure), scheduler.digest.delivered logged empty='scope_vanished'. payload.wiki_scope=='all' → unchanged. create_digest_job accepts wiki_scope:str|list[str] and persists DigestPayload(wiki_scope=…); scheduler.digest.scheduled carries wiki_scope. Unit: fire_digest_job with wiki_scope=['health'] runs only that WIKI; vanished name → ru notice, no strike, status 'scheduled', scope_filter marker; create_digest_job(wiki_scope=['health','money']) persists a list shape round-trippable via parse_job_payload. (aisw-269; D-024; ADR-025.)
       Digest section toggles (aisw-pv8, Phase-D.b.2c): set_digest_context gains a sessions sessionmaker (the 7th context element). fire_digest_job, after building the planner context and before the runner call: get_digest_prefs(sessions_sm, owner_telegram_id) wrapped in try/except — any failure → scheduler.digest.prefs_read_failed + DigestPrefs(True,True) (degrade-to-all-on, never skip the digest); if prefs.disabled_keys is non-empty → planner_context += "\n\nНе включай разделы: &lt;ru labels&gt;." and scheduler.digest.sections_filtered{job_id, owner_telegram_id, disabled} logged; if empty → planner_context byte-identical to today (regression-guarded: no-prefs path calls the runner with the same string). runner(..., section=None) unchanged; the DigestRunner Protocol, _DigestRunnerAdapter, and run_section_expand are untouched (/expand ignores the toggle). get_owner_digest_prefs / set_owner_digest_section accessors (read the sessions sessionmaker from the digest context) → DigestNotInitialisedError when unwired; unit-tested in test_firing.py alongside the directive-injection cases (no-prefs byte-identical, trackers-off directive + sections_filtered marker, both-off lists both, prefs-read-failure degrades). (aisw-pv8; D-024; ADR-025/ADR-026.)</evidence>
@@ -529,7 +650,7 @@
         <marker>inbox.route.raw_moved</marker>
         <marker>inbox.route.media_missing</marker>
       </log-markers>
-      <evidence>resolve_target_wiki: CREATE_WIKI → new dir, created=True; idempotent second call → created=False; ROUTE existing → created=False; ROUTE missing → create + on_route_missing callback; AntiSpamCapError → RouteRejection("cap"); WikiNameError → RouteRejection("bad_name"). stage_raw_into_wiki: text → raw/&lt;ts&gt;_text.md body verbatim, media_rel=[]; voice/photo → .md sidecar with YAML front-matter + promote_path_to_raw into raw/media/ (StagedRaw.media_abs absolute & exists, source moved); already-gone media → skipped. pick_domain_overlay: domain-&lt;slug&gt;.md if present else domain-default.md. build_ingest_prompt references the raw path(s) + the user text (aisw-zd9; D-004). aisw-e45 (Phase-C): route_action_to_payload ∘ route_action_from_payload is identity for ROUTE and CREATE_WIKI decisions with/without media (RouterIntent/RouterDecision/Path reconstructed by type; missing media → []); from_payload raises ValueError on a missing 'decision' or a bad 'source'.</evidence>
+      <evidence>resolve_target_wiki: CREATE_WIKI → new dir, created=True; idempotent second call → created=False; ROUTE existing → created=False; ROUTE missing → create + on_route_missing callback; AntiSpamCapError → RouteRejection("cap"); WikiNameError → RouteRejection("bad_name"). stage_raw_into_wiki: text → raw/&lt;ts&gt;_text.md body verbatim, media_rel=[]; voice/photo → .md sidecar with YAML front-matter + promote_path_to_raw into raw/media/ (StagedRaw.media_abs absolute &amp; exists, source moved); already-gone media → skipped. pick_domain_overlay: domain-&lt;slug&gt;.md if present else domain-default.md. build_ingest_prompt references the raw path(s) + the user text (aisw-zd9; D-004). aisw-e45 (Phase-C): route_action_to_payload ∘ route_action_from_payload is identity for ROUTE and CREATE_WIKI decisions with/without media (RouterIntent/RouterDecision/Path reconstructed by type; missing media → []); from_payload raises ValueError on a missing 'decision' or a bad 'source'.</evidence>
     </V-M-INBOX-ROUTE>
 
     <V-M-INGEST-IDEM MODULE="M-INGEST-IDEM">
@@ -703,4 +824,61 @@
     </V-M-TG-CRON-ADD>
 
   </Modules>
+
+  <PhaseGates>
+    <Gate-Phase-G.1 PHASE="Phase-G.1">
+      <goal>Provider circuit, typed limits, replay evidence, and concurrency are deterministic.</goal>
+      <commands>
+        <command-1>uv run pytest tests/unit/llm/test_failover.py -q</command-1>
+        <command-2>grace lint --path . --profile standard</command-2>
+      </commands>
+      <required-evidence>
+        <evidence-1>claude, codex, and probe transitions match every approved path.</evidence-1>
+        <evidence-2>Unsafe replay starts no fallback process.</evidence-2>
+      </required-evidence>
+    </Gate-Phase-G.1>
+    <Gate-Phase-G.2 PHASE="Phase-G.2">
+      <goal>Codex invocation, readiness, output parsing, and capability profiles are isolated and deterministic.</goal>
+      <commands>
+        <command-1>uv run pytest tests/unit/llm/test_codex.py -q</command-1>
+        <command-2>RUN_INTEGRATION=1 uv run pytest tests/integration/llm/test_fake_codex_cli.py -q</command-2>
+      </commands>
+      <required-evidence>
+        <evidence-1>Every invocation uses dedicated CODEX_HOME and explicit flags.</evidence-1>
+        <evidence-2>No readiness check invokes a model.</evidence-2>
+      </required-evidence>
+    </Gate-Phase-G.2>
+    <Gate-Phase-G.3 PHASE="Phase-G.3">
+      <goal>Structured and text consumers preserve their existing public contracts.</goal>
+      <commands>
+        <command-1>uv run pytest tests/unit/classifier tests/unit/wiki/test_schema_gen.py tests/unit/scheduler/test_consumer.py -q</command-1>
+      </commands>
+      <required-evidence>
+        <evidence-1>Stage-0 Pydantic validation remains unchanged.</evidence-1>
+        <evidence-2>Schema and cron paths perform external effects only after successful generation.</evidence-2>
+      </required-evidence>
+    </Gate-Phase-G.3>
+    <Gate-Phase-G.4 PHASE="Phase-G.4">
+      <goal>WIKI failover preserves locking, transcript, streaming, cancellation, and replay safety.</goal>
+      <commands>
+        <command-1>uv run pytest tests/unit/wiki -q</command-1>
+      </commands>
+      <required-evidence>
+        <evidence-1>One WIKI lock spans both safe attempts.</evidence-1>
+        <evidence-2>Normalized Codex events satisfy current aggregation and delivery consumers.</evidence-2>
+      </required-evidence>
+    </Gate-Phase-G.4>
+    <Gate-Phase-G.5 PHASE="Phase-G.5">
+      <goal>Runtime wiring, documentation, deployment smoke, and project-wide regression are complete.</goal>
+      <commands>
+        <command-1>make lint</command-1>
+        <command-2>uv run pytest tests/unit -q</command-2>
+        <command-3>RUN_INTEGRATION=1 uv run pytest tests/integration -q</command-3>
+      </commands>
+      <required-evidence>
+        <evidence-1>Startup remains available when Codex readiness fails.</evidence-1>
+        <evidence-2>Operator smoke verifies both configured subscription models and containment.</evidence-2>
+      </required-evidence>
+    </Gate-Phase-G.5>
+  </PhaseGates>
 </VerificationPlan>

@@ -1,11 +1,11 @@
 # FILE: src/ai_steward_wiki/settings.py
-# VERSION: 0.0.14
+# VERSION: 0.0.15
 # START_MODULE_CONTRACT
 #   PURPOSE: Runtime configuration loaded from environment via pydantic-settings.
-#   SCOPE: Settings BaseSettings (frozen). Initial fields cover Chunk 1 only;
-#          subsequent chunks extend with their own fields.
+#   SCOPE: Settings BaseSettings (frozen), including provider enablement, pinned
+#          Codex runtime, model mapping, reasoning effort, and failover cooldown.
 #   DEPENDS: pydantic, pydantic-settings
-#   LINKS: M-FOUNDATION-LOGGING (consumes log_level), M-CLASSIFIER-STAGE0 (chunk 5)
+#   LINKS: M-FOUNDATION-LOGGING, M-CLASSIFIER-STAGE0, M-LLM-FAILOVER, M-LLM-CODEX, aisw-8gw
 #   ROLE: CONFIG
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -20,7 +20,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.14 - aisw-d3h (ADR-009 final): removed the claude_config_dir
+#   LAST_CHANGE: v0.0.15 - aisw-8gw: contract-only plan for Codex fallback settings.
+#   PREVIOUS:    v0.0.14 - aisw-d3h (ADR-009 final): removed the claude_config_dir
 #                field + AISW_CLAUDE_CONFIG_DIR entirely; bot uses the run user's
 #                default ~/.claude. INV-6 now compares against ~/.claude.
 #   PREVIOUS:    v0.0.13 - aisw-wt5 (ADR-009): claude_config_dir is now a single

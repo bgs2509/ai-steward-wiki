@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.6.0
+# VERSION: 0.6.1
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -14,25 +14,28 @@
 #          _on_job_missed, _WikiRunnerAdapter, _DigestRunnerAdapter,
 #          _resolve_owner_wikis_factory, make_hint_catalog_resolver,
 #          _OutputDeliveryAdapter, _RouterAdapter, _render_raw_sidecar,
-#          _LibrarianAdapter.
+#          _LibrarianAdapter; one shared provider circuit; non-blocking Codex readiness.
 #   DEPENDS: aiogram, apscheduler, alembic, structlog, sqlalchemy.async,
 #            ai_steward_wiki.{settings, logging_setup, tg.bot, tg.pipeline,
 #            tg.output, tg.voice, tg.photo, scheduler.core, scheduler.locks,
 #            scheduler.maintenance, scheduler.firing, inbox.materialize, inbox.router,
 #            inbox.route, inbox.staging, inbox.hint_cache,
 #            classifier.{backend,schema,stage0,time_parse,recurrence},
+#            llm.{failover,codex},
 #            wiki.{runner,acquire,lifecycle,scope},
 #            storage.{jobs,audit,sessions}.engine, storage.sessions.users, auth.{allowlist,users_toml}}
 #   LINKS: M-FOUNDATION, M-STORAGE, M-AUTH-USERS, M-SCHEDULER, M-SCHEDULER-FIRING,
 #          M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-WIKI-LIFECYCLE,
 #          M-WIKI-SCOPE, M-TG-OUTPUT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO,
-#          M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-DEPLOY
+#          M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-LLM-FAILOVER, M-LLM-CODEX,
+#          M-DEPLOY, aisw-8gw
 #   ROLE: RUNTIME
 #   MAP_MODE: NONE
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.6.0 - aisw-o6m (ADR-034): adaptive scoping for wiki_query in
+#   LAST_CHANGE: v0.6.1 - aisw-8gw: contract-only plan for one shared provider circuit.
+#   PREVIOUS:    v0.6.0 - aisw-o6m (ADR-034): adaptive scoping for wiki_query in
 #                _WikiRunnerAdapter — confident hint-catalog match runs inside the
 #                matched WIKI (wiki_path swap, CLAUDE.md via assemble_prompt);
 #                ambiguous runs stay cross-root with the wiki.scope layouts block

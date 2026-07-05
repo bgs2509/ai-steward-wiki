@@ -55,7 +55,7 @@ fr:
   - FR-12 — Codex JSONL events MUST be normalized into the runner's provider-neutral event contract. Final text, failures, usage, and transcripts MUST remain available.
   - FR-13 — Codex fallback MUST preserve each run's capability boundary. Read-only, WIKI-write, media-read, and web-search runs MUST keep their current isolation.
   - FR-14 — Existing timeout, cancellation, locking, deduplication, and partial-result behavior MUST work identically under both providers.
-  - FR-15 — Startup readiness MUST verify the Codex binary, saved ChatGPT authentication, model availability, and non-interactive execution support.
+  - FR-15 — Startup readiness MUST verify the Codex binary, pinned version, saved ChatGPT authentication, and non-interactive execution support without invoking a model. Deployment smoke tests MUST verify availability of both configured Codex models.
   - FR-16 — Missing or expired Codex authentication MUST NOT stop Claude-backed startup. The fallback MUST become unavailable with an operator-visible diagnostic.
   - FR-17 — If Claude and Codex are both unavailable, the bot MUST return a clear Russian message. The source message MUST remain recoverable for retry.
   - FR-18 — Operators MUST be able to configure provider enablement, binary paths, model identifiers, reasoning effort, and fallback cooldown without changing code.
@@ -92,7 +92,7 @@ risks:
   - R-5 (MEDIUM) — The fallback subscription can also exhaust its own quota. Mitigation — distinct provider state, clear user message, and observable recovery.
   - R-6 (MEDIUM) — Saved Codex authentication can expire or become unreadable under systemd. Mitigation — startup preflight and operator-visible readiness.
   - R-7 (MEDIUM) — Reset-time parsing can be absent or ambiguous. Mitigation — bounded default cooldown followed by a single probe.
-  - R-8 (LOW) — The first failover request has extra latency from the failed Claude attempt. Mitigation — immediate circuit opening prevents repeated cost.
+  - R-8 (LOW) — The first failover request has extra latency from the failed Claude attempt. Mitigation — immediate transition to codex prevents repeated cost.
 scope_in:
   - Provider-neutral error taxonomy and provider-health state for Claude-limit detection and automatic failback.
   - Codex CLI adapter for classifier structured output using gpt-5.4-mini.
@@ -143,7 +143,7 @@ Codex must provide a safe secondary execution path without widening access or du
 ## Required user-visible behavior
 
 1. Claude remains primary while its subscription has capacity.
-2. A confirmed subscription-limit response opens the Claude circuit.
+2. A confirmed subscription-limit response moves the circuit from claude to codex.
 3. A safe request continues immediately through the mapped Codex model.
 4. Later requests use Codex directly until the Claude probe window opens.
 5. Claude becomes primary again after a successful probe.

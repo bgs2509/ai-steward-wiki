@@ -1,14 +1,16 @@
 # FILE: src/ai_steward_wiki/wiki/schema_gen.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Generate a tailored Karpathy schema (CLAUDE.md managed zone) for an
 #            arbitrary-domain WIKI at create time, when no static preset matches.
-#   SCOPE: SchemaGenerator Protocol + Claude-CLI impl + Fake; validate_schema;
+#   SCOPE: SchemaGenerator Protocol + Claude/Codex failover impl + Fake; validate_schema;
 #          apply_generated_schema orchestration (generate -> validate -> write via
 #          repair_managed_zone with template_id=_generated, never clobbered later).
 #   DEPENDS: ai_steward_wiki.classifier.backend (Spawner seam),
-#            ai_steward_wiki.claude_cli.common, ai_steward_wiki.wiki.migration
-#   LINKS: M-WIKI-LIFECYCLE, M-WIKI-MIGRATION, aisw-b50, D-017 (Variant D), D-039
+#            ai_steward_wiki.claude_cli.common, ai_steward_wiki.llm.{failover,codex},
+#            ai_steward_wiki.wiki.migration
+#   LINKS: M-WIKI-LIFECYCLE, M-WIKI-MIGRATION, M-LLM-FAILOVER, M-LLM-CODEX,
+#          aisw-b50, aisw-8gw, D-017 (Variant D), D-039
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -25,7 +27,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - aisw-b50: arbitrary-domain schema generation at create.
+#   LAST_CHANGE: v0.0.2 - aisw-8gw: contract-only plan for safe Codex text fallback.
+#   PREVIOUS:    v0.0.1 - aisw-b50: arbitrary-domain schema generation at create.
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations

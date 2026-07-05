@@ -1,12 +1,15 @@
 # FILE: src/ai_steward_wiki/classifier/backend.py
-# VERSION: 0.0.7
+# VERSION: 0.0.8
 # START_MODULE_CONTRACT
 #   PURPOSE: Backend abstraction for Stage-0 classifier — Claude CLI default + optional API + Fake.
 #   SCOPE: ClassifierBackend Protocol; ClaudeCliBackend (subprocess); AnthropicApiBackend stub;
-#          FakeClaudeRunner test double; Spawner Protocol seam for chunk 16 systemd-run wrap.
+#          FakeClaudeRunner test double; typed Claude limit detection; provider failover adapter;
+#          Spawner Protocol seam for chunk 16 systemd-run wrap.
 #   DEPENDS: asyncio, json, ai_steward_wiki.classifier.schema,
-#            ai_steward_wiki.claude_cli.common (M-CLAUDE-CLI-COMMON)
-#   LINKS: M-CLASSIFIER-STAGE0, M-CLAUDE-CLI-COMMON, D-009, D-013, INV-6, aisw-d3i, aisw-0mg
+#            ai_steward_wiki.claude_cli.common (M-CLAUDE-CLI-COMMON),
+#            ai_steward_wiki.llm.{failover,codex}
+#   LINKS: M-CLASSIFIER-STAGE0, M-CLAUDE-CLI-COMMON, M-LLM-FAILOVER, M-LLM-CODEX,
+#          D-009, D-013, INV-6, aisw-d3i, aisw-0mg, aisw-8gw
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -21,7 +24,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.7 - aisw-nrt (chunk 2): emit claude_cli.spawn/exit/error in
+#   LAST_CHANGE: v0.0.8 - aisw-8gw: contract-only plan for typed limit and Codex fallback.
+#   PREVIOUS:    v0.0.7 - aisw-nrt (chunk 2): emit claude_cli.spawn/exit/error in
 #                         AsyncioSpawner.spawn (bytes-counts + duration only, PII-safe).
 #   PREVIOUS:    v0.0.6 - aisw-0mg: add -p (required for --output-format json),
 #                         --setting-sources "", --disable-slash-commands, --tools "".

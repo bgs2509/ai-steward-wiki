@@ -1,8 +1,8 @@
 # FILE: src/ai_steward_wiki/scheduler/consumer.py
-# VERSION: 0.0.4
+# VERSION: 0.0.5
 # START_MODULE_CONTRACT
-#   PURPOSE: Single async drain loop over PriorityJobQueue — spawns the Claude CLI
-#            directly per cron-user item (no systemd-run wrapper, aisw-abc/ADR-010),
+#   PURPOSE: Single async drain loop over PriorityJobQueue — executes each cron-user
+#            item through Claude with safe Codex fallback,
 #            captures stdout (timeout 600s), delivers via aiogram.Bot
 #            (chunked via ChainSplitter). Mutates jobs.Job status through the
 #            'queued' → 'running' → 'finished'|'failed' arc.
@@ -17,10 +17,12 @@
 #            ai_steward_wiki.scheduler.core.kill_with_sequence/DEFAULT_TERM_GRACE_SECONDS,
 #            ai_steward_wiki.claude_cli.common.{resolve_binary,build_env,neutral_cwd,
 #                                               system_prompt_argv,truncate_stderr},
+#            ai_steward_wiki.llm.{failover,codex},
 #            ai_steward_wiki.tg.output.ChainSplitter,
 #            ai_steward_wiki.storage.jobs.models.Job
 #   LINKS: M-SCHEDULER-CONSUMER, M-SCHEDULER, M-STORAGE-JOBS, M-TG-TEXT,
-#          M-CLAUDE-CLI-COMMON, aisw-02v, aisw-0j4, aisw-abc, D-011 §3, D-021,
+#          M-CLAUDE-CLI-COMMON, M-LLM-FAILOVER, M-LLM-CODEX,
+#          aisw-02v, aisw-0j4, aisw-abc, aisw-8gw, D-011 §3, D-021,
 #          ADR-010
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
@@ -32,7 +34,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.4 - aisw-abc: drop the `systemd-run --scope --collect` wrapper
+#   LAST_CHANGE: v0.0.5 - aisw-8gw: contract-only plan for safe Codex text fallback.
+#   PREVIOUS:    v0.0.4 - aisw-abc: drop the `systemd-run --scope --collect` wrapper
 #                from _build_argv — run the Claude CLI directly, matching
 #                wiki/runner._build_argv. The wrapper was D-038 per-UID-isolation
 #                infra; ADR-010 deferred that model for the life-MVP (simple

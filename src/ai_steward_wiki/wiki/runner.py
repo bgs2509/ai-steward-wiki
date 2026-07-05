@@ -1,17 +1,19 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.14
+# VERSION: 0.0.15
 # START_MODULE_CONTRACT
-#   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
-#            locks, spawn `claude` CLI, stream events, persist transcript
-#            atomically. Subprocess is behind a Spawner Protocol seam for tests.
+#   PURPOSE: Stage-1a/1b runner orchestrator — assemble prompt, hold one WIKI lock
+#            across Claude and safe Codex fallback, stream provider-neutral events,
+#            and persist the transcript atomically.
 #   SCOPE: run_wiki_session(...); Spawner Protocol; AsyncioSpawner default;
-#          assemble_prompt helper; transcript persistence; SIGTERM→SIGKILL on
-#          timeout via scheduler.core.kill_with_sequence.
+#          assemble_prompt helper; typed Claude limit detection; replay evidence;
+#          Codex JSONL normalization; transcript persistence; SIGTERM→SIGKILL.
 #   DEPENDS: asyncio, contextlib, os, pathlib, time, structlog,
 #            ai_steward_wiki.claude_cli.common (M-CLAUDE-CLI-COMMON),
+#            ai_steward_wiki.llm.{failover,codex},
 #            ai_steward_wiki.wiki.{acquire,streaming},
 #            ai_steward_wiki.scheduler.core (kill_with_sequence)
-#   LINKS: M-WIKI-RUNNER, M-CLAUDE-CLI-COMMON, D-007, D-011, D-012, D-021, aisw-d3i, aisw-0mg, aisw-w83
+#   LINKS: M-WIKI-RUNNER, M-CLAUDE-CLI-COMMON, M-LLM-FAILOVER, M-LLM-CODEX,
+#          D-007, D-011, D-012, D-021, aisw-d3i, aisw-0mg, aisw-w83, aisw-8gw
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -33,7 +35,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.14 - aisw-9io: deny Bash on every wiki run-kind. _RunConfig.
+#   LAST_CHANGE: v0.0.15 - aisw-8gw: contract-only plan for locked safe Codex fallback.
+#   PREVIOUS:    v0.0.14 - aisw-9io: deny Bash on every wiki run-kind. _RunConfig.
 #                disallowed_tools default is now ["Bash", "WebFetch"] — no run needs a
 #                shell and the sandbox forbids it, so the agent stopped wasting turns on
 #                Bash permission_denied (17x on day-25). Paired with dropping the Bash

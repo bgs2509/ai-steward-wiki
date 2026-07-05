@@ -1,8 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <KnowledgeGraph>
-  <Project NAME="ai-steward-wiki" VERSION="0.0.9">
-    <keywords>telegram, claude-code, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
-    <annotation>Isolated multi-user Telegram service that wraps Claude Code CLI as a personal WIKI assistant (Karpathy LLM Wiki method). Full module map: foundation (settings, logging), three-DB storage (jobs/audit/sessions), auth/onboarding/admin, scheduler core, Stage-0 classifier, Stage-1 wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer, voice STT, photo ingest, ingest pipeline (classifier + streaming), runtime wiring.</annotation>
+  <Project NAME="ai-steward-wiki" VERSION="0.0.10">
+    <keywords>telegram, claude-code, codex, provider-failover, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
+    <annotation>Isolated multi-user Telegram WIKI assistant with Claude as primary and subscription-backed Codex failover. The graph covers provider policy and adapters, foundation, storage, auth, scheduler, classifiers, WIKI runtime, inbox, ops, Telegram I/O, media, pipelines, and runtime wiring.</annotation>
+
+    <M-LLM-FAILOVER NAME="LLM provider failover policy" TYPE="CORE_LOGIC" STATUS="planned">
+      <purpose>Select Claude, Codex, or one Claude probe and permit fallback only for typed subscription limits and proven-safe replay.</purpose>
+      <path>src/ai_steward_wiki/llm/failover.py</path>
+      <depends>none</depends>
+      <verification-ref>V-M-LLM-FAILOVER</verification-ref>
+      <annotations>
+        <type-ProviderState PURPOSE="Fixed enum with claude, codex, and probe values."/>
+        <type-ProviderLimitError PURPOSE="Typed subscription-limit error with provider and optional reset time."/>
+        <type-AttemptEvidence PURPOSE="Fail-closed side-effect evidence for replay decisions."/>
+        <type-FailoverPolicy PURPOSE="Atomic process-local selection, transition, cooldown, probe, and replay orchestration."/>
+      </annotations>
+    </M-LLM-FAILOVER>
+
+    <M-LLM-CODEX NAME="Codex CLI subscription adapter" TYPE="INTEGRATION" STATUS="planned">
+      <purpose>Execute Codex CLI with ChatGPT subscription authentication under explicit model, sandbox, working-directory, and output contracts.</purpose>
+      <path>src/ai_steward_wiki/llm/codex.py</path>
+      <depends>M-LLM-FAILOVER</depends>
+      <verification-ref>V-M-LLM-CODEX</verification-ref>
+      <annotations>
+        <type-CodexCliAdapter PURPOSE="Structured, agent, text, and readiness entry points."/>
+        <type-CodexReadiness PURPOSE="Binary, version, authentication, and non-interactive readiness result."/>
+        <fn-normalize_codex_event PURPOSE="Map Codex JSONL into provider-neutral events and mutation evidence."/>
+      </annotations>
+    </M-LLM-CODEX>
 
     <M-FOUNDATION-SETTINGS NAME="Settings" TYPE="CONFIG" STATUS="done">
       <purpose>Pydantic-settings BaseSettings (frozen) loaded from .env with AISW_ prefix.</purpose>
@@ -133,7 +158,7 @@
     <M-RUNTIME-WIRING NAME="Runtime wiring / __main__" TYPE="RUNTIME" STATUS="done">
       <purpose>Process entrypoint (python -m ai_steward_wiki). Composes Settings, per-DB alembic migrations, engines, allowlist sync, APScheduler (incl. the daily media _staging sweep job), classifier+runner+output adapters, VoiceHandler/PhotoIngestor, aiogram Bot+Dispatcher; runs long-polling with graceful SIGINT/SIGTERM shutdown. The runner adapter promotes staged media into &lt;wiki&gt;/raw/media after a successful Stage-1 run (D-022). aisw-o6m (ADR-034): _WikiRunnerAdapter.run resolves group-2 (wiki_query) scope via wiki.scope.resolve_query_scope before assembling the prompt — a confident single-domain match swaps wiki_path/wiki_id to run scoped inside that WIKI, else the run stays cross-root with a wiki.scope.collect_layouts block injected into the scratch overlay; _DigestRunnerAdapter injects the same layouts block for non-primary WIKIs (extra_add_dirs) on full-digest runs (section-expand runs skip it). Both degrade to legacy cross-root behaviour on any resolver error (FR-6, wiki.run.scope.degraded).</purpose>
       <path>src/ai_steward_wiki/__main__.py</path>
-      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-SCHEDULER-FIRING, M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-WIKI-SCOPE, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-OPS-PII</depends>
+      <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-SCHEDULER-FIRING, M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-WIKI-SCOPE, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-OPS-PII, M-LLM-FAILOVER, M-LLM-CODEX</depends>
       <verification-ref>V-M-RUNTIME-WIRING</verification-ref>
       <annotations>
         <fn-main PURPOSE="sync wrapper: asyncio.run(_amain())"/>
@@ -256,7 +281,7 @@
     <M-SCHEDULER-CONSUMER NAME="Scheduler / queue consumer" TYPE="RUNTIME" STATUS="done">
       <purpose>Single async drain loop over PriorityJobQueue (aisw-02v, formerly aisw-cig YAGNI-deferred). CronConsumer.run() awaits queue.get(), then for each item: UPDATE jobs.Job status='running' + started_at_utc; spawn the Claude CLI directly `&lt;claude_binary&gt; --system-prompt &lt;content&gt; --setting-sources "" --disable-slash-commands --permission-mode dontAsk --disallowedTools WebFetch -- &lt;command&gt;` via asyncio.create_subprocess_exec with restricted env (CLAUDE_CONFIG_DIR) and neutral_cwd — NO systemd-run wrapper (aisw-abc/ADR-010: simple single-user model, parity with M-WIKI-RUNNER); wait_for(communicate, timeout_s=600); on TimeoutError → kill_with_sequence (D-021) + ru error message; on exit=0 → ChainSplitter chunked bot.send_message; on exit!=0 → "❌ Ошибка ({code}): {truncate_stderr}". Updates Job to terminal status ('finished'|'failed'). Single-task wired in __main__ (D-011 §3 lane=CRON_WRITE, NFR-1 concurrency=1).</purpose>
       <path>src/ai_steward_wiki/scheduler/consumer.py</path>
-      <depends>M-SCHEDULER, M-STORAGE-JOBS, M-TG-TEXT, M-CLAUDE-CLI-COMMON</depends>
+      <depends>M-SCHEDULER, M-STORAGE-JOBS, M-TG-TEXT, M-CLAUDE-CLI-COMMON, M-LLM-FAILOVER, M-LLM-CODEX</depends>
       <verification-ref>V-M-SCHEDULER-CONSUMER</verification-ref>
       <annotations>
         <fn-CronConsumer.__init__ PURPOSE="constructor DI: queue, bot, claude_binary, claude_config_dir, prompt_path, jobs_session_maker, timeout_s=600, spawner (R-1 mitigation: bot is injected, not module-global)"/>
@@ -284,7 +309,7 @@
     <M-CLASSIFIER-STAGE0 NAME="Classifier / Stage-0" TYPE="RUNTIME" STATUS="done">
       <purpose>Stage-0 Haiku intent classifier — prompt cache (semver+sha256), backend abstraction (Claude CLI default / Anthropic API optional / Fake), Pydantic intent schema, NL time parser (dateparser → Haiku-fallback → escalate) (D-009, D-010, D-013, D-015).</purpose>
       <path>src/ai_steward_wiki/classifier/</path>
-      <depends>M-CLAUDE-CLI-COMMON, M-STORAGE-AUDIT, M-FOUNDATION-SETTINGS</depends>
+      <depends>M-CLAUDE-CLI-COMMON, M-STORAGE-AUDIT, M-FOUNDATION-SETTINGS, M-LLM-FAILOVER, M-LLM-CODEX</depends>
       <verification-ref>V-M-CLASSIFIER-STAGE0</verification-ref>
       <annotations>
         <fn-classify PURPOSE="Stage-0 orchestrator: backend call + Pydantic validation + audit upsert + structlog"/>
@@ -315,7 +340,7 @@
     <M-WIKI-RUNNER NAME="WIKI / Stage-1 runner" TYPE="RUNTIME" STATUS="done">
       <purpose>Stage-1a/1b Sonnet runner orchestrator — assemble prompt (base+overlay+per-WIKI CLAUDE.md), acquire WIKI lock, spawn `claude --output-format stream-json`, parse stream events, hard timeout + kill-sequence, aggregate assistant text (D-007, D-011, D-012, D-021).</purpose>
       <path>src/ai_steward_wiki/wiki/runner.py, src/ai_steward_wiki/wiki/streaming.py, src/ai_steward_wiki/wiki/acquire.py</path>
-      <depends>M-CLAUDE-CLI-COMMON, M-SCHEDULER</depends>
+      <depends>M-CLAUDE-CLI-COMMON, M-SCHEDULER, M-LLM-FAILOVER, M-LLM-CODEX</depends>
       <verification-ref>V-M-WIKI-RUNNER</verification-ref>
       <annotations>
         <fn-run_wiki_session PURPOSE="public entrypoint orchestrating one Stage-1a/1b run; extra_add_dirs kwarg appends read-only --add-dir paths after the primary WIKI (digest multi-WIKI, aisw-oqq), alongside media_dirs"/>
@@ -329,6 +354,19 @@
         <type-WikiRunnerError PURPOSE="base exception; WikiRunnerTimeoutError after kill-sequence"/>
       </annotations>
     </M-WIKI-RUNNER>
+
+    <M-WIKI-MIGRATION NAME="WIKI schema generation" TYPE="INTEGRATION" STATUS="partial">
+      <purpose>Generate, validate, and apply a tailored managed WIKI schema with Claude and safe Codex text fallback.</purpose>
+      <path>src/ai_steward_wiki/wiki/schema_gen.py</path>
+      <depends>M-WIKI-LIFECYCLE, M-CLAUDE-CLI-COMMON, M-LLM-FAILOVER, M-LLM-CODEX</depends>
+      <verification-ref>V-M-WIKI-MIGRATION</verification-ref>
+      <annotations>
+        <type-SchemaGenerator PURPOSE="Protocol returning managed-zone text before any file mutation."/>
+        <type-ClaudeCliSchemaGenerator PURPOSE="Claude-first text generator with safe Codex fallback."/>
+        <fn-validate_schema PURPOSE="Structural validation before managed-zone mutation."/>
+        <fn-apply_generated_schema PURPOSE="Apply only validated text; preserve the default schema on failure."/>
+      </annotations>
+    </M-WIKI-MIGRATION>
 
     <M-WIKI-LIFECYCLE NAME="WIKI / lifecycle" TYPE="RUNTIME" STATUS="done">
       <purpose>WIKI name normalisation (Cyrillic→Latin ISO 9, PascalCase), owner-scoped create/lookup/soft-delete/restore with anti-spam cap + near-duplicate detection, CLAUDE.md frontmatter + managed/user-zone markers + template loader, 5-step pre-flight grounding (D-008, D-039, D-041).</purpose>
@@ -738,5 +776,16 @@
     <CrossLink from="M-TG-HANDLERS-WIRING" to="M-TG-CRON-ADD" relation="build_router calls register_cron_add_handlers to install the /cron_add Command handler on its Router (aisw-02v)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-SCHEDULER-CRON-USER" relation="cron_user.set_cron_user_context(scheduler, queue, jobs_session_maker) after scheduler.start() (aisw-02v)"/>
     <CrossLink from="M-RUNTIME-WIRING" to="M-SCHEDULER-CONSUMER" relation="constructs CronConsumer(queue, bot, claude_binary, claude_config_dir, prompt_path, jobs_session_maker) and spawns asyncio.create_task(consumer.run(), name='aisw.cron_consumer'); cancels on shutdown (aisw-02v)"/>
+    <CrossLink from="M-LLM-CODEX" to="M-LLM-FAILOVER" relation="returns typed outcomes and mutation evidence to the provider-neutral policy"/>
+    <CrossLink from="M-CLASSIFIER-STAGE0" to="M-LLM-FAILOVER" relation="typed Claude limit detection and safe structured fallback selection"/>
+    <CrossLink from="M-CLASSIFIER-STAGE0" to="M-LLM-CODEX" relation="gpt-5.4-mini structured output validated by the existing classifier schema"/>
+    <CrossLink from="M-WIKI-RUNNER" to="M-LLM-FAILOVER" relation="one WIKI lock spans Claude and safe Codex fallback; mutation evidence blocks replay"/>
+    <CrossLink from="M-WIKI-RUNNER" to="M-LLM-CODEX" relation="gpt-5.5 medium JSONL normalized into provider-neutral WIKI events"/>
+    <CrossLink from="M-WIKI-MIGRATION" to="M-LLM-FAILOVER" relation="schema text generation is replay-safe before apply_generated_schema mutates a file"/>
+    <CrossLink from="M-WIKI-MIGRATION" to="M-LLM-CODEX" relation="gpt-5.5 medium text fallback for schema generation"/>
+    <CrossLink from="M-SCHEDULER-CONSUMER" to="M-LLM-FAILOVER" relation="cron text execution falls back before Telegram delivery"/>
+    <CrossLink from="M-SCHEDULER-CONSUMER" to="M-LLM-CODEX" relation="gpt-5.5 medium text fallback under read-only sandbox"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-LLM-FAILOVER" relation="constructs one process-local circuit shared by all Claude-backed paths"/>
+    <CrossLink from="M-RUNTIME-WIRING" to="M-LLM-CODEX" relation="runs non-blocking readiness and injects one configured Codex adapter"/>
   </Project>
 </KnowledgeGraph>

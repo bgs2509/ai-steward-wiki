@@ -3752,7 +3752,7 @@
       <Item>FR-12 — Codex JSONL events MUST be normalized into the runner's provider-neutral event contract. Final text, failures, usage, and transcripts MUST remain available.</Item>
       <Item>FR-13 — Codex fallback MUST preserve each run's capability boundary. Read-only, WIKI-write, media-read, and web-search runs MUST keep their current isolation.</Item>
       <Item>FR-14 — Existing timeout, cancellation, locking, deduplication, and partial-result behavior MUST work identically under both providers.</Item>
-      <Item>FR-15 — Startup readiness MUST verify the Codex binary, saved ChatGPT authentication, model availability, and non-interactive execution support.</Item>
+      <Item>FR-15 — Startup readiness MUST verify the Codex binary, pinned version, saved ChatGPT authentication, and non-interactive execution support without invoking a model. Deployment smoke tests MUST verify availability of both configured Codex models.</Item>
       <Item>FR-16 — Missing or expired Codex authentication MUST NOT stop Claude-backed startup. The fallback MUST become unavailable with an operator-visible diagnostic.</Item>
       <Item>FR-17 — If Claude and Codex are both unavailable, the bot MUST return a clear Russian message. The source message MUST remain recoverable for retry.</Item>
       <Item>FR-18 — Operators MUST be able to configure provider enablement, binary paths, model identifiers, reasoning effort, and fallback cooldown without changing code.</Item>
@@ -3794,7 +3794,7 @@
       <Item>R-5 (MEDIUM) — The fallback subscription can also exhaust its own quota. Mitigation — distinct provider state, clear user message, and observable recovery.</Item>
       <Item>R-6 (MEDIUM) — Saved Codex authentication can expire or become unreadable under systemd. Mitigation — startup preflight and operator-visible readiness.</Item>
       <Item>R-7 (MEDIUM) — Reset-time parsing can be absent or ambiguous. Mitigation — bounded default cooldown followed by a single probe.</Item>
-      <Item>R-8 (LOW) — The first failover request has extra latency from the failed Claude attempt. Mitigation — immediate circuit opening prevents repeated cost.</Item>
+      <Item>R-8 (LOW) — The first failover request has extra latency from the failed Claude attempt. Mitigation — immediate transition to codex prevents repeated cost.</Item>
     </risks>
     <scope_in>
       <Item>Provider-neutral error taxonomy and provider-health state for Claude-limit detection and automatic failback.</Item>
