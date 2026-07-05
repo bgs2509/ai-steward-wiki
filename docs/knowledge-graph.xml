@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <KnowledgeGraph>
-  <Project NAME="ai-steward-wiki" VERSION="0.0.11">
+  <Project NAME="ai-steward-wiki" VERSION="0.0.12">
     <keywords>telegram, claude-code, codex, provider-failover, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
     <annotation>Isolated multi-user Telegram WIKI assistant with Claude as primary and subscription-backed Codex failover. The graph covers provider policy and adapters, foundation, storage, auth, scheduler, classifiers, WIKI runtime, inbox, ops, Telegram I/O, media, pipelines, and runtime wiring.</annotation>
 
@@ -22,7 +22,7 @@
       </annotations>
     </M-LLM-FAILOVER>
 
-    <M-LLM-CODEX NAME="Codex CLI subscription adapter" TYPE="INTEGRATION" STATUS="planned">
+    <M-LLM-CODEX NAME="Codex CLI subscription adapter" TYPE="INTEGRATION" STATUS="done">
       <purpose>Execute Codex CLI with ChatGPT subscription authentication under explicit model, sandbox, working-directory, and output contracts.</purpose>
       <path>src/ai_steward_wiki/llm/codex.py</path>
       <depends>M-LLM-FAILOVER</depends>
@@ -30,6 +30,11 @@
       <annotations>
         <type-CodexCliAdapter PURPOSE="Structured, agent, text, and readiness entry points."/>
         <type-CodexReadiness PURPOSE="Binary, version, authentication, and non-interactive readiness result."/>
+        <type-CodexRequest PURPOSE="Validated prompt, model, reasoning, capability, timing, and path request without credentials."/>
+        <type-CodexRunKind PURPOSE="Fixed structured, text, agent-read, agent-write, and web capability profiles."/>
+        <type-CodexEvent PURPOSE="Provider-neutral assistant, tool, final, or raw event without WIKI-layer dependency."/>
+        <type-CodexUnavailableError PURPOSE="Sanitized binary, process, timeout, auth, version, or readiness failure."/>
+        <type-CodexOutputError PURPOSE="Malformed structured, text, or JSONL output failure."/>
         <fn-normalize_codex_event PURPOSE="Map Codex JSONL into provider-neutral events and mutation evidence."/>
       </annotations>
     </M-LLM-CODEX>
@@ -42,6 +47,8 @@
       <annotations>
         <type-Settings PURPOSE="Frozen BaseSettings: log_level, workspace_root, *_db_url, default_user_tz (fallback IANA TZ for NL time, default 'Europe/Moscow', aisw-kcz). No claude_config_dir setting — the bot uses the run user's default ~/.claude via claude_cli.common.default_claude_config_dir (ADR-009 final)."/>
         <type-LogLevel PURPOSE="Literal alias for accepted log levels"/>
+        <type-ReasoningEffort PURPOSE="Closed low, medium, or high Codex reasoning levels"/>
+        <type-CodexSettings PURPOSE="Provider enablement, positive cooldown, binary, pinned version, CODEX_HOME, models, and reasoning without API-key billing"/>
         <fn-get_settings PURPOSE="lru_cached singleton accessor"/>
       </annotations>
     </M-FOUNDATION-SETTINGS>

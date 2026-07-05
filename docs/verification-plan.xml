@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.12">
+<VerificationPlan VERSION="0.0.13">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -111,7 +111,7 @@
       </required-trace-assertions>
       <wave-follow-up>Run classifier and WIKI adapter compatibility tests against the fake Codex CLI.</wave-follow-up>
       <phase-follow-up>Run deployment smoke for both subscription models and all capability profiles.</phase-follow-up>
-      <evidence>Fake subprocess fixtures validate exact argv, environment allowlist, output parsing, cancellation, timeout, and containment.</evidence>
+      <evidence>Unit and executable fake-CLI subprocess fixtures validate exact argv, environment allowlist, ChatGPT-only auth readiness, output parsing, cancellation, timeout, provider-local event normalization, and selected-WIKI-only write containment.</evidence>
     </V-M-LLM-CODEX>
 
     <V-M-WIKI-MIGRATION MODULE="M-WIKI-MIGRATION" PRIORITY="high">
@@ -143,7 +143,7 @@
         <cmd>uv run pytest tests/unit/test_settings.py -q</cmd>
       </commands>
       <log-markers/>
-      <evidence>Settings frozen, env-prefix AISW_, defaults for log_level/workspace/db URLs.</evidence>
+      <evidence>Settings remain frozen with AISW_ prefix. Tests cover Codex enablement, positive cooldown, binary, pinned version, CODEX_HOME, model and reasoning overrides, and absence of an OpenAI API-key field.</evidence>
     </V-M-FOUNDATION-SETTINGS>
 
     <V-M-FOUNDATION-LOGGING MODULE="M-FOUNDATION-LOGGING">

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<DevelopmentPlan VERSION="0.0.10">
+<DevelopmentPlan VERSION="0.0.11">
   <ArchitectureNotes>
     <objective>Multi-user Telegram → Claude Code CLI WIKI assistant (Karpathy LLM Wiki method). MVP delivers: foundation (settings/logging/three-DB SQLite), auth + onboarding + admin, scheduler core, Stage-0 Haiku classifier, Stage-1 Sonnet wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer + voice STT + photo ingest, ingest pipeline (classifier + streaming), runtime wiring, integration E2E.</objective>
     <non-goal>No i18n catalog (ru-only, D-032); off-site backup deferred; web UI / non-Telegram channels out of scope.</non-goal>
@@ -400,7 +400,7 @@
       </observability>
       <verification-ref>V-M-LLM-FAILOVER</verification-ref>
     </M-LLM-FAILOVER>
-    <M-LLM-CODEX NAME="Codex CLI subscription adapter" TYPE="INTEGRATION" LAYER="1" ORDER="1" STATUS="planned" bd_id="aisw-8gw">
+    <M-LLM-CODEX NAME="Codex CLI subscription adapter" TYPE="INTEGRATION" LAYER="1" ORDER="1" STATUS="done" bd_id="aisw-8gw">
       <contract>
         <purpose>Execute Codex through ChatGPT subscription auth under explicit capability profiles and normalize outputs.</purpose>
         <inputs>
@@ -484,11 +484,11 @@
       <step-1 module="M-LLM-FAILOVER" status="done" verification="V-M-LLM-FAILOVER">Implement provider state, typed errors, evidence, and generic policy through TDD.</step-1>
       <step-2 module="M-LLM-FAILOVER" status="done" verification="V-M-LLM-FAILOVER">Verify reset parsing, bounded cooldown, single-flight probe, replay blocking, and selection overhead.</step-2>
     </Phase-G.1>
-    <Phase-G.2 name="Codex CLI adapter, readiness, and settings" status="pending" bd_id="aisw-8gw">
+    <Phase-G.2 name="Codex CLI adapter, readiness, and settings" status="done" bd_id="aisw-8gw">
       <goal>Provide one isolated Codex adapter with explicit models, capabilities, auth location, and output modes.</goal>
-      <step-1 module="M-FOUNDATION-SETTINGS" status="pending" verification="V-M-FOUNDATION-SETTINGS">Add validated fallback settings without API-key configuration.</step-1>
-      <step-2 module="M-LLM-CODEX" status="pending" verification="V-M-LLM-CODEX">Implement restricted argv, environment, structured, agent, text, cancellation, and timeout paths.</step-2>
-      <step-3 module="M-LLM-CODEX" status="pending" verification="V-M-LLM-CODEX">Implement non-model readiness and deterministic fake-CLI containment checks.</step-3>
+      <step-1 module="M-FOUNDATION-SETTINGS" status="done" verification="V-M-FOUNDATION-SETTINGS">Add validated fallback settings without API-key configuration.</step-1>
+      <step-2 module="M-LLM-CODEX" status="done" verification="V-M-LLM-CODEX">Implement restricted argv, environment, structured, agent, text, cancellation, and timeout paths.</step-2>
+      <step-3 module="M-LLM-CODEX" status="done" verification="V-M-LLM-CODEX">Implement non-model readiness and deterministic fake-CLI containment checks.</step-3>
     </Phase-G.2>
     <Phase-G.3 name="Structured and text failover integration" status="pending" bd_id="aisw-8gw">
       <goal>Preserve existing Stage-0, schema, and cron consumer contracts under safe fallback.</goal>
