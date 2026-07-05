@@ -47,7 +47,9 @@ Accepted
 7. Codex использует ChatGPT subscription login в отдельном `CODEX_HOME`.
 8. API-key billing и интерактивный runtime login запрещены.
 9. Codex CLI закрепляется на версии `0.142.5`.
-10. Каждый запуск задаёт model, reasoning, sandbox, neutral cwd и output mode явно.
+10. Каждый запуск задаёт model, reasoning, sandbox, working directory и output mode явно.
+    Read-only, structured, text и web используют neutral cwd.
+    Write использует selected WIKI как cwd и единственный writable root.
 11. Mutation, delivery и unknown evidence блокируют автоматический replay.
 12. Provider state остаётся process-local.
 13. Startup проверяет бинарь, версию, auth и non-interactive режим без модельного вызова.

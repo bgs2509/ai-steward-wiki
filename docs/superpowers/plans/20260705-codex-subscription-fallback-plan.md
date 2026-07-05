@@ -545,7 +545,8 @@ class CodexAdapter(Protocol):
 Structured mode добавляет `--output-schema <runtime-schema-path>`.
 Agent mode добавляет `--json`.
 Web mode добавляет global flag `--search` до subcommand `exec`.
-Write mode добавляет только selected WIKI через `--add-dir`.
+Write mode использует selected WIKI через `--cd` без `--add-dir`.
+Отклонение одобрено пользователем 2026-07-05 для выполнения NFR-5.
 
 - [ ] **Шаг 4: Реализовать restricted process execution**
 
