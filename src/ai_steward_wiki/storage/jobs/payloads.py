@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/storage/jobs/payloads.py
-# VERSION: 0.0.7
+# VERSION: 0.0.8
 # START_MODULE_CONTRACT
 #   PURPOSE: Pydantic v2 discriminated union for jobs.payload (D-002).
 #   SCOPE: Closed list of job kinds known at MVP. New kinds added in subsequent chunks.
@@ -15,12 +15,18 @@
 #   CronUserPayload - user-defined NL-scheduled cron (recurrence:Recurrence, command, wiki_id?) — aisw-02v
 #   PurgePayload - retention purge job (D-034 / §10.4)
 #   ReminderPayload - one-shot reminder job: message + optional lead_time_min + category (aisw-kcz; category aisw-163)
-#   JobPayload - Annotated discriminated union over the five above
+#   RecurringReminderPayload - fixed-text cron reminder: message + recurrence + category (aisw-xi8, DEC-6)
+#   CheckInPayload - bot-generated recurring question: question_topic + recurrence + wiki_id? (aisw-xi8, DEC-6)
+#   JobPayload - Annotated discriminated union over the seven above
 #   parse_job_payload - validate a dict into the union, returning the concrete model
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.7 - aisw-02v: widen CronUserPayload — typed Recurrence (was cron_expr:str) +
+#   LAST_CHANGE: v0.0.8 - aisw-xi8 (Phase-B, DEC-6): two ADDITIVE JobPayload union
+#                members — RecurringReminderPayload(kind='recurring_reminder') and
+#                CheckInPayload(kind='check_in'). No Alembic migration (JSON column,
+#                additive discriminator tag). Existing 5 kinds unchanged (FR-15).
+#   PREVIOUS:    v0.0.7 - aisw-02v: widen CronUserPayload — typed Recurrence (was cron_expr:str) +
 #                free-form command (was user_text) + optional wiki_id (was required str); AD-05 no
 #                Alembic migration (JSON column, zero existing rows with kind='cron_user').
 #   PREVIOUS:    v0.0.6 - aisw-163: add ReminderPayload.category (medication|event|generic; default 'generic'; legacy rows keep validating)
@@ -39,10 +45,12 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from ai_steward_wiki.classifier.recurrence import Recurrence
 
 __all__ = [
+    "CheckInPayload",
     "CronUserPayload",
     "DigestPayload",
     "JobPayload",
     "PurgePayload",
+    "RecurringReminderPayload",
     "ReminderPayload",
     "WikiRunPayload",
     "parse_job_payload",
@@ -100,8 +108,35 @@ class ReminderPayload(_PayloadBase):
     category: Literal["medication", "event", "generic"] = "generic"
 
 
+class RecurringReminderPayload(_PayloadBase):
+    """Fixed-text cron reminder (aisw-xi8, DEC-6/DEC-7). Delivered VERBATIM on
+    every fire — plain TG send, no Claude CLI call (NFR-2)."""
+
+    kind: Literal["recurring_reminder"] = "recurring_reminder"
+    message: str
+    recurrence: Recurrence
+    category: Literal["medication", "event", "generic"] = "generic"
+
+
+class CheckInPayload(_PayloadBase):
+    """Bot-generated recurring question (aisw-xi8, DEC-6/DEC-8). The CLI at fire
+    time generates ONE ru question about question_topic; on failure a
+    deterministic ru fallback is sent verbatim (FR-6)."""
+
+    kind: Literal["check_in"] = "check_in"
+    question_topic: str
+    recurrence: Recurrence
+    wiki_id: str | None = None
+
+
 JobPayload = Annotated[
-    WikiRunPayload | DigestPayload | CronUserPayload | PurgePayload | ReminderPayload,
+    WikiRunPayload
+    | DigestPayload
+    | CronUserPayload
+    | PurgePayload
+    | ReminderPayload
+    | RecurringReminderPayload
+    | CheckInPayload,
     Field(discriminator="kind"),
 ]
 

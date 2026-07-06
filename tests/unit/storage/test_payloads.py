@@ -7,9 +7,11 @@ from pydantic import ValidationError
 
 from ai_steward_wiki.classifier.recurrence import Recurrence
 from ai_steward_wiki.storage.jobs.payloads import (
+    CheckInPayload,
     CronUserPayload,
     DigestPayload,
     PurgePayload,
+    RecurringReminderPayload,
     ReminderPayload,
     WikiRunPayload,
     parse_job_payload,
@@ -169,3 +171,61 @@ def test_cron_and_purge_basic():
         parse_job_payload({"kind": "purge", "target": "audit.tg_updates", "older_than_hours": 24}),
         PurgePayload,
     )
+
+
+def test_recurring_reminder_payload_validates_and_roundtrips() -> None:
+    rec = Recurrence(kind="daily", time_hhmm="08:00", tz="Europe/Moscow")
+    payload = RecurringReminderPayload(message="Принять таблетки", recurrence=rec)
+    assert payload.kind == "recurring_reminder"
+    assert payload.category == "generic"
+    dumped = payload.model_dump(mode="json")
+    restored = parse_job_payload(dumped)
+    assert isinstance(restored, RecurringReminderPayload)
+    assert restored.message == "Принять таблетки"
+    assert restored.recurrence == rec
+
+
+def test_recurring_reminder_payload_category_medication() -> None:
+    rec = Recurrence(kind="daily", time_hhmm="08:00", tz="Europe/Moscow")
+    payload = RecurringReminderPayload(
+        message="Принять таблетки от давления", recurrence=rec, category="medication"
+    )
+    assert payload.category == "medication"
+
+
+def test_recurring_reminder_payload_rejects_extra_field() -> None:
+    rec = Recurrence(kind="daily", time_hhmm="08:00", tz="Europe/Moscow")
+    with pytest.raises(ValidationError):
+        RecurringReminderPayload(kind="recurring_reminder", message="x", recurrence=rec, bogus="y")  # type: ignore[call-arg]
+
+
+def test_check_in_payload_validates_and_roundtrips() -> None:
+    rec = Recurrence(kind="daily", time_hhmm="21:00", tz="Europe/Moscow")
+    payload = CheckInPayload(question_topic="как прошёл день", recurrence=rec)
+    assert payload.kind == "check_in"
+    assert payload.wiki_id is None
+    dumped = payload.model_dump(mode="json")
+    restored = parse_job_payload(dumped)
+    assert isinstance(restored, CheckInPayload)
+    assert restored.question_topic == "как прошёл день"
+
+
+def test_check_in_payload_optional_wiki_id() -> None:
+    rec = Recurrence(kind="weekly", time_hhmm="09:00", weekdays=(0, 1, 2, 3, 4), tz="Europe/Moscow")
+    payload = CheckInPayload(question_topic="что нового", recurrence=rec, wiki_id="Health-WIKI")
+    assert payload.wiki_id == "Health-WIKI"
+
+
+def test_existing_five_kinds_still_validate_after_widening() -> None:
+    """FR-15: the pre-aisw-xi8 discriminated union members are untouched."""
+    for legacy in (
+        {"kind": "wiki_run", "wiki_id": "1", "prompt_text": "x", "correlation_id": "c"},
+        {"kind": "purge", "target": "audit.chat_log", "older_than_hours": 24},
+        {"kind": "reminder_job", "message": "напомнить"},
+    ):
+        assert parse_job_payload(legacy).kind == legacy["kind"]
+
+
+def test_unrecognised_kind_still_raises_union_tag_invalid() -> None:
+    with pytest.raises(ValidationError):
+        parse_job_payload({"kind": "totally_unknown_kind"})
