@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <KnowledgeGraph>
-  <Project NAME="ai-steward-wiki" VERSION="0.0.15">
+  <Project NAME="ai-steward-wiki" VERSION="0.0.16">
     <keywords>telegram, claude-code, codex, provider-failover, wiki, multi-user, classifier, scheduler, sqlite, alembic, aiogram, async</keywords>
     <annotation>Isolated multi-user Telegram WIKI assistant with Claude as primary and subscription-backed Codex failover. The graph covers provider policy and adapters, foundation, storage, auth, scheduler, classifiers, WIKI runtime, inbox, ops, Telegram I/O, media, pipelines, and runtime wiring.</annotation>
 
     <M-LLM-FAILOVER NAME="LLM provider failover policy" TYPE="CORE_LOGIC" STATUS="done">
       <purpose>Select Claude, Codex, or one Claude probe and permit fallback only for typed subscription limits and proven-safe replay.</purpose>
       <path>src/ai_steward_wiki/llm/failover.py</path>
-      <depends>none</depends>
+      <depends>M-FOUNDATION-LOGGING</depends>
       <verification-ref>V-M-LLM-FAILOVER</verification-ref>
       <annotations>
         <type-ProviderState PURPOSE="Fixed enum with claude, codex, and probe values."/>
@@ -16,7 +16,7 @@
         <type-AttemptEvidence PURPOSE="Fail-closed side-effect evidence for replay decisions."/>
         <type-ReplayBlockedError PURPOSE="Unsafe same-operation replay rejection carrying observed evidence."/>
         <type-ProvidersUnavailableError PURPOSE="Typed primary and fallback failure pair."/>
-        <type-FailoverEvent PURPOSE="Sanitized provider selection, transition, failure, and recovery event."/>
+        <type-FailoverEvent PURPOSE="Sanitized provider selection, transition, failure, and recovery event with optional model metadata."/>
         <type-FailoverMetrics PURPOSE="Process-local primary, fallback, dual-failure, replay, and recovery counters."/>
         <type-FailoverPolicy PURPOSE="Atomic process-local selection, transition, cooldown, probe, and replay orchestration."/>
       </annotations>
@@ -55,7 +55,7 @@
 
     <M-FOUNDATION-LOGGING NAME="Logging" TYPE="UTILITY" STATUS="done">
       <purpose>structlog JSON-lines logging with correlation_id contextvar propagation.</purpose>
-      <path>src/ai_steward_wiki/logging_setup.py</path>
+      <path>src/ai_steward_wiki/logging_setup.py, src/ai_steward_wiki/logging_events.py</path>
       <depends>M-FOUNDATION-SETTINGS</depends>
       <verification-ref>V-M-FOUNDATION-LOGGING</verification-ref>
       <annotations>
@@ -64,6 +64,7 @@
         <fn-reset_correlation_id PURPOSE="Reset via Token returned from bind_correlation_id"/>
         <fn-get_correlation_id PURPOSE="Read current correlation_id (None if unset)"/>
         <fn-get_logger PURPOSE="structlog.get_logger thin wrapper for typing"/>
+        <type-LLMEventCatalog PURPOSE="Stable provider selection, failover, circuit, failure, recovery, and replay event keys"/>
       </annotations>
     </M-FOUNDATION-LOGGING>
 
@@ -168,7 +169,7 @@
     </M-STORAGE-SESSIONS>
 
     <M-RUNTIME-WIRING NAME="Runtime wiring / __main__" TYPE="RUNTIME" STATUS="done">
-      <purpose>Process entrypoint (python -m ai_steward_wiki). Composes Settings, per-DB alembic migrations, engines, allowlist sync, APScheduler (incl. the daily media _staging sweep job), classifier+runner+output adapters, VoiceHandler/PhotoIngestor, aiogram Bot+Dispatcher; runs long-polling with graceful SIGINT/SIGTERM shutdown. The runner adapter promotes staged media into &lt;wiki&gt;/raw/media after a successful Stage-1 run (D-022). aisw-o6m (ADR-034): _WikiRunnerAdapter.run resolves group-2 (wiki_query) scope via wiki.scope.resolve_query_scope before assembling the prompt — a confident single-domain match swaps wiki_path/wiki_id to run scoped inside that WIKI, else the run stays cross-root with a wiki.scope.collect_layouts block injected into the scratch overlay; _DigestRunnerAdapter injects the same layouts block for non-primary WIKIs (extra_add_dirs) on full-digest runs (section-expand runs skip it). Both degrade to legacy cross-root behaviour on any resolver error (FR-6, wiki.run.scope.degraded).</purpose>
+      <purpose>Process entrypoint composing storage, scheduler, Telegram adapters, and one shared Claude-first provider policy. Codex readiness is non-model and non-fatal; a ready subscription adapter is injected into classifier, WIKI, digest, schema, and cron paths.</purpose>
       <path>src/ai_steward_wiki/__main__.py</path>
       <depends>M-FOUNDATION-SETTINGS, M-FOUNDATION-LOGGING, M-AUTH-USERS, M-STORAGE-JOBS, M-STORAGE-AUDIT, M-STORAGE-SESSIONS, M-SCHEDULER, M-SCHEDULER-FIRING, M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-WIKI-LIFECYCLE, M-WIKI-SCOPE, M-TG-TEXT, M-TG-PIPELINE-CLASSIFIER, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-OPS-PII, M-LLM-FAILOVER, M-LLM-CODEX</depends>
       <verification-ref>V-M-RUNTIME-WIRING</verification-ref>
@@ -180,6 +181,9 @@
         <fn-_run_all_migrations PURPOSE="alembic upgrade head per-DB via asyncio.to_thread"/>
         <fn-_load_users_config PURPOSE="load users.toml or return empty config when path missing"/>
         <fn-_install_signal_handlers PURPOSE="wire SIGINT/SIGTERM to stop event"/>
+        <type-LlmRuntime PURPOSE="One process-local failover policy and optional readiness-approved Codex adapter"/>
+        <fn-_build_llm_runtime PURPOSE="Construct shared provider state; keep Claude startup available when Codex setup, login, version, or readiness fails"/>
+        <fn-_wiki_run_config PURPOSE="Inject the same approved policy and adapter into each WIKI capability profile"/>
         <type-_RouterAdapter PURPOSE="Inbox-WIKI Stage-1a router: ensure_inbox_wiki → stage raw payload → run_wiki_session in Inbox-WIKI/ → parse_router_reply; WikiRunnerError→RouterError (aisw-dsg)"/>
         <fn-_render_raw_sidecar PURPOSE="build (filename, content) for Inbox-WIKI/raw/&lt;ts&gt;_&lt;source&gt;.md — plain body for text, YAML front-matter + staged_path sidecar for media"/>
         <type-_LibrarianAdapter PURPOSE="Inbox-WIKI Stage-1b librarian: resolve_target_wiki → stage_raw_into_wiki → run_wiki_session in &lt;Domain&gt;-WIKI/ (wiki.md + domain overlay) → IngestOutcome; WikiRunnerError→run_failed (aisw-zd9)"/>
@@ -661,9 +665,9 @@
     </M-TG-PHOTO>
 
     <M-TG-PIPELINE-CLASSIFIER NAME="Ingest pipeline / classify→run→deliver" TYPE="RUNTIME" STATUS="done">
-      <purpose>DefaultPipeline coordinator over already-built ingest blocks — L1/L2 dedup, Stage-0 classify → Stage-1 run → deliver_output; voice transcript path; photo→vision via media_paths; document mime router (PDF text extract, size cap); Inbox-WIKI routing: a ROUTE/CREATE_WIKI RouterDecision is proposed via an inline-button route confirm (persisted as a route_ingest pending row) and the Stage-1b move+ingest runs in on_confirm_callback on "confirmed" (Phase-C, aisw-e45); a Stage-0 intent=reminder fast-path (BEFORE the Stage-1a router) parses NL time (prefer_future), proposes a one-shot reminder via the same inline-button confirm and on "confirmed" calls scheduler.firing.create_reminder_job — recurring-digest phrasing answered with a ru "not yet" line (Phase-D.a, aisw-kcz); a '## Inbox hint' fast-path (also BEFORE the Stage-1a router, when a hint_catalog_resolver is wired) scores the message against the sender's cached hint catalog and on a confident single match (inbox.hint_match.is_confident) synthesises a RouterDecision(ROUTE) → the same route_ingest confirm loop, skipping the heavy Sonnet Router; miss/ambiguous/empty/disabled ⇒ falls through unchanged (Phase-E.b, aisw-5sd); Russian safe-fallback acks (chunk 20, D-022, D-023).</purpose>
+      <purpose>DefaultPipeline coordinator over classification, WIKI execution, routing, ingest, streaming, delivery, voice, photo, and document paths. Dual-provider failures across every media path produce one recoverable Russian reply without automatic replay.</purpose>
       <path>src/ai_steward_wiki/tg/pipeline.py</path>
-      <depends>M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-TG-TEXT, M-INGEST-IDEM, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-SCHEDULER-FIRING</depends>
+      <depends>M-CLASSIFIER-STAGE0, M-CLASSIFIER-RECURRENCE, M-WIKI-RUNNER, M-TG-TEXT, M-INGEST-IDEM, M-TG-VOICE, M-TG-PHOTO, M-INBOX, M-INBOX-ROUTER, M-INBOX-ROUTE, M-SCHEDULER-FIRING, M-LLM-FAILOVER</depends>
       <verification-ref>V-M-TG-PIPELINE-CLASSIFIER</verification-ref>
       <annotations>
         <type-DefaultPipeline PURPOSE="concrete coordinator wiring classifier/router/librarian/runner/output/voice/photo/document blocks"/>
@@ -674,6 +678,7 @@
         <type-IngestOutcome PURPOSE="frozen dataclass returned by Librarian.ingest (status ok|rejected|run_failed, reply, run_id, target_wiki, created)"/>
         <type-WikiRunner PURPOSE="narrow Stage-1a/1b wrapper Protocol; WikiRunOutcome result dataclass"/>
         <type-OutputDelivery PURPOSE="narrow deliver_output wrapper Protocol"/>
+        <type-LLM_PROVIDERS_UNAVAILABLE_RU PURPOSE="One recoverable reply when Claude and Codex both fail"/>
         <fn-_handle_reminder_confirm PURPOSE="on_confirm_callback branch for category=='reminder' pending rows: resolve race-safely → on 'confirmed' rebuild the draft + scheduler.firing.create_reminder_job + ack; cancel/stale → ru notice (aisw-kcz)"/>
         <fn-build_reminder_recap PURPOSE="ru recap line 'Поставлю напоминание на DD.MM HH:MM (TZ): «message». Подтверждаешь?' for the reminder confirm draft (aisw-kcz)"/>
         <fn-_handle_digest_intent PURPOSE="recurring-digest fast-path: parse_recurrence → on escalate ru clarification; aisw-269 — if owner_wikis_resolver wired, extract_wiki_names(text, owner-stems): a «по &lt;Name&gt;» token matching no WIKI → ru clarification (tg.pipeline.digest.wiki_unknown), no draft; else build a category='digest' confirm draft (recurrence, wiki_scope:'all'|list[str], window_hours=24) + recap and ConfirmationService.request_explicit"/>

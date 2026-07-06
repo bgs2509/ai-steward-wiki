@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.16">
+<VerificationPlan VERSION="0.0.17">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -174,7 +174,7 @@
         <marker>inbox.staging.done</marker>
         <marker>inbox.staging.error</marker>
       </log-markers>
-      <evidence>structlog JSON renderer, ISO UTC timestamps, correlation_id contextvar bound/reset (chunk-1). @traced decorator emits &lt;prefix&gt;.{start,done,error} with duration_ms; never inspects args/kwargs/return (PII-safe). logging_events.py SSoT catalog of snake_case dotted event keys covers chunk-1 entrypoints and chunk-2 anchors (scheduler.job.*, storage.slow_query, claude_cli.*). CorrelationMiddleware binds correlation_id + telegram_id + chat_id + update_id into structlog.contextvars for one Update lifetime; autouse contextvars cleanup fixture between tests. PII redactor passes through chunk-2 metadata fields unchanged while still redacting free-text fields on the same record (idempotent).</evidence>
+      <evidence>structlog JSON renderer, ISO UTC timestamps, correlation_id contextvar bound/reset (chunk-1). @traced decorator emits &lt;prefix&gt;.{start,done,error} with duration_ms; never inspects args/kwargs/return (PII-safe). logging_events.py is the SSoT catalog for chunk-1, chunk-2, and stable llm.provider, llm.failover, llm.circuit, and llm.replay anchors. CorrelationMiddleware binds correlation_id + telegram_id + chat_id + update_id into structlog.contextvars for one Update lifetime. Provider events expose only provider, optional model, run kind, correlation, outcome, state, reason, evidence, and latency fields.</evidence>
     </V-M-FOUNDATION-LOGGING>
 
     <V-M-AUTH-USERS MODULE="M-AUTH-USERS">
@@ -247,6 +247,7 @@
     <V-M-RUNTIME-WIRING MODULE="M-RUNTIME-WIRING">
       <tests>
         <test path="tests/unit/test_runtime_wiring.py"/>
+        <test path="tests/unit/test_llm_runtime_wiring.py"/>
         <test path="tests/unit/test_router_adapter.py"/>
         <test path="tests/unit/test_librarian_adapter.py"/>
         <test path="tests/unit/test_main_hint_catalog.py"/>
@@ -254,7 +255,7 @@
         <test path="tests/unit/test_main_digest_adapter.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/test_runtime_wiring.py tests/unit/test_router_adapter.py tests/unit/test_librarian_adapter.py tests/unit/test_main_hint_catalog.py tests/unit/test_main_runner_adapter.py tests/unit/test_main_digest_adapter.py -q</cmd>
+        <cmd>uv run pytest tests/unit/test_runtime_wiring.py tests/unit/test_llm_runtime_wiring.py tests/unit/test_router_adapter.py tests/unit/test_librarian_adapter.py tests/unit/test_main_hint_catalog.py tests/unit/test_main_runner_adapter.py tests/unit/test_main_digest_adapter.py -q</cmd>
         <cmd>uv run python -m ai_steward_wiki  # manual smoke with AISW_TG_BOT_TOKEN_LOCAL</cmd>
       </commands>
       <log-markers>
@@ -284,8 +285,9 @@
         <marker>inbox.route.ingest_failed</marker>
         <marker>wiki.run.scope</marker>
         <marker>wiki.run.scope.degraded</marker>
+        <marker>llm.provider.failed</marker>
       </log-markers>
-      <evidence>Unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. aisw-o6m (ADR-034): test_main_runner_adapter.py — a confident WIKI_QUERY match runs wiki_path/wiki_id scoped to the matched WIKI with no layouts block in the overlay (CLAUDE.md arrives via assemble_prompt); an ambiguous match runs cross-root at the user root with "Карта WIKI пользователя" + every WIKI's Data-layout excerpt in the overlay; a hint_catalog_resolver raising degrades to cross-root with the legacy placeholder overlay (no exception propagates); WEB_TASK never calls either resolver and keeps legacy behaviour; an adapter constructed without the two resolvers (back-compat) also keeps legacy cross-root behaviour. test_main_digest_adapter.py — a full-digest call (section=None) with extra_add_dirs appends the layouts block (header + one "## &lt;stem&gt;" section per extra WIKI) to planner_context before user_input; a section-expand call (/expand) with the same extra_add_dirs never injects layouts. aisw-5sd: make_hint_catalog_resolver — telegram_id → {wiki_stem: hint_text} via surrogate_id_of + owner_wikis_resolver + get_or_refresh_hint per domain CLAUDE.md; unknown sender (surrogate None) → {} (fast-path falls through); a domain with no '## Inbox hint' → omitted; no domain WIKIs → {} without touching the cache (get_or_refresh_hint monkeypatched in the unit). aisw-hcl: VoiceHandler/PhotoIngestor wired into DefaultPipeline; media _staging sweep job registered; _WikiRunnerAdapter.run promotes staged media into &lt;wiki&gt;/raw/media after a successful run. aisw-dsg: _RouterAdapter — ensure_inbox_wiki, _render_raw_sidecar, run_wiki_session in Inbox-WIKI/ with prompts/inbox.md, parse_router_reply, WikiRunnerError→RouterError, inbox.router.* markers. aisw-zd9: _LibrarianAdapter — resolve_target_wiki (create new dir; ROUTE-missing → create + warning; cap → rejected; bad name → rejected), stage_raw_into_wiki (raw/&lt;ts&gt;_text.md + promote media), run_wiki_session with wiki_id=f"{tid}/&lt;Name&gt;" + overlay=domain-default.md + timeout_s=None, IngestOutcome(ok|run_failed|rejected), WikiRunnerError→run_failed keeps the raw, inbox.route.* markers via capsys. Manual smoke: `python -m ai_steward_wiki` starts, logs runtime.media_pipeline.wired + polling.start, Ctrl-C → shutdown.done, exit 0.</evidence>
+      <evidence>test_llm_runtime_wiring proves one shared policy reaches classifier, schema, and WIKI configs; disabled, unready, and setup-failing Codex all preserve Claude startup. Existing runtime tests cover migrations, scheduling, adapters, scope resolution, media promotion, and clean shutdown. The extended Telegram, classifier, WIKI, and cron regression suite passes.</evidence>
     </V-M-RUNTIME-WIRING>
 
     <V-M-TG-HANDLERS-WIRING MODULE="M-TG-HANDLERS-WIRING">
@@ -332,6 +334,7 @@
 
     <V-M-TG-PIPELINE-CLASSIFIER MODULE="M-TG-PIPELINE-CLASSIFIER">
       <tests>
+        <test path="tests/unit/tg/test_pipeline_failover.py"/>
         <test path="tests/unit/tg/test_pipeline_classifier_wiring.py"/>
         <test path="tests/unit/tg/test_pipeline_router.py"/>
         <test path="tests/unit/tg/test_pipeline_hint_fastpath.py"/>
@@ -345,6 +348,7 @@
         <test path="tests/integration/test_e2e_pipeline.py"/>
       </tests>
       <commands>
+        <cmd>uv run pytest tests/unit/tg/test_pipeline_failover.py -q</cmd>
         <cmd>uv run pytest tests/unit/tg/test_pipeline_classifier_wiring.py tests/unit/tg/test_pipeline_router.py tests/unit/tg/test_pipeline_hint_fastpath.py tests/unit/tg/test_pipeline_route_ingest.py tests/unit/tg/test_pipeline_route_confirm.py tests/unit/tg/test_pipeline_confirm_callback.py tests/unit/tg/test_pipeline_chat_log.py tests/unit/tg/test_pipeline_active_wiki.py tests/unit/wiki/test_runner_aggregate.py -q</cmd>
         <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/test_pipeline_classifier_e2e.py tests/integration/test_e2e_pipeline.py -q</cmd>
       </commands>
@@ -371,8 +375,9 @@
         <marker>tg.pipeline.hint_fastpath.silent_route</marker>
         <marker>tg.pipeline.hint_fastpath.miss</marker>
         <marker>tg.pipeline.hint_fastpath.fallthrough</marker>
+        <marker>tg.pipeline.providers_unavailable</marker>
       </log-markers>
-      <evidence>Unit tests cover text happy path, L1 dup short-circuit, L2 dedup hit, classifier error → ACK_CLASSIFY_ERR_RU, runner error → ACK_RUNNER_ERR_RU, empty runner output → ACK_TEXT_RU via deliver, back-compat None injection, voice happy/empty/back-compat, structlog markers via capsys; aggregate_text across stream-json payload shapes. aisw-dsg: routable intents with a wired Router go through router.route(); router=None / non-routable use the legacy path; RouterError → ACK_RUNNER_ERR_RU; tg.pipeline.router.* markers. aisw-zd9: the ROUTE/CREATE_WIKI librarian.ingest() path (now reached via the confirm callback). aisw-e45 (Phase-C): a ROUTE/CREATE_WIKI decision (wired librarian + output) → no immediate ingest; ConfirmationService.request_explicit called with category="route_ingest" + build_route_confirm_keyboard + a draft round-trippable via route_action_from_payload; recap mentions target + notes; CLARIFY/REJECT and librarian=None → send_message(decision.notes), no confirm row. on_confirm_callback: route_ingest row + resolve→"confirmed" → ROUTE_CONFIRM_ACK_RU then librarian.ingest() with the reconstructed decision + media Paths → status="ok" → output.deliver(reply) else send_message(reply); resolve→"cancelled" → ROUTE_CONFIRM_CANCELLED_RU, no ingest; resolve→None → ROUTE_CONFIRM_STALE_RU, no ingest; non-route_ingest or missing row → legacy resolve path (tg.pipeline.confirm); tg.pipeline.route.confirm_* + confirm.route_dispatched markers via capsys. Integration (RUN_INTEGRATION=1): test_e2e_pipeline.py scenario 6 — routable text → recap + route_ingest pending row (no domain WIKI yet) → on_confirm_callback("confirm") → real Stage-1b librarian writes into the target &lt;Domain&gt;-WIKI/raw/, ROUTE_CONFIRM_ACK_RU sent, reply via output.deliver; tolerant of CLARIFY/REJECT. aisw-269 (Phase-D.b.2b — named-subset WIKI in the digest fast-path): after parse_recurrence, _extract_wiki_names(turn_text, owner_wiki_stems) — whole-token, case-insensitive intersection with the owner's *-WIKI/ dir-stems; all mentioned names resolve → list[str], none mentioned → 'all', a name-shaped token that does not resolve → return None → ru clarification (lists the owner's WIKI names), NO confirm draft built, NO job created (tg.pipeline.digest.wiki_unknown); the category='digest' confirm draft carries wiki_scope (the new shape) and the recap/ack names the chosen WIKIs when scoped; on confirm → create_digest_job(... wiki_scope=...). Unit: «сводка по Health каждый день в 9» with the owner having Health-WIKI/ → draft.wiki_scope==['Health'], recap names it; «сводка по Money …» with no Money-WIKI/ → clarification, no draft; no names mentioned → wiki_scope=='all' (today's behaviour). aisw-5sd (Phase-E.b — '## Inbox hint' router-bypass): a new pre-router block (between the reminder fast-path and the routable branch) guarded on intent ∈ _ROUTABLE_INTENTS ∧ router ∧ hint_catalog_resolver ∧ librarian ∧ output — builds the sender's hint catalog (hint_catalog_resolver), score_catalog(text, catalog); on is_confident → RouterDecision(intent=ROUTE, target_wiki=&lt;stem&gt;, raw="", parsed_ok=True), WITHOUT awaiting router.route; not confident → tg.pipeline.hint_fastpath.miss(reason=ambiguous if top_score≥MIN_SCORE else no_match) + fallthrough → heavy router runs; empty catalog → miss(reason=empty_catalog) + fallthrough, scorer not consulted; hint_catalog_resolver=None or librarian=None ⇒ block skipped, heavy router runs. aisw-2ra (silent auto-route): a confident match now routes SILENTLY (D-023 'auto') — _ingest_and_deliver(decision) runs the Stage-1b librarian.ingest immediately (no Confirm/Cancel keyboard); on status=="ok" the active-WIKI pointer is set, the reply delivered, then either ConfirmationService.request_explicit(category="route_ingest", build_route_redirect_keyboard) posts a "✅ Записал в &lt;WIKI&gt;" ack with a one-tap redirect picker of the owner's OTHER WIKIs (tapping reuses on_wikipick_callback) OR — when there is no other WIKI — ConfirmationService.auto_ack(ROUTE_SILENT_ACK_NOREDIR_RU); a non-ok ingest sends the composed reply via send_message and offers no redirect. _ingest_and_deliver is the single Stage-1b ingest+deliver tail shared with _handle_route_confirm. tg.pipeline.hint_fastpath.silent_route marker carries target_wiki/score/margin/status/run_id. Unit (test_pipeline_hint_fastpath.py, capsys for markers): confident hit routes silently with a redirect picker (target WIKI excluded), no-other-WIKI → plain auto_ack, failed ingest → error send + no redirect; ambiguous/no_match/empty/disabled all fall through to router.route; hint_fastpath.{catalog,silent_route,miss,fallthrough} markers asserted on their paths. Loader label (FR-2) deferred to aisw-05k.</evidence>
+      <evidence>Dual provider failures from classifier or WIKI execution yield exactly one LLM_PROVIDERS_UNAVAILABLE_RU message and no automatic retry. Existing classifier, router, confirm, chat-log, active-WIKI, digest, and integration paths remain covered by their listed suites.</evidence>
     </V-M-TG-PIPELINE-CLASSIFIER>
 
     <V-M-TG-PIPELINE-STREAMING MODULE="M-TG-PIPELINE-STREAMING">

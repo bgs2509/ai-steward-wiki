@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<DevelopmentPlan VERSION="0.0.14">
+<DevelopmentPlan VERSION="0.0.15">
   <ArchitectureNotes>
     <objective>Multi-user Telegram → Claude Code CLI WIKI assistant (Karpathy LLM Wiki method). MVP delivers: foundation (settings/logging/three-DB SQLite), auth + onboarding + admin, scheduler core, Stage-0 Haiku classifier, Stage-1 Sonnet wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer + voice STT + photo ingest, ingest pipeline (classifier + streaming), runtime wiring, integration E2E.</objective>
     <non-goal>No i18n catalog (ru-only, D-032); off-site backup deferred; web UI / non-Telegram channels out of scope.</non-goal>
@@ -504,8 +504,8 @@
     </Phase-G.4>
     <Phase-G.5 name="Runtime wiring, observability, and deployment" status="pending" bd_id="aisw-8gw">
       <goal>Wire one shared circuit and make readiness, recovery, failure, and deployment verifiable.</goal>
-      <step-1 module="M-RUNTIME-WIRING" status="pending" verification="V-M-RUNTIME-WIRING">Construct and inject one circuit and one Codex adapter; keep Claude startup independent.</step-1>
-      <step-2 module="M-LLM-FAILOVER" status="pending" verification="V-M-LLM-FAILOVER">Complete structured logs and metrics without sensitive fields.</step-2>
+      <step-1 module="M-RUNTIME-WIRING" status="done" verification="V-M-RUNTIME-WIRING">Construct and inject one circuit and one Codex adapter; keep Claude startup independent.</step-1>
+      <step-2 module="M-LLM-FAILOVER" status="done" verification="V-M-LLM-FAILOVER">Complete structured logs and metrics without sensitive fields.</step-2>
       <step-3 module="M-LLM-CODEX" status="pending" verification="V-M-LLM-CODEX">Update deployment and operations runbooks, then execute operator subscription smoke tests.</step-3>
       <step-4 module="M-RUNTIME-WIRING" status="pending" verification="V-M-RUNTIME-WIRING">Run full regression, lint, GRACE review, and completion evidence.</step-4>
     </Phase-G.5>
