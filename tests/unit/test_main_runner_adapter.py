@@ -1,5 +1,5 @@
 # FILE: tests/unit/test_main_runner_adapter.py
-# VERSION: 0.1.0
+# VERSION: 0.2.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Unit tests for _WikiRunnerAdapter adaptive scoping (aisw-o6m) —
 #            wiki_query scoped/cross/degraded paths, web_task isolation, and
@@ -13,7 +13,10 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - aisw-o6m: initial adapter-scoping tests (ADR-034).
+#   LAST_CHANGE: v0.2.0 - aisw-xi8 (Phase-C.1): migrated to (Intent.WIKI,
+#                action="query") / Intent.WEB per DEC-14; all 5 dispatch-shape
+#                assertions unchanged otherwise.
+#   PREVIOUS:    v0.1.0 - aisw-o6m: initial adapter-scoping tests (ADR-034).
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -118,7 +121,8 @@ async def test_confident_query_runs_scoped_to_wiki(env: dict[str, Any]) -> None:
         text="еда и ккал за сегодня",
         owner_telegram_id=_TID,
         correlation_id="c1",
-        intent=Intent.WIKI_QUERY,
+        intent=Intent.WIKI,
+        action="query",
     )
     captured = env["captured"]
     assert captured["wiki_path"] == env["wikis"]["Medical-WIKI"]
@@ -133,7 +137,8 @@ async def test_ambiguous_query_runs_cross_with_layouts(env: dict[str, Any]) -> N
         text="привет что там у меня",
         owner_telegram_id=_TID,
         correlation_id="c2",
-        intent=Intent.WIKI_QUERY,
+        intent=Intent.WIKI,
+        action="query",
     )
     captured = env["captured"]
     assert captured["wiki_path"] == env["user_root"]
@@ -154,7 +159,8 @@ async def test_resolver_error_degrades_to_cross(env: dict[str, Any]) -> None:
         text="еда и ккал за сегодня",
         owner_telegram_id=_TID,
         correlation_id="c3",
-        intent=Intent.WIKI_QUERY,
+        intent=Intent.WIKI,
+        action="query",
     )
     captured = env["captured"]
     assert captured["wiki_path"] == env["user_root"]
@@ -162,12 +168,12 @@ async def test_resolver_error_degrades_to_cross(env: dict[str, Any]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_web_task_never_touches_scope(env: dict[str, Any]) -> None:
+async def test_web_never_touches_scope(env: dict[str, Any]) -> None:
     await env["adapter"].run(
         text="еда и ккал за сегодня — найди в интернете",
         owner_telegram_id=_TID,
         correlation_id="c4",
-        intent=Intent.WEB_TASK,
+        intent=Intent.WEB,
     )
     captured = env["captured"]
     assert env["resolver_calls"] == []
@@ -191,7 +197,8 @@ async def test_unwired_resolvers_keep_legacy_behaviour(env: dict[str, Any]) -> N
         text="еда и ккал за сегодня",
         owner_telegram_id=_TID,
         correlation_id="c5",
-        intent=Intent.WIKI_QUERY,
+        intent=Intent.WIKI,
+        action="query",
     )
     captured = env["captured"]
     assert captured["wiki_path"] == env["user_root"]
