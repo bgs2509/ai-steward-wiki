@@ -1,10 +1,11 @@
 # FILE: src/ai_steward_wiki/llm/failover.py
-# VERSION: 0.1.0
+# VERSION: 0.2.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Select Claude, Codex, or one Claude probe and permit fallback only for typed limits and proven-safe replay.
 #   SCOPE: ProviderState; ProviderLimitError; AttemptEvidence; process-local circuit;
 #          single-flight probe; generic typed execution policy; structured transition logs.
-#   DEPENDS: asyncio, dataclasses, datetime, enum, typing
+#   DEPENDS: asyncio, dataclasses, datetime, enum, typing,
+#            ai_steward_wiki.logging_events
 #   LINKS: M-LLM-FAILOVER, M-LLM-CODEX, ADR-035, aisw-8gw, FR-1, FR-3, FR-7, FR-8, FR-9, FR-10
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
@@ -23,7 +24,9 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - aisw-8gw: implement process-local circuit, typed limits,
+#   LAST_CHANGE: v0.2.0 - aisw-8gw: use the stable LLM event catalog and expose
+#                an optional sanitized model field for runtime telemetry.
+#   PREVIOUS:    v0.1.0 - aisw-8gw: implement process-local circuit, typed limits,
 #                replay guard, single-flight probe, events, and outcome counters.
 #   PREVIOUS:    v0.0.0 - aisw-8gw: contract-only planning stub.
 # END_CHANGE_SUMMARY
@@ -37,6 +40,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TypeVar
+
+from ai_steward_wiki.logging_events import (
+    LLM_CIRCUIT_CHANGED,
+    LLM_FAILOVER_TRIGGERED,
+    LLM_PROVIDER_FAILED,
+    LLM_PROVIDER_RECOVERED,
+    LLM_PROVIDER_SELECTED,
+    LLM_REPLAY_BLOCKED,
+)
 
 __all__ = [
     "AttemptEvidence",
@@ -112,6 +124,7 @@ class FailoverEvent:
     run_kind: str
     correlation_id: str
     outcome: str
+    model: str | None = None
     previous_state: str | None = None
     next_state: str | None = None
     reason: str | None = None
@@ -199,7 +212,7 @@ class FailoverPolicy:
             await self._move_to_codex(error, run_kind, correlation_id)
             self._emit(
                 FailoverEvent(
-                    event="llm.failover.triggered",
+                    event=LLM_FAILOVER_TRIGGERED,
                     provider="claude",
                     run_kind=run_kind,
                     correlation_id=correlation_id,
@@ -214,7 +227,7 @@ class FailoverPolicy:
                 self._increment("blocked_replay")
                 self._emit(
                     FailoverEvent(
-                        event="llm.replay.blocked",
+                        event=LLM_REPLAY_BLOCKED,
                         provider="claude",
                         run_kind=run_kind,
                         correlation_id=correlation_id,
@@ -252,7 +265,7 @@ class FailoverPolicy:
             self._emit_transition(*transition, run_kind, correlation_id, "probe_window")
         self._emit(
             FailoverEvent(
-                event="llm.provider.selected",
+                event=LLM_PROVIDER_SELECTED,
                 provider=selection.provider.value,
                 run_kind=run_kind,
                 correlation_id=correlation_id,
@@ -303,7 +316,7 @@ class FailoverPolicy:
         )
         self._emit(
             FailoverEvent(
-                event="llm.provider.recovered",
+                event=LLM_PROVIDER_RECOVERED,
                 provider="claude",
                 run_kind=run_kind,
                 correlation_id=correlation_id,
@@ -324,7 +337,7 @@ class FailoverPolicy:
             self._increment("both_provider_failure")
             self._emit(
                 FailoverEvent(
-                    event="llm.provider.failed",
+                    event=LLM_PROVIDER_FAILED,
                     provider="codex",
                     run_kind=run_kind,
                     correlation_id=correlation_id,
@@ -367,7 +380,7 @@ class FailoverPolicy:
     ) -> None:
         self._emit(
             FailoverEvent(
-                event="llm.circuit.changed",
+                event=LLM_CIRCUIT_CHANGED,
                 provider=next_state.value,
                 run_kind=run_kind,
                 correlation_id=correlation_id,

@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.6.1
+# VERSION: 0.7.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -34,7 +34,10 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.6.1 - aisw-8gw: contract-only plan for one shared provider circuit.
+#   LAST_CHANGE: v0.7.0 - aisw-8gw: build one process-local provider policy,
+#                degrade to Claude when Codex readiness fails, and inject the
+#                shared adapter into classifier, WIKI, schema, digest, and cron paths.
+#   PREVIOUS:    v0.6.1 - aisw-8gw: contract-only plan for one shared provider circuit.
 #   PREVIOUS:    v0.6.0 - aisw-o6m (ADR-034): adaptive scoping for wiki_query in
 #                _WikiRunnerAdapter — confident hint-catalog match runs inside the
 #                matched WIKI (wiki_path swap, CLAUDE.md via assemble_prompt);
@@ -143,6 +146,7 @@ import contextlib
 import os
 import signal
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -166,6 +170,7 @@ from ai_steward_wiki.classifier.backend import (
     AnthropicApiBackend,
     ClassifierBackend,
     ClaudeCliBackend,
+    FailoverClassifierBackend,
 )
 from ai_steward_wiki.classifier.recurrence import RecurrenceParseResult, parse_recurrence
 from ai_steward_wiki.classifier.schema import ClassifierResult, Intent, TimeParseResult
@@ -190,6 +195,9 @@ from ai_steward_wiki.inbox.router import (
     reconcile_decision_with_existing,
 )
 from ai_steward_wiki.inbox.staging import promote_path_to_raw
+from ai_steward_wiki.llm.codex import CodexCliAdapter
+from ai_steward_wiki.llm.failover import FailoverEvent, FailoverPolicy
+from ai_steward_wiki.logging_events import LLM_PROVIDER_FAILED
 from ai_steward_wiki.logging_setup import configure_logging
 from ai_steward_wiki.ops.observability import (
     enable_faulthandler,
@@ -247,6 +255,7 @@ from ai_steward_wiki.wiki.runner import (
 )
 from ai_steward_wiki.wiki.schema_gen import (
     ClaudeCliSchemaGenerator,
+    FailoverSchemaGenerator,
     SchemaGenerator,
     apply_generated_schema,
 )
@@ -302,6 +311,104 @@ def _load_users_config(path: Path | None) -> UsersConfig:
         raise
     logger.info("runtime.allowlist.loaded", users_count=len(cfg.users), path_present=True)
     return cfg
+
+
+@dataclass(frozen=True, slots=True)
+class LlmRuntime:
+    """Process-local provider objects shared by every subscription-backed path."""
+
+    policy: FailoverPolicy
+    codex: CodexCliAdapter | None
+
+
+def _log_failover_event(event: FailoverEvent) -> None:
+    """Emit only the fixed, sanitized provider telemetry schema."""
+    fields = {
+        "provider": event.provider,
+        "model": event.model,
+        "run_kind": event.run_kind,
+        "correlation_id": event.correlation_id,
+        "outcome": event.outcome,
+        "latency_ms": event.latency_ms,
+        "previous_state": event.previous_state,
+        "next_state": event.next_state,
+        "reason": event.reason,
+        "evidence": event.evidence,
+    }
+    logger.info(event.event, **{key: value for key, value in fields.items() if value is not None})
+
+
+def _make_codex_adapter(settings: Settings) -> CodexCliAdapter:
+    """Construct the subscription adapter without reading or accepting API keys."""
+    return CodexCliAdapter(
+        binary=settings.codex_cli_binary,
+        expected_version=settings.codex_cli_version,
+        codex_home=settings.codex_home,
+        neutral_cwd=settings.workspace_root / "runtime" / "codex",
+        light_model=settings.codex_light_model,
+        light_reasoning=settings.codex_light_reasoning,
+        complex_model=settings.codex_complex_model,
+        complex_reasoning=settings.codex_complex_reasoning,
+    )
+
+
+async def _build_llm_runtime(settings: Settings) -> LlmRuntime:
+    """Build one policy and enable Codex only after a non-model readiness check."""
+    policy = FailoverPolicy(
+        cooldown_s=settings.llm_failover_cooldown_s,
+        on_event=_log_failover_event,
+    )
+    if settings.llm_codex_enabled is not True:
+        return LlmRuntime(policy=policy, codex=None)
+
+    try:
+        neutral_cwd = settings.workspace_root / "runtime" / "codex"
+        neutral_cwd.mkdir(parents=True, exist_ok=True, mode=0o700)
+        adapter = _make_codex_adapter(settings)
+        readiness = await adapter.check_readiness()
+    except Exception as exc:
+        logger.warning(
+            LLM_PROVIDER_FAILED,
+            provider="codex",
+            run_kind="readiness",
+            correlation_id="startup",
+            outcome="fallback_disabled",
+            reason=type(exc).__name__,
+        )
+        return LlmRuntime(policy=policy, codex=None)
+    if not readiness.ready:
+        logger.warning(
+            LLM_PROVIDER_FAILED,
+            provider="codex",
+            run_kind="readiness",
+            correlation_id="startup",
+            outcome="fallback_disabled",
+            reason=readiness.reason,
+        )
+        return LlmRuntime(policy=policy, codex=None)
+    return LlmRuntime(policy=policy, codex=adapter)
+
+
+def _wiki_run_config(
+    *,
+    settings: Settings,
+    llm_runtime: LlmRuntime,
+    allowed_tools: list[str] | None = None,
+    web_search: bool = False,
+    timeout_s: float | None = None,
+) -> _RunConfig:
+    """Build one WIKI config with fallback enabled only after readiness succeeds."""
+    codex = llm_runtime.codex
+    return _RunConfig(
+        model=settings.wiki_runner_model,
+        timeout_s=settings.wiki_runner_timeout_s if timeout_s is None else timeout_s,
+        term_grace_s=settings.wiki_runner_term_grace_s,
+        claude_config_dir=default_claude_config_dir(),
+        allowed_tools=allowed_tools,
+        web_search=web_search,
+        failover_policy=llm_runtime.policy if codex is not None else None,
+        codex_adapter=codex,
+    )
 
 
 # START_BLOCK_TEXT_PIPELINE_ADAPTERS
@@ -1184,7 +1291,10 @@ class _LibrarianAdapter:
 # END_BLOCK_INBOX_LIBRARIAN_ADAPTER
 
 
-def _build_classifier_backend(settings: Settings) -> ClassifierBackend:
+def _build_classifier_backend(
+    settings: Settings,
+    llm_runtime: LlmRuntime | None = None,
+) -> ClassifierBackend:
     """Construct the configured Stage-0 backend; raise on misconfiguration."""
     if settings.stage0_backend == "anthropic_api":
         if settings.stage0_api_credential_path is None:
@@ -1192,9 +1302,39 @@ def _build_classifier_backend(settings: Settings) -> ClassifierBackend:
         return AnthropicApiBackend(
             credential_path=settings.stage0_api_credential_path,
         )
-    return ClaudeCliBackend(
+    primary = ClaudeCliBackend(
         claude_config_dir=default_claude_config_dir(),
         timeout_s=settings.classifier_stage0_timeout_s,
+    )
+    if llm_runtime is None or llm_runtime.codex is None:
+        return primary
+    return FailoverClassifierBackend(
+        primary=primary,
+        codex=llm_runtime.codex,
+        policy=llm_runtime.policy,
+        timeout_s=settings.classifier_stage0_timeout_s,
+    )
+
+
+def _build_schema_generator(
+    settings: Settings,
+    llm_runtime: LlmRuntime,
+) -> SchemaGenerator:
+    """Build Claude schema generation with optional shared Codex fallback."""
+    prompt_path = settings.prompts_dir / "schema-gen.md"
+    primary = ClaudeCliSchemaGenerator(
+        claude_config_dir=default_claude_config_dir(),
+        prompt_path=prompt_path,
+        model=settings.wiki_runner_model,
+    )
+    if llm_runtime.codex is None:
+        return primary
+    return FailoverSchemaGenerator(
+        primary=primary,
+        codex=llm_runtime.codex,
+        policy=llm_runtime.policy,
+        prompt_path=prompt_path,
+        timeout_s=primary.timeout_s,
     )
 
 
@@ -1272,6 +1412,7 @@ async def _amain() -> None:
         )
 
     _require_claude_config_dir()
+    llm_runtime = await _build_llm_runtime(settings)
 
     db_urls = [settings.jobs_db_url, settings.audit_db_url, settings.sessions_db_url]
     _ensure_data_dirs(db_urls)
@@ -1328,7 +1469,7 @@ async def _amain() -> None:
     set_callback_context(CallbackContext(scheduler=scheduler, jobs_session_maker=jobs_maker))
 
     # START_BLOCK_TEXT_PIPELINE_WIRING (chunk 20 M-TG-PIPELINE-CLASSIFIER)
-    classifier_backend = _build_classifier_backend(settings)
+    classifier_backend = _build_classifier_backend(settings, llm_runtime)
     classifier_adapter = _ClassifierAdapter(
         backend=classifier_backend,
         prompt_path=settings.prompts_dir / "classifier.md",
@@ -1367,22 +1508,18 @@ async def _amain() -> None:
         runtime_dir=runtime_dir,
         acquirer=WikiLockAdapter(lock_manager),
         spawner=AsyncioSpawner(),
-        run_config=_RunConfig(
-            model=settings.wiki_runner_model,
-            timeout_s=settings.wiki_runner_timeout_s,
-            term_grace_s=settings.wiki_runner_term_grace_s,
-            claude_config_dir=default_claude_config_dir(),
+        run_config=_wiki_run_config(
+            settings=settings,
+            llm_runtime=llm_runtime,
             allowed_tools=WRITE_TOOLS,  # aisw-t6w: ingest/wiki edits must write under dontAsk
         ),
         # aisw-dqz (Path B, HUMAN-approved 2026-06-26): Intent.WEB_TASK runs answer from the
         # live web with WebSearch ONLY (read-only, no WRITE_TOOLS), no --add-dir on the WIKI
         # tree + neutral cwd (web_search=True). WebFetch stays denied (default disallowed_tools).
         # This is the ONLY config that enables WebSearch — never global (M-5).
-        web_run_config=_RunConfig(
-            model=settings.wiki_runner_model,
-            timeout_s=settings.wiki_runner_timeout_s,
-            term_grace_s=settings.wiki_runner_term_grace_s,
-            claude_config_dir=default_claude_config_dir(),
+        web_run_config=_wiki_run_config(
+            settings=settings,
+            llm_runtime=llm_runtime,
             allowed_tools=WEB_SEARCH_TOOLS,
             web_search=True,
         ),
@@ -1398,11 +1535,10 @@ async def _amain() -> None:
         runtime_dir=runtime_dir,
         acquirer=WikiLockAdapter(lock_manager),
         spawner=AsyncioSpawner(),
-        run_config=_RunConfig(
-            model=settings.wiki_runner_model,
+        run_config=_wiki_run_config(
+            settings=settings,
+            llm_runtime=llm_runtime,
             timeout_s=600.0,
-            term_grace_s=settings.wiki_runner_term_grace_s,
-            claude_config_dir=default_claude_config_dir(),
             allowed_tools=WRITE_TOOLS,  # aisw-t6w: digest expand writes into WIKIs
         ),
     )
@@ -1430,6 +1566,8 @@ async def _amain() -> None:
         prompt_path=settings.cron_user_prompt_path,
         jobs_session_maker=jobs_maker,
         timeout_s=settings.cron_user_timeout_s,
+        failover_policy=llm_runtime.policy if llm_runtime.codex is not None else None,
+        codex_adapter=llm_runtime.codex,
     )
     router_adapter = _RouterAdapter(
         wiki_root=settings.wiki_root,
@@ -1439,13 +1577,11 @@ async def _amain() -> None:
         runtime_dir=runtime_dir,
         acquirer=WikiLockAdapter(lock_manager),
         spawner=AsyncioSpawner(),
-        run_config=_RunConfig(
+        run_config=_wiki_run_config(
+            settings=settings,
+            llm_runtime=llm_runtime,
             # aisw-t6w: router is read-only (classify/route only) — no allowed_tools,
             # so dontAsk keeps Write/Edit denied here by design.
-            model=settings.wiki_runner_model,
-            timeout_s=settings.wiki_runner_timeout_s,
-            term_grace_s=settings.wiki_runner_term_grace_s,
-            claude_config_dir=default_claude_config_dir(),
         ),
     )
     librarian_adapter = _LibrarianAdapter(
@@ -1460,18 +1596,12 @@ async def _amain() -> None:
         runtime_dir=runtime_dir,
         acquirer=WikiLockAdapter(lock_manager),
         spawner=AsyncioSpawner(),
-        run_config=_RunConfig(
-            model=settings.wiki_runner_model,
-            timeout_s=settings.wiki_runner_timeout_s,
-            term_grace_s=settings.wiki_runner_term_grace_s,
-            claude_config_dir=default_claude_config_dir(),
+        run_config=_wiki_run_config(
+            settings=settings,
+            llm_runtime=llm_runtime,
             allowed_tools=WRITE_TOOLS,  # aisw-t6w: librarian creates/edits WIKI files
         ),
-        schema_generator=ClaudeCliSchemaGenerator(  # aisw-b50: tailored schema for unknown domains
-            claude_config_dir=default_claude_config_dir(),
-            prompt_path=settings.prompts_dir / "schema-gen.md",
-            model=settings.wiki_runner_model,
-        ),
+        schema_generator=_build_schema_generator(settings, llm_runtime),
         ingest_timeout_s=settings.wiki_ingest_timeout_s,  # aisw-zpn: larger budget for big docs
     )
     runs_dir = settings.workspace_root / "runs"

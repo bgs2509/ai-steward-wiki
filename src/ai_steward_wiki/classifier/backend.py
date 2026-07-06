@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/classifier/backend.py
-# VERSION: 0.1.0
+# VERSION: 0.1.1
 # START_MODULE_CONTRACT
 #   PURPOSE: Backend abstraction for Stage-0 classifier — Claude CLI default + optional API + Fake.
 #   SCOPE: ClassifierBackend Protocol; ClaudeCliBackend (subprocess); AnthropicApiBackend stub;
@@ -25,7 +25,9 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - aisw-8gw: raise typed structured Claude limits and
+#   LAST_CHANGE: v0.1.1 - aisw-8gw: expose failover backend name and model as
+#                concrete Protocol-compatible fields during runtime wiring.
+#   PREVIOUS:    v0.1.0 - aisw-8gw: raise typed structured Claude limits and
 #                add gpt-5.4-mini structured fallback behind ClassifierBackend.
 #   PREVIOUS:    v0.0.8 - aisw-8gw: contract-only plan for typed limit and Codex fallback.
 #   PREVIOUS:    v0.0.7 - aisw-nrt (chunk 2): emit claude_cli.spawn/exit/error in
@@ -277,14 +279,12 @@ class FailoverClassifierBackend:
     codex: CodexCliAdapter
     policy: FailoverPolicy
     timeout_s: float
+    name: str = field(init=False)
+    model: str = field(init=False)
 
-    @property
-    def name(self) -> str:
-        return self.primary.name
-
-    @property
-    def model(self) -> str:
-        return self.primary.model
+    def __post_init__(self) -> None:
+        self.name = self.primary.name
+        self.model = self.primary.model
 
     async def call(
         self,

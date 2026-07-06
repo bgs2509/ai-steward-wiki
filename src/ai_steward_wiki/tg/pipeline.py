@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.14.0
+# VERSION: 0.15.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -26,6 +26,7 @@
 #            ai_steward_wiki.inbox.router (RouterDecision, RouterError, RouterIntent),
 #            ai_steward_wiki.inbox.route (route_action_to_payload, route_action_from_payload),
 #            ai_steward_wiki.inbox.staging.MediaRef,
+#            ai_steward_wiki.llm.failover.ProvidersUnavailableError,
 #            ai_steward_wiki.ops.pii.PIIRedactor,
 #            ai_steward_wiki.tg.voice.VoiceHandler (optional),
 #            ai_steward_wiki.tg.photo.PhotoIngestor (optional),
@@ -56,6 +57,7 @@
 #   ACK_DEDUP_RU - reply on L2 dedup hit
 #   ACK_CLASSIFY_ERR_RU - safe ack on classifier failure
 #   ACK_RUNNER_ERR_RU - safe ack on runner failure
+#   LLM_PROVIDERS_UNAVAILABLE_RU - recoverable reply when Claude and Codex both fail
 #   SMALLTALK_REPLY_RU - short conversational reply for intent=smalltalk (aisw-df4)
 #   MAX_DOC_BYTES - hard cap on incoming document size (25 MB)
 #   PDF_MAX_EXTRACT_CHARS - truncate point for pypdf-extracted text
@@ -106,7 +108,9 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.14.0 - aisw-df4: intent=smalltalk dispatch. A new SMALLTALK
+#   LAST_CHANGE: v0.15.0 - aisw-8gw: map dual-provider failures from every text,
+#                voice, photo, and document path to one recoverable reply.
+#   PREVIOUS:    v0.14.0 - aisw-df4: intent=smalltalk dispatch. A new SMALLTALK
 #                branch (before the reminder/digest fast-paths) replies with a short
 #                ru line (SMALLTALK_REPLY_RU) and returns — no time/recurrence
 #                parsing, no router, no generic runner. Stops casual chitchat
@@ -253,6 +257,7 @@ from ai_steward_wiki.inbox.idempotency import IdempotencyService
 from ai_steward_wiki.inbox.materialize import inbox_wiki_path
 from ai_steward_wiki.inbox.route import route_action_from_payload, route_action_to_payload
 from ai_steward_wiki.inbox.router import RouterDecision, RouterError, RouterIntent
+from ai_steward_wiki.llm.failover import ProvidersUnavailableError
 from ai_steward_wiki.logging_events import TG_PIPELINE_DISPATCH
 from ai_steward_wiki.logging_setup import traced
 from ai_steward_wiki.ops.pii import PIIRedactor
@@ -293,6 +298,7 @@ __all__ = [
     "DIGEST_RECAP_RU",
     "DIGEST_UNPARSEABLE_RU",
     "DIGEST_WIKI_UNKNOWN_RU",
+    "LLM_PROVIDERS_UNAVAILABLE_RU",
     "MAX_DOC_BYTES",
     "PDF_MAX_EXTRACT_CHARS",
     "PHOTO_CAPTION_PROMPT_RU",
@@ -348,6 +354,9 @@ ACK_DOC_RU = "Файл получен."
 ACK_DEDUP_RU = "Уже видел такое сообщение — повторно не запускаю."
 ACK_CLASSIFY_ERR_RU = "Не удалось распознать запрос, попробуйте ещё раз."  # noqa: RUF001
 ACK_RUNNER_ERR_RU = "Задача заняла слишком много времени, попробуйте позже."
+LLM_PROVIDERS_UNAVAILABLE_RU = (
+    "Claude и Codex сейчас недоступны. " "Исходное сообщение сохранено — повторите позже."
+)
 # aisw-df4: conversational chitchat (greetings, banter, "расскажи что-нибудь",
 # "ты дурак?") gets a short friendly reply — never filed, scheduled, or run
 # through a WIKI. A single canned ru line keeps the path deterministic (no LLM
@@ -1064,6 +1073,39 @@ class DefaultPipeline:
 
     # START_BLOCK_TEXT_PIPELINE
     async def _run_text_pipeline(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        update_id: int,
+        text: str,
+        source: Literal["text", "voice", "document", "photo"],
+        media_paths: list[Path] | None = None,
+        skip_l2_dedup: bool = False,
+        timeout_s: float | None = None,
+    ) -> None:
+        """Run one pipeline turn and map dual-provider failure to one safe reply."""
+        try:
+            await self._run_text_pipeline_inner(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                update_id=update_id,
+                text=text,
+                source=source,
+                media_paths=media_paths,
+                skip_l2_dedup=skip_l2_dedup,
+                timeout_s=timeout_s,
+            )
+        except ProvidersUnavailableError:
+            _log.warning(
+                "tg.pipeline.providers_unavailable",
+                correlation_id=f"tg-{update_id}-{telegram_id}",
+                telegram_id=telegram_id,
+                source=source,
+            )
+            await self._sender.send_message(chat_id, LLM_PROVIDERS_UNAVAILABLE_RU)
+
+    async def _run_text_pipeline_inner(
         self,
         *,
         telegram_id: int,

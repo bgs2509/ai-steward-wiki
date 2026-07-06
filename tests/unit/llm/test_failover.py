@@ -61,6 +61,19 @@ def test_provider_state_uses_approved_names() -> None:
     assert [state.value for state in ProviderState] == ["claude", "codex", "probe"]
 
 
+def test_failover_event_has_sanitized_model_field() -> None:
+    event = FailoverEvent(
+        event="llm.provider.selected",
+        provider="claude",
+        model=None,
+        run_kind="structured",
+        correlation_id="corr-model",
+        outcome="selected",
+    )
+
+    assert event.model is None
+
+
 def test_only_read_only_evidence_is_replay_safe() -> None:
     assert AttemptEvidence(EvidenceKind.READ_ONLY).replay_safe is True
     assert AttemptEvidence(EvidenceKind.MUTATION).replay_safe is False

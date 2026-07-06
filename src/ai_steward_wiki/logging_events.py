@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/logging_events.py
-# VERSION: 0.0.3
+# VERSION: 0.1.0
 # START_MODULE_CONTRACT
 #   PURPOSE: SSoT catalog of stable snake_case dotted event-key constants for structured logging.
 #   SCOPE: module-level Final[str] constants only. No functions, no classes.
@@ -16,13 +16,15 @@
 #   SCHEDULER_JOB_* - APScheduler lifecycle events (chunk 2)
 #   STORAGE_SLOW_QUERY - SQLAlchemy slow-query log key (chunk 2)
 #   CLAUDE_CLI_SPAWN / CLAUDE_CLI_EXIT / CLAUDE_CLI_ERROR - subprocess invocation anchors (chunk 2)
+#   LLM_* - provider selection, failover, circuit, failure, recovery, and replay anchors
 #   RUNTIME_LOOP_HEARTBEAT / RUNTIME_LOOP_LAG / RUNTIME_DIAG_TASK_DUMP - event-loop hang diagnostics (aisw-xbc)
 #   TG_UPDATE_HANDLED / TG_UPDATE_HANDLER_SLOW - handler lifecycle exit + slow warn (aisw-xbc)
 #   IO_ANCHOR_* - threshold-gated boundary anchors on external I/O (aisw-xbc)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - aisw-xbc: event-loop hang diagnostics (heartbeat/lag/task_dump), handler lifecycle, I/O anchors
+#   LAST_CHANGE: v0.1.0 - aisw-8gw: stable provider failover event catalog.
+#   PREVIOUS:    v0.0.3 - aisw-xbc: event-loop hang diagnostics (heartbeat/lag/task_dump), handler lifecycle, I/O anchors
 #   PREVIOUS:    v0.0.2 - chunk 2: scheduler lifecycle, storage slow_query, claude CLI spawn/exit/error
 # END_CHANGE_SUMMARY
 from __future__ import annotations
@@ -59,6 +61,14 @@ STORAGE_SLOW_QUERY: Final[str] = "storage.slow_query"
 CLAUDE_CLI_SPAWN: Final[str] = "claude_cli.spawn"
 CLAUDE_CLI_EXIT: Final[str] = "claude_cli.exit"
 CLAUDE_CLI_ERROR: Final[str] = "claude_cli.error"
+
+# Subscription-provider routing and recovery anchors (aisw-8gw; M-LLM-FAILOVER).
+LLM_PROVIDER_SELECTED: Final[str] = "llm.provider.selected"
+LLM_FAILOVER_TRIGGERED: Final[str] = "llm.failover.triggered"
+LLM_CIRCUIT_CHANGED: Final[str] = "llm.circuit.changed"
+LLM_PROVIDER_FAILED: Final[str] = "llm.provider.failed"
+LLM_PROVIDER_RECOVERED: Final[str] = "llm.provider.recovered"
+LLM_REPLAY_BLOCKED: Final[str] = "llm.replay.blocked"
 
 # Event-loop hang diagnostics (aisw-xbc; M-OPS-OBSERVABILITY)
 # Heartbeat is emitted every tick (its ABSENCE marks the freeze instant); lag/dump

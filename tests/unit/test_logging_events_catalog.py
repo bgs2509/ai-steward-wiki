@@ -27,3 +27,12 @@ def test_no_duplicate_values() -> None:
 def test_only_string_constants_exported() -> None:
     for name, value in _public_constants().items():
         assert isinstance(value, str), name
+
+
+def test_llm_event_catalog_is_stable() -> None:
+    assert logging_events.LLM_PROVIDER_SELECTED == "llm.provider.selected"
+    assert logging_events.LLM_FAILOVER_TRIGGERED == "llm.failover.triggered"
+    assert logging_events.LLM_CIRCUIT_CHANGED == "llm.circuit.changed"
+    assert logging_events.LLM_PROVIDER_FAILED == "llm.provider.failed"
+    assert logging_events.LLM_PROVIDER_RECOVERED == "llm.provider.recovered"
+    assert logging_events.LLM_REPLAY_BLOCKED == "llm.replay.blocked"
