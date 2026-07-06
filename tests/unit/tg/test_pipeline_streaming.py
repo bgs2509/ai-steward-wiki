@@ -26,7 +26,7 @@ from tests.unit.tg.conftest import FakeSender
 
 def _cls_result() -> ClassifierResult:
     return ClassifierResult(
-        intent=Intent.WIKI_QUERY,
+        intent=Intent.WIKI,
         confidence=0.9,
         distilled_payload={"q": "x"},
         backend="fake",
@@ -107,6 +107,7 @@ def _runner_factory(
         on_event=None,
         media_paths=None,
         timeout_s=None,
+        action=None,
     ):
         if emit_events:
             for ev in emit_events:
