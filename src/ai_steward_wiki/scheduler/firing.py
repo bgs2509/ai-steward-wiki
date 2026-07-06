@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/scheduler/firing.py
-# VERSION: 0.6.1
+# VERSION: 0.7.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Cron/date job firing bridge — one-shot reminder (DateTrigger → plain
 #            TG message, no Claude; aisw-kcz, Phase-D.a) and recurring digest
@@ -16,7 +16,7 @@
 #          (SQLAlchemyJobStore-safe).
 #   DEPENDS: apscheduler, sqlalchemy(.ext.asyncio), structlog, pydantic,
 #            ai_steward_wiki.storage.jobs.models.Job,
-#            ai_steward_wiki.storage.jobs.payloads (ReminderPayload, DigestPayload, parse_job_payload),
+#            ai_steward_wiki.storage.jobs.payloads (ReminderPayload, DigestPayload, RecurringReminderPayload, parse_job_payload),
 #            ai_steward_wiki.storage.sessions.digest_prefs (get_digest_prefs, set_digest_section, DigestPrefs, SECTION_DISPLAY_NAME),
 #            ai_steward_wiki.classifier.recurrence.Recurrence,
 #            ai_steward_wiki.scheduler.queue.Lane, ai_steward_wiki.scheduler.dlq.move_to_dlq,
@@ -43,10 +43,19 @@
 #   get_owner_digest_prefs - the owner's digest section toggles (DigestPrefs(True,True) if unset; for /digest_sections — aisw-pv8)
 #   set_owner_digest_section - flip one digest section for the owner; returns the new DigestPrefs (for the digestsec: callback — aisw-pv8)
 #   DigestNotInitialisedError - raised by fire_digest_job / the slash-command accessors when set_digest_context was never called
+#   set_recurring_scheduler - install the AsyncIOScheduler handle used by fire_recurring_job's 3rd-strike remove_job
+#   create_recurring_job - INSERT+commit a jobs.Job(kind='recurring_reminder') then add a CronTrigger; returns job_id
+#   fire_recurring_job - APScheduler callback (picklable int): send payload.message VERBATIM (no Claude), stays 'scheduled' on success, 3-strike auto-disable + move_to_dlq + remove_job
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.6.1 - aisw-z0s: fire_job suppresses a still-pending reminder
+#   LAST_CHANGE: v0.7.0 - aisw-xi8 (Phase-B, DEC-6/DEC-7): NEW create_recurring_job
+#                / fire_recurring_job / set_recurring_scheduler — fixed-text cron
+#                reminder bridge. fire_recurring_job sends payload.message VERBATIM,
+#                NO Claude call (NFR-2), NO terminal status transition on success
+#                (job stays 'scheduled'); 3 consecutive send failures -> disable +
+#                move_to_dlq + remove_job (mirrors fire_digest_job's 3-strike shape).
+#   PREVIOUS:    v0.6.1 - aisw-z0s: fire_job suppresses a still-pending reminder
 #                whose card the user already resolved (Job.user_state in
 #                {'done','skipped'}). The card handler mutates only user_state via
 #                CAS and never status, so without this guard a not-yet-fired
@@ -93,7 +102,7 @@ from __future__ import annotations
 
 import contextlib
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -113,6 +122,7 @@ from ai_steward_wiki.scheduler.queue import Lane
 from ai_steward_wiki.storage.jobs.models import Job
 from ai_steward_wiki.storage.jobs.payloads import (
     DigestPayload,
+    RecurringReminderPayload,
     ReminderPayload,
     parse_job_payload,
 )
@@ -135,15 +145,18 @@ __all__ = [
     "DigestRunner",
     "FiringNotInitialisedError",
     "create_digest_job",
+    "create_recurring_job",
     "create_reminder_job",
     "fire_digest_job",
     "fire_job",
+    "fire_recurring_job",
     "get_owner_digest_prefs",
     "list_owner_digest_job_ids",
     "run_section_expand",
     "set_digest_context",
     "set_firing_context",
     "set_owner_digest_section",
+    "set_recurring_scheduler",
 ]
 
 _log = structlog.get_logger("scheduler.firing")
@@ -169,6 +182,21 @@ def set_firing_context(
     """Install the (bot-sender, jobs sessionmaker) registry. Call once at startup."""
     global _ctx
     _ctx = (sender, jobs_session_maker)
+
+
+# Dedicated scheduler handle for the 3rd-strike remove_job call in
+# fire_recurring_job (DEC-7). fire_job's reminder path never removes a trigger
+# (once-semantics, no strike counter), so _ctx does not carry a scheduler; a
+# second small registry is simpler than widening _ctx's tuple shape for every
+# caller (KISS).
+_recurring_scheduler: AsyncIOScheduler | None = None
+
+
+def set_recurring_scheduler(scheduler: AsyncIOScheduler) -> None:
+    """Install the AsyncIOScheduler handle used by fire_recurring_job's 3rd-strike
+    remove_job. Call once at startup, alongside set_firing_context."""
+    global _recurring_scheduler
+    _recurring_scheduler = scheduler
 
 
 def _now_naive_utc() -> datetime:
@@ -303,6 +331,164 @@ async def fire_job(job_id: int) -> None:
 
 
 # END_BLOCK_FIRE_JOB
+
+
+# ---------------------------------------------------------------------------
+# Recurring fixed-text reminder bridge (aisw-xi8, Phase-B, DEC-6/DEC-7)
+# ---------------------------------------------------------------------------
+
+_RECURRING_MAX_STRIKES = 3
+
+
+# START_BLOCK_CREATE_RECURRING_JOB
+async def create_recurring_job(
+    session: AsyncSession,
+    scheduler: AsyncIOScheduler,
+    *,
+    owner_telegram_id: int,
+    chat_id: int,
+    message: str,
+    recurrence: Recurrence,
+    category: Literal["medication", "event", "generic"] = "generic",
+    correlation_id: str = "",
+) -> int:
+    """Persist a recurring_reminder Job row (committed) then register its CronTrigger.
+
+    Same commit-before-add_job ordering invariant as create_reminder_job/
+    create_digest_job. replace_existing=True makes re-registration on boot
+    idempotent.
+    """
+    payload = RecurringReminderPayload(
+        message=message, recurrence=recurrence, category=category
+    ).model_dump(mode="json")
+    job = Job(
+        owner_telegram_id=owner_telegram_id,
+        chat_id=chat_id,
+        kind="recurring_reminder",
+        status="scheduled",
+        priority=int(Lane.USER_WRITE),
+        scheduled_at_utc=None,
+        payload=payload,
+        created_at_utc=_now_naive_utc(),
+    )
+    session.add(job)
+    await session.flush()
+    job_id = job.id
+    await session.commit()
+
+    scheduler.add_job(
+        fire_recurring_job,
+        trigger=CronTrigger(timezone=recurrence.tz, **recurrence.to_cron()),
+        args=[job_id],
+        id=f"recurring:{job_id}",
+        replace_existing=True,
+    )
+    _log.info(
+        "scheduler.recurring.scheduled",
+        correlation_id=correlation_id,
+        job_id=job_id,
+        owner_telegram_id=owner_telegram_id,
+        recurrence=recurrence.model_dump(mode="json"),
+        category=category,
+    )
+    return job_id
+
+
+# END_BLOCK_CREATE_RECURRING_JOB
+
+
+async def _recurring_strike(session: AsyncSession, job: Job, *, exc: BaseException) -> None:
+    """Record a recurring-delivery failure: bump retry_count; at the strike
+    limit disable the job (remove its trigger + DLQ row). Never raises.
+    Mirrors _digest_strike's shape (DEC-7)."""
+    job.retry_count = (job.retry_count or 0) + 1
+    job.last_error = f"{type(exc).__name__}: {exc}"
+    disabled = job.retry_count >= _RECURRING_MAX_STRIKES
+    if disabled:
+        job.status = "disabled"
+        job.finished_at_utc = _now_naive_utc()
+    await session.commit()
+    _log.warning(
+        "scheduler.recurring.deliver_failed",
+        job_id=job.id,
+        error_class=type(exc).__name__,
+        retry_count=job.retry_count,
+    )
+    if disabled:
+        if _recurring_scheduler is not None:
+            with contextlib.suppress(JobLookupError):
+                _recurring_scheduler.remove_job(f"recurring:{job.id}")
+        await move_to_dlq(
+            session,
+            job_id=job.id,
+            reason="auto_disable",
+            error_class=type(exc).__name__,
+            last_error=job.last_error,
+        )
+        await session.commit()
+        _log.warning(
+            "scheduler.recurring.auto_disabled",
+            job_id=job.id,
+            error_class=type(exc).__name__,
+            retry_count=job.retry_count,
+        )
+
+
+# START_BLOCK_FIRE_RECURRING_JOB
+async def fire_recurring_job(job_id: int) -> None:
+    """APScheduler callback for a fixed-text recurring reminder. Picklable int arg.
+
+    Sends payload.message VERBATIM via plain TG send — NO Claude/LLM call at
+    fire time (NFR-2). A successful send does NOT terminate the job (unlike
+    fire_job's once-semantics) — it stays 'scheduled' and fires again next
+    cycle. 3 CONSECUTIVE send failures disable it (mirrors fire_digest_job's
+    FailureCounter shape). fire_job is deliberately NOT reused/generalised for
+    this path (DEC-7 — three similar ~15-line functions over one parametrised
+    generalisation, KISS).
+    """
+    if _ctx is None:
+        raise FiringNotInitialisedError(
+            "firing context not initialised — call set_firing_context() at startup"
+        )
+    sender, maker = _ctx
+    async with maker() as session:
+        job = await session.get(Job, job_id)
+        if job is None or job.status != "scheduled":
+            _log.info(
+                "scheduler.recurring.skipped",
+                job_id=job_id,
+                status=(job.status if job is not None else "missing"),
+            )
+            return
+        try:
+            payload = parse_job_payload(job.payload)
+        except ValidationError:
+            job.status = "disabled"
+            job.last_error = "bad payload"
+            await session.commit()
+            _log.warning(
+                "scheduler.recurring.deliver_failed", job_id=job_id, error_class="ValidationError"
+            )
+            return
+        if not isinstance(payload, RecurringReminderPayload):
+            job.status = "disabled"
+            await session.commit()
+            _log.warning(
+                "scheduler.recurring.deliver_failed", job_id=job_id, error_class="WrongPayloadKind"
+            )
+            return
+        _log.info("scheduler.recurring.fired", job_id=job_id, chat_id=job.chat_id)
+        try:
+            await sender.send_message(job.chat_id, payload.message)
+        except Exception as exc:
+            await _recurring_strike(session, job, exc=exc)
+            return
+        job.retry_count = 0
+        await session.commit()
+        _log.info("scheduler.recurring.delivered", job_id=job_id)
+
+
+# END_BLOCK_FIRE_RECURRING_JOB
 
 
 # ---------------------------------------------------------------------------
