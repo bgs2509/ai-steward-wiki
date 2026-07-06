@@ -90,3 +90,89 @@ systemd-run --scope --slice=aisw-bot.slice \
 - [ ] `id aisw-bot` shows membership in `aisw-claude`.
 - [ ] `getcap` — none required; capabilities granted via unit, not file caps.
 - [ ] Bot writes a startup log line tagged `[Bot][startup]` visible in `journalctl -u aisw-bot`.
+
+## 7. Codex subscription fallback
+
+The current production unit runs as `bgs` under ADR-010. Codex uses ChatGPT
+subscription authentication from a dedicated `0700` home. No API key is configured.
+
+### 7.1. Install and authenticate
+
+```bash
+sudo npm install --global @openai/codex@0.142.5
+sudo install -d -o bgs -g bgs -m 0700 /var/lib/ai-steward-wiki/codex
+sudo -u bgs env CODEX_HOME=/var/lib/ai-steward-wiki/codex codex login --device-auth
+sudo -u bgs env CODEX_HOME=/var/lib/ai-steward-wiki/codex codex login status
+codex --version
+```
+
+Expected version:
+
+```text
+codex-cli 0.142.5
+```
+
+Authentication is an operator action outside the bot process. Restart the service
+after login so startup readiness can enable fallback.
+
+### 7.2. Safe operator smoke
+
+Use only synthetic text. Run the smoke on the trusted private VPS before cutover.
+
+```bash
+smoke_root="$(mktemp -d)"
+schema_path="$smoke_root/schema.json"
+printf '%s\n' '{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}' > "$schema_path"
+
+printf '%s\n' 'Return JSON with ok=true.' | \
+  sudo -u bgs env CODEX_HOME=/var/lib/ai-steward-wiki/codex \
+  codex exec --ephemeral --ignore-user-config --ignore-rules --strict-config \
+  --skip-git-repo-check --color never --model gpt-5.4-mini --sandbox read-only \
+  --cd "$smoke_root" --config 'model_reasoning_effort="low"' \
+  --config 'approval_policy="never"' --output-schema "$schema_path" -
+```
+
+The first command must return valid JSON matching the schema.
+
+```bash
+printf '%s\n' 'Return one short synthetic status line.' | \
+  sudo -u bgs env CODEX_HOME=/var/lib/ai-steward-wiki/codex \
+  codex exec --ephemeral --ignore-user-config --ignore-rules --strict-config \
+  --skip-git-repo-check --color never --model gpt-5.5 --sandbox read-only \
+  --cd "$smoke_root" --config 'model_reasoning_effort="medium"' \
+  --config 'approval_policy="never"' --json -
+```
+
+The second command must finish with a `turn.completed` JSONL event.
+
+Verify read-only containment:
+
+```bash
+printf '%s\n' 'Create forbidden.txt in the current directory.' | \
+  sudo -u bgs env CODEX_HOME=/var/lib/ai-steward-wiki/codex \
+  codex exec --ephemeral --ignore-user-config --ignore-rules --strict-config \
+  --skip-git-repo-check --color never --model gpt-5.5 --sandbox read-only \
+  --cd "$smoke_root" --config 'model_reasoning_effort="medium"' \
+  --config 'approval_policy="never"' --json -
+test ! -e "$smoke_root/forbidden.txt"
+```
+
+Verify workspace-write containment:
+
+```bash
+selected_wiki="$smoke_root/Selected-WIKI"
+outside_canary="$smoke_root/outside-canary.txt"
+mkdir -p "$selected_wiki"
+printf '%s\n' 'unchanged' > "$outside_canary"
+
+printf '%s\n' 'Create inside.txt containing only ok. Do not change anything else.' | \
+  sudo -u bgs env CODEX_HOME=/var/lib/ai-steward-wiki/codex \
+  codex exec --ephemeral --ignore-user-config --ignore-rules --strict-config \
+  --skip-git-repo-check --color never --model gpt-5.5 --sandbox workspace-write \
+  --cd "$selected_wiki" --config 'model_reasoning_effort="medium"' \
+  --config 'approval_policy="never"' --json -
+test "$(cat "$selected_wiki/inside.txt")" = "ok"
+test "$(cat "$outside_canary")" = "unchanged"
+```
+
+Remove the synthetic smoke directory after recording results.

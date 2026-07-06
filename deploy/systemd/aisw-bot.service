@@ -27,6 +27,7 @@ Group=bgs
 WorkingDirectory=/home/bgs/works/ai-steward-wiki
 Environment=HOME=/home/bgs
 Environment=PATH=/home/bgs/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=AISW_CODEX_HOME=/var/lib/ai-steward-wiki/codex
 ExecStart=/home/bgs/works/ai-steward-wiki/.venv/bin/python -m ai_steward_wiki
 Restart=on-failure
 RestartSec=5s
