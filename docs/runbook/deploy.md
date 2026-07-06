@@ -98,6 +98,22 @@ subscription authentication from a dedicated `0700` home. No API key is configur
 
 ### 7.1. Install and authenticate
 
+Codex workspace-write on Ubuntu requires the distribution `bubblewrap` package.
+Ubuntu 24.04 also requires the packaged AppArmor profile for restricted user namespaces.
+
+```bash
+sudo apt update
+sudo apt install bubblewrap apparmor-profiles apparmor-utils
+sudo install -m 0644 \
+  /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+  /etc/apparmor.d/bwrap-userns-restrict
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+sudo -u bgs bwrap --ro-bind / / --proc /proc --dev /dev /bin/true
+```
+
+Do not disable `kernel.apparmor_restrict_unprivileged_userns` globally. The dedicated
+profile keeps the restriction enabled for other applications.
+
 ```bash
 sudo npm install --global @openai/codex@0.142.5
 sudo install -d -o bgs -g bgs -m 0700 /var/lib/ai-steward-wiki/codex

@@ -165,6 +165,13 @@ Expected state transitions:
 2. Confirm the Claude subscription limit reset time has passed.
 3. Wait for the single automatic probe. Do not force concurrent probes.
 
+**Workspace-write reports a `bwrap` or user-namespace error:**
+
+1. Run `sudo -u bgs bwrap --ro-bind / / --proc /proc --dev /dev /bin/true`.
+2. Verify `/etc/apparmor.d/bwrap-userns-restrict` is loaded with `aa-status`.
+3. Reapply the Ubuntu 24.04 profile from `deploy.md` §7.1.
+4. Never disable the global AppArmor user-namespace restriction as a workaround.
+
 
 ## Integration testing (chunk 23 — M-INTEGRATION-E2E)
 

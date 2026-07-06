@@ -1480,6 +1480,11 @@ git commit -m "feat(M-RUNTIME-WIRING): wire shared provider fallback"
 Файлы `.env*` не читаются и не меняются.
 Настройки описываются в runbooks и systemd unit.
 
+**Advisory deviation, approved 2026-07-06:** Linux workspace-write smoke
+обнаружил обязательную runtime-зависимость Codex от `bubblewrap` и user namespaces.
+Deployment теперь устанавливает distribution package и AppArmor-профиль Ubuntu 24.04.
+Глобальный sysctl для отключения AppArmor restriction запрещён.
+
 ### Task 7.1: Подготовить production unit и операторскую установку
 
 - [ ] **Шаг 1: Добавить dedicated subscription home в unit**
@@ -1494,6 +1499,10 @@ Service продолжает работать под текущим `User=bgs`.
 - [ ] **Шаг 2: Добавить точные deployment commands**
 
 ```bash
+sudo apt update
+sudo apt install bubblewrap apparmor-profiles apparmor-utils
+sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
 sudo npm install --global @openai/codex@0.142.5
 sudo install -d -o bgs -g bgs -m 0700 /var/lib/ai-steward-wiki/codex
 sudo -u bgs env CODEX_HOME=/var/lib/ai-steward-wiki/codex codex login --device-auth
