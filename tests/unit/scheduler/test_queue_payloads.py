@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from ai_steward_wiki.scheduler.queue_payloads import (
+    CheckInQueueMsg,
     CronUserQueueMsg,
     parse_queue_msg,
 )
@@ -96,3 +97,45 @@ def test_unknown_kind_rejected():
                 "scheduled_at_utc": datetime.now(UTC).isoformat(),
             }
         )
+
+
+def test_check_in_queue_msg_validates() -> None:
+    msg = CheckInQueueMsg(
+        job_id=7,
+        owner_telegram_id=1,
+        chat_id=99,
+        question_topic="как прошёл день",
+        correlation_id="c1",
+        scheduled_at_utc=datetime.now(UTC),
+    )
+    assert msg.kind == "check_in"
+    assert msg.question_topic == "как прошёл день"
+
+
+def test_parse_queue_msg_dispatches_check_in_by_discriminator() -> None:
+    raw = {
+        "kind": "check_in",
+        "job_id": 7,
+        "owner_telegram_id": 1,
+        "chat_id": 99,
+        "question_topic": "как прошёл день",
+        "correlation_id": "c1",
+        "scheduled_at_utc": datetime.now(UTC).isoformat(),
+    }
+    parsed = parse_queue_msg(raw)
+    assert isinstance(parsed, CheckInQueueMsg)
+
+
+def test_parse_queue_msg_still_dispatches_cron_user_by_discriminator() -> None:
+    """FR-15-equivalent for the queue union: the pre-existing member is unaffected."""
+    raw = {
+        "kind": "cron_user",
+        "job_id": 1,
+        "owner_telegram_id": 1,
+        "chat_id": 1,
+        "command": "x",
+        "correlation_id": "c",
+        "scheduled_at_utc": datetime.now(UTC).isoformat(),
+    }
+    parsed = parse_queue_msg(raw)
+    assert isinstance(parsed, CronUserQueueMsg)
