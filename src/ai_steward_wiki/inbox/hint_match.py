@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/inbox/hint_match.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Deterministic '## Inbox hint' catalog token-overlap scoring + a conservative 'confident single match' predicate for the pre-router fast-path (D-016, tech-spec §4/§8.3.3).
 #   SCOPE: token normalisation; score_catalog (text vs {stem: hint_text}); is_confident; HintMatch; threshold constants.
@@ -17,10 +17,15 @@
 #   MIN_SCORE - confidence floor: min matched-keyword count to fire the bypass
 #   MIN_MARGIN - min lead over the runner-up domain to fire the bypass
 #   MAX_FASTPATH_CHARS - max input length for the fast-path; longer → heavy router (aisw-378)
+#   tokens - lowercased word-runs, dropping too-short tokens and stop-words (was _tokens)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - initial deterministic hint-match scorer (aisw-5sd, Phase-E.b)
+#   LAST_CHANGE: v0.0.2 - aisw-xi8 (Phase-B, DEC-9): promote the formerly-private
+#                _tokens to a public tokens() — same normalisation, same return
+#                type (frozenset[str]); a pure rename, no logic change.
+#                scheduler.manage.match_jobs_by_needle reuses it directly.
+#   PREVIOUS:    v0.0.1 - initial deterministic hint-match scorer (aisw-5sd, Phase-E.b)
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ __all__ = [
     "HintMatch",
     "is_confident",
     "score_catalog",
+    "tokens",
 ]
 
 # A token must be at least this long to count — kills "и", "на", "ok", noise.
@@ -101,7 +107,7 @@ _WORD_RE: Final[re.Pattern[str]] = re.compile(r"\w+", re.UNICODE)
 _STEM_SUFFIX: Final[str] = "-wiki"
 
 
-def _tokens(text: str) -> frozenset[str]:
+def tokens(text: str) -> frozenset[str]:
     """Lowercased word-runs, dropping too-short tokens and stop-words."""
     return frozenset(
         t
@@ -115,7 +121,7 @@ def _stem_tokens(stem: str) -> frozenset[str]:
     name = stem.casefold()
     if name.endswith(_STEM_SUFFIX):
         name = name[: -len(_STEM_SUFFIX)]
-    return _tokens(name)
+    return tokens(name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,10 +144,10 @@ class HintMatch:
 def score_catalog(text: str, catalog: Mapping[str, str]) -> HintMatch:
     if not catalog:
         return HintMatch((), None, 0.0, 0.0)
-    txt = _tokens(text)
+    txt = tokens(text)
     scored: list[tuple[str, float]] = []
     for stem, hint_text in catalog.items():
-        domain = _tokens(hint_text) | _stem_tokens(stem)
+        domain = tokens(hint_text) | _stem_tokens(stem)
         scored.append((stem, float(len(txt & domain))))
     ranked = tuple(sorted(scored, key=lambda kv: (-kv[1], kv[0])))
     top_stem, top_score = ranked[0]
