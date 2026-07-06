@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.17">
+<VerificationPlan VERSION="0.0.18">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -57,9 +57,11 @@
     <V-M-LLM-FAILOVER MODULE="M-LLM-FAILOVER" PRIORITY="high">
       <test-files>
         <file-1>tests/unit/llm/test_failover.py</file-1>
+        <file-2>tests/integration/llm/test_fake_provider_chain.py</file-2>
       </test-files>
       <module-checks>
         <check-1>uv run pytest tests/unit/llm/test_failover.py -q</check-1>
+        <check-2>RUN_INTEGRATION=1 uv run pytest tests/integration/llm/test_fake_provider_chain.py -q</check-2>
       </module-checks>
       <scenarios>
         <scenario-1 kind="success">Claude success stays in claude and never starts Codex.</scenario-1>
@@ -82,7 +84,7 @@
       </required-trace-assertions>
       <wave-follow-up>Run Stage-0, WIKI runner, schema generation, and cron consumer failover tests.</wave-follow-up>
       <phase-follow-up>Run all unit tests, make lint, and the fake-CLI integration matrix.</phase-follow-up>
-      <evidence>Deterministic fake clocks and async barriers prove state transitions, cooldown, reset parsing, single-flight probe, replay safety, and overhead.</evidence>
+      <evidence>Deterministic fake clocks and async barriers prove state transitions, cooldown, reset parsing, single-flight probe, replay safety, and overhead. The fake provider-chain integration spawns separate Claude and Codex executables, observes typed 429, and returns one structured fallback result.</evidence>
     </V-M-LLM-FAILOVER>
 
     <V-M-LLM-CODEX MODULE="M-LLM-CODEX" PRIORITY="high">
