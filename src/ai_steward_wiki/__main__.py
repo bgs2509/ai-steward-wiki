@@ -440,6 +440,7 @@ class _WikiRunnerAdapter:
         on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
         media_paths: list[Path] | None = None,
         timeout_s: float | None = None,
+        action: str | None = None,
     ) -> WikiRunOutcome:
         wiki_id = str(owner_telegram_id)
         wiki_path = self._wiki_root / wiki_id
@@ -457,7 +458,8 @@ class _WikiRunnerAdapter:
         # layouts block so the model knows every WIKI's Data layout paths. A scope
         # decision can never fail the run (FR-6).
         if (
-            intent is Intent.WIKI_QUERY
+            intent is Intent.WIKI
+            and action == "query"
             and self._hint_catalog_resolver is not None
             and self._owner_wikis_resolver is not None
         ):
@@ -498,7 +500,7 @@ class _WikiRunnerAdapter:
         # read-only, no WIKI add-dir. Every other intent keeps the default writing config.
         run_config = (
             self._web_run_config
-            if intent is Intent.WEB_TASK and self._web_run_config is not None
+            if intent is Intent.WEB and self._web_run_config is not None
             else self._run_config
         )
         try:
@@ -1448,6 +1450,7 @@ async def _amain() -> None:
         claude_binary=settings.claude_cli_binary,
         claude_config_dir=default_claude_config_dir(),
         prompt_path=settings.cron_user_prompt_path,
+        check_in_prompt_path=settings.prompts_dir / "check_in.md",
         jobs_session_maker=jobs_maker,
         timeout_s=settings.cron_user_timeout_s,
     )

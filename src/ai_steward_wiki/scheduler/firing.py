@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/scheduler/firing.py
-# VERSION: 0.7.0
+# VERSION: 0.8.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Cron/date job firing bridge — one-shot reminder (DateTrigger → plain
 #            TG message, no Claude; aisw-kcz, Phase-D.a) and recurring digest
@@ -49,7 +49,13 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.7.0 - aisw-xi8 (Phase-B, DEC-6/DEC-7): NEW create_recurring_job
+#   LAST_CHANGE: v0.8.0 - aisw-xi8 (Phase-C.1): delete disable_digest_jobs /
+#                reschedule_digest_jobs (#2/aisw-578) — dead code once
+#                tg/pipeline.py's _dispatch_digest_disable/_dispatch_digest_reschedule
+#                callers were removed (FR-2). scheduler.manage.cancel_job /
+#                reschedule_recurring (DEC-9) are the strictly more general
+#                replacement, covering every cron-shaped job kind, not only digest.
+#   PREVIOUS:    v0.7.0 - aisw-xi8 (Phase-B, DEC-6/DEC-7): NEW create_recurring_job
 #                / fire_recurring_job / set_recurring_scheduler — fixed-text cron
 #                reminder bridge. fire_recurring_job sends payload.message VERBATIM,
 #                NO Claude call (NFR-2), NO terminal status transition on success
@@ -762,108 +768,6 @@ async def create_digest_job(
 
 
 # END_BLOCK_CREATE_DIGEST_JOB
-
-
-# START_BLOCK_DIGEST_CONTROL
-async def disable_digest_jobs(
-    session: AsyncSession,
-    scheduler: AsyncIOScheduler,
-    *,
-    owner_telegram_id: int,
-    correlation_id: str = "",
-) -> int:
-    """Disable all of the owner's scheduled digest jobs (status->'disabled' and
-    drop the CronTrigger). Returns the count disabled (0 if the owner has none).
-
-    User-initiated counterpart of the strike-based auto-disable (#2, aisw-578).
-    """
-    rows = (
-        (
-            await session.execute(
-                select(Job).where(
-                    Job.owner_telegram_id == owner_telegram_id,
-                    Job.kind == "digest_job",
-                    Job.status == "scheduled",
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for job in rows:
-        job.status = "disabled"
-        job.finished_at_utc = _now_naive_utc()
-    await session.commit()
-    for job in rows:
-        with contextlib.suppress(JobLookupError):
-            scheduler.remove_job(f"digest:{job.id}")
-    _log.info(
-        "scheduler.digest.disabled_by_user",
-        correlation_id=correlation_id,
-        owner_telegram_id=owner_telegram_id,
-        count=len(rows),
-    )
-    return len(rows)
-
-
-async def reschedule_digest_jobs(
-    session: AsyncSession,
-    scheduler: AsyncIOScheduler,
-    *,
-    owner_telegram_id: int,
-    time_hhmm: str,
-    correlation_id: str = "",
-) -> int:
-    """Move the owner's scheduled digest jobs to a new HH:MM, keeping kind /
-    weekdays / day_of_month / tz. Returns the count rescheduled (0 if none).
-
-    User-initiated digest reschedule (#2, aisw-578). ``time_hhmm`` is re-validated
-    by reconstructing the Recurrence (raises ValueError on a malformed time).
-    """
-    rows = (
-        (
-            await session.execute(
-                select(Job).where(
-                    Job.owner_telegram_id == owner_telegram_id,
-                    Job.kind == "digest_job",
-                    Job.status == "scheduled",
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    count = 0
-    for job in rows:
-        try:
-            payload = parse_job_payload(job.payload)
-        except ValidationError:
-            continue
-        if not isinstance(payload, DigestPayload):
-            continue
-        new_rec = Recurrence(**{**payload.recurrence.model_dump(), "time_hhmm": time_hhmm})
-        job.payload = DigestPayload(
-            wiki_scope=payload.wiki_scope,
-            recurrence=new_rec,
-            window_hours=payload.window_hours,
-        ).model_dump(mode="json")
-        await session.commit()
-        scheduler.reschedule_job(
-            f"digest:{job.id}",
-            trigger=CronTrigger(timezone=new_rec.tz, **new_rec.to_cron()),
-        )
-        count += 1
-    _log.info(
-        "scheduler.digest.rescheduled_by_user",
-        correlation_id=correlation_id,
-        owner_telegram_id=owner_telegram_id,
-        count=count,
-        time_hhmm=time_hhmm,
-    )
-    return count
-
-
-# END_BLOCK_DIGEST_CONTROL
 
 
 async def _digest_strike(

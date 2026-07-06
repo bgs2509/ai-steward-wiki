@@ -235,9 +235,7 @@ from ai_steward_wiki.classifier.recurrence import Recurrence  # noqa: E402
 from ai_steward_wiki.scheduler.firing import (  # noqa: E402
     DigestNotInitialisedError,
     create_digest_job,
-    disable_digest_jobs,
     fire_digest_job,
-    reschedule_digest_jobs,
     set_digest_context,
 )
 from ai_steward_wiki.storage.jobs.models import JobDLQ  # noqa: E402
@@ -407,61 +405,6 @@ async def test_create_digest_job_writes_row_and_cron(session_factory) -> None:
     assert call["replace_existing"] is True
     # CronTrigger encodes hour=9, minute=0
     assert "hour='9'" in str(call["trigger"]) or "hour=9" in repr(call["trigger"])
-
-
-async def test_disable_digest_jobs_disables_and_removes_trigger(session_factory) -> None:
-    # #2 aisw-578 — «выключи сводку» disables the job and drops its CronTrigger.
-    sched = _FakeCronScheduler()
-    async with session_factory() as s:
-        job_id = await create_digest_job(
-            s, sched, owner_telegram_id=7, chat_id=7, recurrence=_rec()
-        )
-    async with session_factory() as s:
-        count = await disable_digest_jobs(s, sched, owner_telegram_id=7)
-    assert count == 1
-    async with session_factory() as s:
-        row = await s.get(Job, job_id)
-        assert row is not None
-        assert row.status == "disabled"
-    assert f"digest:{job_id}" in sched.removed
-
-
-async def test_disable_digest_jobs_no_jobs_returns_zero(session_factory) -> None:
-    sched = _FakeCronScheduler()
-    async with session_factory() as s:
-        count = await disable_digest_jobs(s, sched, owner_telegram_id=999)
-    assert count == 0
-    assert sched.removed == []
-
-
-async def test_reschedule_digest_jobs_updates_time_and_trigger(session_factory) -> None:
-    # #2 aisw-578 — «переноси сводку на 7:30» keeps kind/tz, only the time moves.
-    sched = _FakeCronScheduler()
-    async with session_factory() as s:
-        job_id = await create_digest_job(
-            s, sched, owner_telegram_id=7, chat_id=7, recurrence=_rec()
-        )
-    async with session_factory() as s:
-        count = await reschedule_digest_jobs(s, sched, owner_telegram_id=7, time_hhmm="07:30")
-    assert count == 1
-    async with session_factory() as s:
-        row = await s.get(Job, job_id)
-        assert row is not None
-        parsed = parse_job_payload(row.payload)
-        assert isinstance(parsed, DigestPayload)
-        assert parsed.recurrence.time_hhmm == "07:30"
-        assert parsed.recurrence.kind == "daily"
-        assert parsed.recurrence.tz == "Europe/Moscow"
-    assert sched.rescheduled
-    assert sched.rescheduled[0]["id"] == f"digest:{job_id}"
-
-
-async def test_reschedule_digest_jobs_no_jobs_returns_zero(session_factory) -> None:
-    sched = _FakeCronScheduler()
-    async with session_factory() as s:
-        count = await reschedule_digest_jobs(s, sched, owner_telegram_id=999, time_hhmm="07:30")
-    assert count == 0
-    assert sched.rescheduled == []
 
 
 async def test_create_digest_job_named_subset_scope(session_factory) -> None:

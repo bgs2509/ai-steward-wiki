@@ -70,7 +70,8 @@
 #   ROUTE_SILENT_ACK_NOREDIR_RU - silent auto-route ack with no redirect option (aisw-2ra)
 #   ACTIVE_WIKI_DEFAULT_ROUTE_RU - notice when a bare follow-up is default-routed to the sticky WIKI (aisw-0ym)
 #   build_route_recap - build the ru recap text for a RouterDecision route confirm
-#   REMINDER_CONFIDENCE_THRESHOLD - Stage-0 confidence floor for the reminder fast-path (aisw-kcz)
+#   CLASSIFIER_CONFIDENCE_THRESHOLD - Stage-0 confidence floor for the reminder fast-path (aisw-kcz); renamed aisw-xi8 (DEC-2)
+#   SUBTHRESHOLD_CLARIFY_RU - ru clarify reply for a below-threshold job/admin classification (aisw-xi8, DEC-2/FR-10)
 #   REMINDER_RECAP_RU - recap template for a reminder confirm (aisw-kcz)
 #   REMINDER_ACK_RU - ack sent after a reminder is scheduled (aisw-kcz)
 #   REMINDER_UNPARSEABLE_RU - reply when the reminder time is ambiguous/unparseable (aisw-kcz)
@@ -281,12 +282,14 @@ __all__ = [
     "ACK_DOC_RU",
     "ACK_DOC_TOO_LARGE_RU",
     "ACK_DOC_UNSUPPORTED_RU",
+    "ACK_JOB_STUB_RU",
     "ACK_PHOTO_RU",
     "ACK_RUNNER_ERR_RU",
     "ACK_TEXT_RU",
     "ACK_VOICE_RU",
     "ACK_VOICE_UNAVAILABLE_RU",
     "ACTIVE_WIKI_DEFAULT_ROUTE_RU",
+    "CLASSIFIER_CONFIDENCE_THRESHOLD",
     "DIGEST_ACK_RU",
     "DIGEST_CONFIRM_CANCELLED_RU",
     "DIGEST_CONFIRM_STALE_RU",
@@ -298,7 +301,6 @@ __all__ = [
     "PHOTO_CAPTION_PROMPT_RU",
     "PHOTO_PROMPT_RU",
     "REMINDER_ACK_RU",
-    "REMINDER_CONFIDENCE_THRESHOLD",
     "REMINDER_CONFIRM_CANCELLED_RU",
     "REMINDER_CONFIRM_STALE_RU",
     "REMINDER_PAST_RU",
@@ -313,6 +315,7 @@ __all__ = [
     "ROUTE_SILENT_ACK_NOREDIR_RU",
     "ROUTE_SILENT_ACK_RU",
     "SMALLTALK_REPLY_RU",
+    "SUBTHRESHOLD_CLARIFY_RU",
     "SUPPORTED_IMAGE_MIMES",
     "Classifier",
     "ConfirmKeyboardAction",
@@ -362,6 +365,13 @@ ACK_DOC_UNSUPPORTED_RU = "Этот тип файла пока не поддер�
 # root runner (Write access to the whole user workspace), which freelance-created
 # malformed WIKIs from misclassified "создай X". Reply safely instead of running.
 ACK_ADMIN_RU = "Админ-действия пока не поддерживаю. Если хочешь что-то сохранить — пришли материал (текст, файл или фото), и я предложу, куда его занести."  # noqa: RUF001
+# aisw-xi8 (DEC-2, FR-10): a below-threshold job/admin classification MUST NOT
+# reach the write-capable generic root runner — structural guarantee, not just
+# a UX nicety (kills defect class #78/#96 by construction).
+SUBTHRESHOLD_CLARIFY_RU = "Не уверен, что правильно понял — уточни, пожалуйста, что нужно сделать."  # noqa: RUF001
+# aisw-xi8 (Phase-C.1 stub — see the START_BLOCK_JOB_DISPATCH note; REPLACED by
+# Phase-C.2/C.3's real job handlers).
+ACK_JOB_STUB_RU = "Понял, но эта функция ещё дорабатывается."
 ACK_DOC_PDF_NO_TEXT_RU = "Не вижу текста в PDF. Попробуйте отправить страницу как фото."  # noqa: RUF001
 ACK_DOC_TOO_LARGE_RU = "Файл слишком большой (лимит 25 МБ)."
 
@@ -410,9 +420,7 @@ ACTIVE_WIKI_DEFAULT_ROUTE_RU = "Похоже, это продолжение ра
 
 # Reminder fast-path (aisw-kcz, Inbox-WIKI Phase-D.a). A Stage-0 intent=reminder
 # above this confidence floor with a parseable future time → an explicit confirm.
-REMINDER_CONFIDENCE_THRESHOLD = 0.85
-# Heuristic ru keyword set for recurring digests — punt to the digest phase (aisw-19o).
-_RECURRING_KEYWORDS = frozenset({"кажд", "ежедневн", "еженедельн", "сводк", "дайджест"})
+CLASSIFIER_CONFIDENCE_THRESHOLD = 0.85
 
 REMINDER_RECAP_RU = "Поставлю напоминание на {when_local} ({tz}): «{message}». Подтверждаешь?"
 REMINDER_ACK_RU = "Готово — напомню {when_local}."
@@ -442,42 +450,14 @@ DIGEST_WIKI_UNKNOWN_RU = (
 )
 _WEEKDAY_RU_SHORT = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")  # noqa: RUF001
 
-# Digest control (#2, aisw-578): «выключи/переноси сводку» edit an existing job.
-DIGEST_DISABLED_RU = "Выключил ежедневную сводку."
-DIGEST_NONE_RU = "У тебя нет активной сводки."  # noqa: RUF001
-DIGEST_RESCHEDULED_RU = "Перенёс сводку на {time}."
-DIGEST_RESCHEDULE_NOTIME_RU = (
-    "Не понял, на какое время перенести сводку. Например: «переноси сводку на 7:30»."  # noqa: RUF001
-)
-# Rule-based action detection — consistent with the rule-based recurrence parser
-# (the whole digest fast-path is deterministic, no LLM round-trip here).
-_DIGEST_DISABLE_RE = re.compile(
-    r"(выключ|отключ|убер|останов|отмен|не присыла|не нужн|больше не)",  # noqa: RUF001
-    re.IGNORECASE,
-)
-_DIGEST_RESCHEDULE_RE = re.compile(
-    r"(перенес|перенёс|перенос|сдвин|поменя|измен)",
-    re.IGNORECASE,
-)
-# HH:MM («7:30», «07.30») or a bare hour after в/на («на 7», «в 9 утра»).
+# HH:MM («7:30», «07.30») or a bare hour after в/на («на 7», «в 9 утра»). Kept as
+# a parameter validator (FR-3) — promoted from the deleted digest-control
+# fast-path (#2/aisw-578) to Phase-C.2's reschedule-time-only merge path.
 _DIGEST_HHMM_RE = re.compile(r"(?<!\d)(\d{1,2})[:.](\d{2})(?!\d)")
 _DIGEST_BARE_HOUR_RE = re.compile(
     r"(?:\bв\b|\bна\b)\s*(\d{1,2})(?!\s*[:.]?\d)",  # noqa: RUF001
     re.IGNORECASE,
 )
-
-
-def _detect_digest_action(text: str) -> str:
-    """Classify a «сводка» message into 'disable' | 'reschedule' | 'create'.
-
-    Rule-based (deterministic, no LLM): disable keywords win over reschedule, and
-    reschedule requires both a reschedule verb and a parseable time.
-    """
-    if _DIGEST_DISABLE_RE.search(text):
-        return "disable"
-    if _DIGEST_RESCHEDULE_RE.search(text) and _extract_hhmm(text) is not None:
-        return "reschedule"
-    return "create"
 
 
 def _extract_hhmm(text: str) -> str | None:
@@ -606,14 +586,19 @@ def extract_wiki_names(
     return "all"
 
 
-# Stage-0 intents that mean "FILE this somewhere" → handled by the Inbox-WIKI
-# Router (Stage-1a) / '## Inbox hint' fast-path when one is wired (aisw-dsg,
-# Inbox-WIKI Phase-A). The other intents (REMINDER, DIGEST, WIKI_LINT, ADMIN) keep
-# their own handling. NOT routable — both fall through to the generic answer runner
-# and are ANSWERED in chat, never filed:
-#   - WIKI_QUERY (aisw-50z): a question about already-stored content (cross-WIKI read).
-#   - WEB_TASK (aisw-dqz): "найди в интернете …" → answer runner with WebSearch enabled.
-_ROUTABLE_INTENTS = frozenset({Intent.WIKI_INGEST, Intent.UNKNOWN})
+def _is_routable(intent: Intent, action: str | None) -> bool:
+    """DEC-3: routable ⇔ UNKNOWN, or WIKI with action∈{ingest,catalog} or missing.
+
+    wiki/query and wiki/lint answer in chat (generic runner) — never filed.
+    Replaces the old static `_ROUTABLE_INTENTS` frozenset (was {WIKI_INGEST,
+    UNKNOWN}) with a predicate over (intent, action), since a single WIKI intent
+    now covers 4 different downstream behaviours.
+    """
+    if intent is Intent.UNKNOWN:
+        return True
+    if intent is Intent.WIKI:
+        return action in ("ingest", "catalog", None)
+    return False
 
 
 class Classifier(Protocol):
@@ -711,6 +696,7 @@ class WikiRunner(Protocol):
         on_event: Callable[[object], Awaitable[None]] | None = None,
         media_paths: list[Path] | None = None,
         timeout_s: float | None = None,
+        action: str | None = None,
     ) -> WikiRunOutcome: ...
 
 
@@ -732,6 +718,7 @@ class StreamingDelivery(Protocol):
         text: str,
         intent: Intent,
         correlation_id: str,
+        action: str | None = None,
     ) -> WikiRunOutcome: ...
 
 
@@ -1138,14 +1125,31 @@ class DefaultPipeline:
             latency_ms=result.latency_ms,
         )
 
-        # START_BLOCK_SMALLTALK (aisw-df4)
-        # Conversational chitchat (greetings, banter, "расскажи что-нибудь",
-        # "ты дурак?") is answered with a short friendly ru line — never filed,
-        # scheduled, or run through a WIKI. Placed before the reminder/digest
-        # fast-paths so a casual message can never trip time/recurrence parsing
-        # (which previously produced tg.pipeline.digest.unparseable) or fall into
-        # the generic root runner.
-        if result.intent is Intent.SMALLTALK:
+        # START_BLOCK_SUBTHRESHOLD_GATE (aisw-xi8, DEC-2, FR-10)
+        # Structural double-guarantee: intent∈{JOB, ADMIN} below the confidence
+        # floor gets a deterministic ru clarification and RETURNS — it can never
+        # fall through to any handler, confirm draft, or the generic runner. All
+        # other intents (non-destructive) proceed normally even at low confidence.
+        if result.confidence < CLASSIFIER_CONFIDENCE_THRESHOLD and result.intent in (
+            Intent.JOB,
+            Intent.ADMIN,
+        ):
+            _log.info(
+                "tg.pipeline.subthreshold.clarify",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                intent=result.intent.value,
+                confidence=result.confidence,
+            )
+            await self._sender.send_message(chat_id, SUBTHRESHOLD_CLARIFY_RU)
+            await self._chatlog_out(
+                telegram_id=telegram_id, chat_id=chat_id, text=SUBTHRESHOLD_CLARIFY_RU
+            )
+            return
+        # END_BLOCK_SUBTHRESHOLD_GATE
+
+        # START_BLOCK_INTENT_DISPATCH (aisw-xi8, DEC-1 — flat 6-intent switch)
+        if result.intent is Intent.CHAT:
             _log.info(
                 "tg.pipeline.smalltalk.replied",
                 correlation_id=correlation_id,
@@ -1156,19 +1160,8 @@ class DefaultPipeline:
                 telegram_id=telegram_id, chat_id=chat_id, text=SMALLTALK_REPLY_RU
             )
             return
-        # END_BLOCK_SMALLTALK
-
-        # START_BLOCK_REMINDER_FASTPATH (aisw-kcz, Inbox-WIKI Phase-D.a)
-        # A confident Stage-0 intent=reminder is handled BEFORE the Stage-1a
-        # router (tech-spec §6 fast-path). When time_parser is not wired, fall
-        # through — REMINDER is not a routable intent, so it reaches the legacy
-        # runner branch (acceptable degraded behaviour).
-        if (
-            result.intent is Intent.REMINDER
-            and result.confidence >= REMINDER_CONFIDENCE_THRESHOLD
-            and self._time_parser is not None
-        ):
-            await self._handle_reminder_intent(
+        if result.intent is Intent.JOB:
+            await self._handle_job(
                 telegram_id=telegram_id,
                 chat_id=chat_id,
                 text=text,
@@ -1176,37 +1169,205 @@ class DefaultPipeline:
                 correlation_id=correlation_id,
             )
             return
-        # END_BLOCK_REMINDER_FASTPATH
-
-        # START_BLOCK_DIGEST_FASTPATH (aisw-578)
-        # A digest-classified message (create OR control: «делай/переноси/выключи
-        # сводку») reaches the same handler. Reminder-classified recurring phrasing
-        # already funnels into _handle_digest_intent via _RECURRING_KEYWORDS above;
-        # this branch covers the intent=digest case, which was previously unhandled.
-        if result.intent is Intent.DIGEST and result.confidence >= REMINDER_CONFIDENCE_THRESHOLD:
-            await self._handle_digest_intent(
+        if result.intent is Intent.ADMIN:
+            _log.info(
+                "tg.pipeline.admin.declined",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+            )
+            await self._sender.send_message(chat_id, ACK_ADMIN_RU)
+            return
+        if result.intent is Intent.WIKI:
+            await self._handle_wiki(
                 telegram_id=telegram_id,
                 chat_id=chat_id,
                 text=text,
+                source=source,
+                media_paths=media_paths,
+                distilled_payload=result.distilled_payload,
                 correlation_id=correlation_id,
+                recent_window=recent_window,
+                timeout_s=timeout_s,
             )
             return
-        # END_BLOCK_DIGEST_FASTPATH
+        if result.intent is Intent.WEB:
+            await self._handle_web(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                text=text,
+                source=source,
+                media_paths=media_paths,
+                correlation_id=correlation_id,
+                timeout_s=timeout_s,
+            )
+            return
+        # Intent.UNKNOWN — the only remaining member.
+        await self._handle_unknown(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            text=text,
+            source=source,
+            media_paths=media_paths,
+            correlation_id=correlation_id,
+            recent_window=recent_window,
+            timeout_s=timeout_s,
+        )
+        # END_BLOCK_INTENT_DISPATCH
 
-        # START_BLOCK_HINT_FASTPATH (aisw-5sd, Inbox-WIKI Phase-E.b)
-        # Before the ~10-30s Sonnet Router-Claude run: if the sender's cached
-        # '## Inbox hint' catalog points unambiguously at ONE domain WIKI for
-        # this content, synthesise a ROUTE decision (tech-spec §8.3.3 fast/heavy
-        # two-tier). Strictly conservative — precision over recall (NFR-2):
-        # anything that is not a single confident match falls through to the
-        # heavy router unchanged.
-        # aisw-2ra: on a CONFIDENT match the route is now executed SILENTLY (D-023
-        # 'auto' level) — no Confirm/Cancel keyboard. The user gets a "✅ Записал
-        # в <WIKI>" ack carrying a one-tap redirect picker (build_route_redirect_
-        # keyboard) so a rare misroute is cheaply correctable via on_wikipick_
-        # callback. Non-confident matches still fall through to the heavy router.
+    # END_BLOCK_TEXT_PIPELINE
+
+    # START_BLOCK_JOB_DISPATCH (aisw-xi8, Phase-C.1 stub — REPLACED by Phase-C.2
+    # Task C2.1 (list/cancel/reschedule) and Phase-C.3 Task C3.1 (create flows).
+    # Do NOT extend this method's body incrementally — later tasks REPLACE it
+    # wholesale, since the final shape dispatches on JobSlots.action/kind.)
+    async def _handle_job(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        text: str,
+        distilled_payload: dict[str, object],
+        correlation_id: str,
+    ) -> None:
+        from ai_steward_wiki.classifier.schema import JobSlots, parse_slots
+
+        slots = parse_slots(JobSlots, distilled_payload)
+        _log.info(
+            "tg.pipeline.job.dispatched",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            action=slots.action,
+            kind=slots.kind,
+        )
+        # DEC-2 structural guarantee preserved even in this intermediate stub:
+        # job NEVER falls through to the generic runner — only a deterministic
+        # ru reply, here and in every later replacement of this method.
+        await self._sender.send_message(chat_id, ACK_JOB_STUB_RU)
+
+    # END_BLOCK_JOB_DISPATCH
+
+    # START_BLOCK_WIKI_DISPATCH (aisw-xi8, DEC-1/DEC-3)
+    async def _handle_wiki(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        text: str,
+        source: Literal["text", "voice", "document", "photo"],
+        media_paths: list[Path] | None,
+        distilled_payload: dict[str, object],
+        correlation_id: str,
+        recent_window: list[ChatTurn] | None,
+        timeout_s: float | None,
+    ) -> None:
+        from ai_steward_wiki.classifier.schema import WikiSlots, parse_slots
+
+        slots = parse_slots(WikiSlots, distilled_payload)
+        if _is_routable(Intent.WIKI, slots.action):
+            await self._handle_routable(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                text=text,
+                source=source,
+                media_paths=media_paths,
+                correlation_id=correlation_id,
+                recent_window=recent_window,
+                timeout_s=timeout_s,
+                # DEC-3: catalog/None goes straight to the router — a catalog
+                # request has no content to keyword-match (conservative).
+                hint_fastpath_eligible=(slots.action == "ingest"),
+            )
+            return
+        # query / lint -> generic answer runner (streaming tail); action threaded
+        # through the DEC-5 Protocol widening.
+        await self._handle_generic_runner(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            text=text,
+            source=source,
+            media_paths=media_paths,
+            intent=Intent.WIKI,
+            action=slots.action,
+            correlation_id=correlation_id,
+            timeout_s=timeout_s,
+        )
+
+    # END_BLOCK_WIKI_DISPATCH
+
+    # START_BLOCK_WEB_DISPATCH (aisw-xi8, DEC-1)
+    async def _handle_web(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        text: str,
+        source: Literal["text", "voice", "document", "photo"],
+        media_paths: list[Path] | None,
+        correlation_id: str,
+        timeout_s: float | None,
+    ) -> None:
+        await self._handle_generic_runner(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            text=text,
+            source=source,
+            media_paths=media_paths,
+            intent=Intent.WEB,
+            action=None,
+            correlation_id=correlation_id,
+            timeout_s=timeout_s,
+        )
+
+    # END_BLOCK_WEB_DISPATCH
+
+    # START_BLOCK_UNKNOWN_DISPATCH (aisw-xi8, DEC-1)
+    async def _handle_unknown(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        text: str,
+        source: Literal["text", "voice", "document", "photo"],
+        media_paths: list[Path] | None,
+        correlation_id: str,
+        recent_window: list[ChatTurn] | None,
+        timeout_s: float | None,
+    ) -> None:
+        await self._handle_routable(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            text=text,
+            source=source,
+            media_paths=media_paths,
+            correlation_id=correlation_id,
+            recent_window=recent_window,
+            timeout_s=timeout_s,
+            hint_fastpath_eligible=True,  # unchanged from v1 (UNKNOWN had no action slot)
+        )
+
+    # END_BLOCK_UNKNOWN_DISPATCH
+
+    # START_BLOCK_ROUTABLE_SHARED (aisw-xi8 — the pre-existing hint-fastpath +
+    # Stage-1a router mechanics, UNCHANGED, now shared by _handle_wiki(ingest/
+    # catalog/None) and _handle_unknown instead of being gated by a static
+    # frozenset membership test)
+    async def _handle_routable(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        text: str,
+        source: Literal["text", "voice", "document", "photo"],
+        media_paths: list[Path] | None,
+        correlation_id: str,
+        recent_window: list[ChatTurn] | None,
+        timeout_s: float | None,
+        hint_fastpath_eligible: bool,
+    ) -> None:
+        # START_BLOCK_HINT_FASTPATH (aisw-5sd, Inbox-WIKI Phase-E.b; aisw-2ra silent
+        # route; aisw-xi8 DEC-3 additionally gates on hint_fastpath_eligible)
         if (
-            result.intent in _ROUTABLE_INTENTS
+            hint_fastpath_eligible
             and self._router is not None
             and self._hint_catalog_resolver is not None
             and self._librarian is not None
@@ -1230,9 +1391,6 @@ class DefaultPipeline:
                     reason="empty_catalog",
                 )
             else:
-                # Match against the raw message text — distilled_payload is a
-                # structured dict (Stage-0 slots), not free text, so it is not a
-                # useful overlap signal here.
                 hint_match = score_catalog(text, catalog)
                 _log.info(
                     "tg.pipeline.hint_fastpath.catalog",
@@ -1249,8 +1407,6 @@ class DefaultPipeline:
                         raw="",
                         parsed_ok=True,
                     )
-                    # Silent route (D-023 'auto'): ingest now via the shared tail,
-                    # then ack. No Confirm/Cancel step.
                     ingest_outcome = await self._ingest_and_deliver(
                         decision,
                         telegram_id=telegram_id,
@@ -1272,11 +1428,6 @@ class DefaultPipeline:
                         source=source,
                     )
                     if ingest_outcome.status == "ok":
-                        # Offer a one-tap redirect into the owner's OTHER WIKIs so a
-                        # rare misroute is cheaply correctable (aisw-2ra). The pending
-                        # row carries the same payload; tapping reuses on_wikipick_
-                        # callback. With no other WIKI there is nothing to redirect
-                        # into → a plain ack (D-023 'auto') with no keyboard.
                         others = [
                             w for w in await self._list_owner_wiki_names(telegram_id) if w != target
                         ]
@@ -1310,8 +1461,6 @@ class DefaultPipeline:
                     "tg.pipeline.hint_fastpath.miss",
                     correlation_id=correlation_id,
                     telegram_id=telegram_id,
-                    # >=MIN_SCORE but margin too small ⇒ ambiguous; otherwise the
-                    # top domain is simply too weak ⇒ no_match.
                     reason="ambiguous" if hint_match.top_score >= HINT_MIN_SCORE else "no_match",
                     top_stem=hint_match.top_stem,
                     top_score=hint_match.top_score,
@@ -1325,13 +1474,12 @@ class DefaultPipeline:
                 )
         # END_BLOCK_HINT_FASTPATH
 
-        # START_BLOCK_ROUTABLE_BRANCH (aisw-dsg, Inbox-WIKI Phase-A)
-        if result.intent in _ROUTABLE_INTENTS and self._router is not None:
+        # START_BLOCK_ROUTABLE_BRANCH (aisw-dsg, unchanged mechanics)
+        if self._router is not None:
             _log.info(
                 "tg.pipeline.router.dispatched",
                 correlation_id=correlation_id,
                 telegram_id=telegram_id,
-                intent=result.intent.value,
                 source=source,
             )
             try:
@@ -1361,12 +1509,6 @@ class DefaultPipeline:
                 target_wiki=decision.target_wiki,
                 parsed_ok=decision.parsed_ok,
             )
-            # aisw-0ym: sticky active-WIKI fallback. When the router result is the
-            # cold class (CLARIFY/REJECT — ambiguous / conversational-with-no-new-
-            # domain-signal) and a FRESH (TTL-guarded) last-active-WIKI pointer
-            # exists, default-route the follow-up into it instead of cold-rejecting.
-            # A confident ROUTE/CREATE_WIKI is never overridden (pointer is only a
-            # fallback). The user still confirms via the route-confirm keyboard.
             if (
                 decision.intent in (RouterIntent.CLARIFY, RouterIntent.REJECT)
                 and self._librarian is not None
@@ -1388,11 +1530,6 @@ class DefaultPipeline:
                             "notes": ACTIVE_WIKI_DEFAULT_ROUTE_RU.format(wiki=sticky),
                         }
                     )
-            # Phase-C (aisw-e45): ROUTE/CREATE_WIKI → propose the move+ingest via
-            # an explicit inline-button confirm (persisted as a route_ingest
-            # pending row); the actual Stage-1b ingest runs in on_confirm_callback.
-            # CLARIFY/REJECT (and the no-librarian / no-output case) keep Phase-A's
-            # notes-echo behaviour.
             if (
                 decision.intent in (RouterIntent.ROUTE, RouterIntent.CREATE_WIKI)
                 and self._librarian is not None
@@ -1412,9 +1549,6 @@ class DefaultPipeline:
                     draft=payload,
                     recap_text=build_route_recap(decision),
                 )
-                # aisw-13h: offer the owner's OTHER existing WIKIs as a 2-column picker
-                # below Confirm/Cancel (the proposed target is excluded — confirming
-                # already selects it) so the user can redirect into a different WIKI.
                 wiki_names = [
                     w
                     for w in await self._list_owner_wiki_names(telegram_id)
@@ -1439,24 +1573,44 @@ class DefaultPipeline:
             return
         # END_BLOCK_ROUTABLE_BRANCH
 
-        # aisw-aca: tame intent=admin. There is no real admin handler; admin used to
-        # fall through to the generic root runner and freelance-create WIKIs (the
-        # malformed Russian-Coal-WIKI). Reply safely and never run Claude in the user
-        # root for an admin-classified message.
-        if result.intent is Intent.ADMIN:
-            _log.info(
-                "tg.pipeline.admin.declined",
-                correlation_id=correlation_id,
-                telegram_id=telegram_id,
-            )
-            await self._sender.send_message(chat_id, ACK_ADMIN_RU)
-            return
+        # No router wired -> legacy fallthrough to the generic runner (back-compat,
+        # matches v1's test_routable_intent_without_router_falls_through_to_legacy).
+        await self._handle_generic_runner(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            text=text,
+            source=source,
+            media_paths=media_paths,
+            intent=Intent.WIKI,
+            action=None,
+            correlation_id=correlation_id,
+            timeout_s=timeout_s,
+        )
 
+    # END_BLOCK_ROUTABLE_SHARED
+
+    # START_BLOCK_GENERIC_RUNNER (aisw-xi8 — extracted from the old
+    # _run_text_pipeline tail, unchanged mechanics, +action threading DEC-5)
+    async def _handle_generic_runner(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        text: str,
+        source: Literal["text", "voice", "document", "photo"],
+        media_paths: list[Path] | None,
+        intent: Intent,
+        action: str | None,
+        correlation_id: str,
+        timeout_s: float | None,
+    ) -> None:
+        assert self._runner is not None
+        assert self._output is not None
         _log.info(
             "tg.pipeline.runner.dispatched",
             correlation_id=correlation_id,
             telegram_id=telegram_id,
-            intent=result.intent.value,
+            intent=intent.value,
         )
         try:
             if self._streaming is not None and source == "text":
@@ -1466,8 +1620,9 @@ class DefaultPipeline:
                     chat_id=chat_id,
                     telegram_id=telegram_id,
                     text=text,
-                    intent=result.intent,
+                    intent=intent,
                     correlation_id=correlation_id,
+                    action=action,
                 )
                 _log.info(
                     "tg.pipeline.runner.completed",
@@ -1485,7 +1640,6 @@ class DefaultPipeline:
                     chars=len(outcome.text or ACK_TEXT_RU),
                     streamed=True,
                 )
-                # D-033: only the FINAL streamed reply is persisted (no frames).
                 await self._chatlog_out(
                     telegram_id=telegram_id,
                     chat_id=chat_id,
@@ -1496,9 +1650,10 @@ class DefaultPipeline:
                 text=text,
                 owner_telegram_id=telegram_id,
                 correlation_id=correlation_id,
-                intent=result.intent,
+                intent=intent,
                 media_paths=media_paths,
                 timeout_s=timeout_s,
+                action=action,
             )
         except WikiRunnerError:
             _log.exception(
@@ -1518,10 +1673,7 @@ class DefaultPipeline:
             chars=len(outcome.text),
             latency_ms=outcome.latency_ms,
         )
-
-        # Empty assistant output → safe fallback (avoid silent zero-byte reply).
         reply_text = outcome.text if outcome.text else ACK_TEXT_RU
-
         await self._output.deliver(
             chat_id=chat_id,
             telegram_id=telegram_id,
@@ -1537,7 +1689,7 @@ class DefaultPipeline:
         )
         await self._chatlog_out(telegram_id=telegram_id, chat_id=chat_id, text=reply_text)
 
-    # END_BLOCK_TEXT_PIPELINE
+    # END_BLOCK_GENERIC_RUNNER
 
     # START_BLOCK_REMINDER_INTENT (aisw-kcz, Inbox-WIKI Phase-D.a)
     async def _handle_reminder_intent(
@@ -1558,16 +1710,6 @@ class DefaultPipeline:
         with the 2-button keyboard. The jobs.Job row is created only on confirm
         (in _handle_reminder_confirm).
         """
-        low = text.lower()
-        if any(kw in low for kw in _RECURRING_KEYWORDS):
-            await self._handle_digest_intent(
-                telegram_id=telegram_id,
-                chat_id=chat_id,
-                text=text,
-                correlation_id=correlation_id,
-            )
-            return
-
         assert self._time_parser is not None  # guarded by the caller
         user_tz = self._resolve_user_tz(telegram_id)
         now_utc = self._clock()
@@ -1688,20 +1830,10 @@ class DefaultPipeline:
         proposed via ConfirmationService.request_explicit with the 2-button
         keyboard. The jobs.Job row is created only on confirm.
 
-        «выключи/переноси сводку» (#2, aisw-578) edit an existing digest job
-        instead of creating one — dispatched before the create flow.
+        «выключи/переноси сводку» control (#2, aisw-578) now lives generically
+        in Phase-C.2's job/cancel+job/reschedule surface for ALL job kinds, not
+        only digest — this handler is a pure create-flow builder again.
         """
-        action = _detect_digest_action(text)
-        if action == "disable":
-            await self._dispatch_digest_disable(
-                telegram_id=telegram_id, chat_id=chat_id, correlation_id=correlation_id
-            )
-            return
-        if action == "reschedule":
-            await self._dispatch_digest_reschedule(
-                telegram_id=telegram_id, chat_id=chat_id, text=text, correlation_id=correlation_id
-            )
-            return
         if self._recurrence_parser is None:
             await self._sender.send_message(chat_id, REMINDER_RECURRING_RU)
             _log.info(
@@ -1767,77 +1899,6 @@ class DefaultPipeline:
             correlation_id=correlation_id,
             telegram_id=telegram_id,
             pending_id=record.pending_id,
-        )
-
-    async def _dispatch_digest_disable(
-        self, *, telegram_id: int, chat_id: int, correlation_id: str
-    ) -> None:
-        """«выключи сводку» → disable the owner's digest job(s) (#2, aisw-578)."""
-        if self._jobs_session_maker is None or self._scheduler is None:
-            await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
-            _log.error(
-                "tg.pipeline.digest.disable_misconfigured",
-                correlation_id=correlation_id,
-                telegram_id=telegram_id,
-            )
-            return
-        from ai_steward_wiki.scheduler.firing import disable_digest_jobs
-
-        async with self._jobs_session_maker() as session:
-            count = await disable_digest_jobs(
-                session,
-                self._scheduler,
-                owner_telegram_id=telegram_id,
-                correlation_id=correlation_id,
-            )
-        await self._sender.send_message(chat_id, DIGEST_DISABLED_RU if count else DIGEST_NONE_RU)
-        _log.info(
-            "tg.pipeline.digest.disabled",
-            correlation_id=correlation_id,
-            telegram_id=telegram_id,
-            count=count,
-        )
-
-    async def _dispatch_digest_reschedule(
-        self, *, telegram_id: int, chat_id: int, text: str, correlation_id: str
-    ) -> None:
-        """«переноси сводку на HH:MM» → move the owner's digest job(s) (#2, aisw-578)."""
-        hhmm = _extract_hhmm(text)
-        if hhmm is None:
-            await self._sender.send_message(chat_id, DIGEST_RESCHEDULE_NOTIME_RU)
-            _log.info(
-                "tg.pipeline.digest.reschedule_notime",
-                correlation_id=correlation_id,
-                telegram_id=telegram_id,
-            )
-            return
-        if self._jobs_session_maker is None or self._scheduler is None:
-            await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
-            _log.error(
-                "tg.pipeline.digest.reschedule_misconfigured",
-                correlation_id=correlation_id,
-                telegram_id=telegram_id,
-            )
-            return
-        from ai_steward_wiki.scheduler.firing import reschedule_digest_jobs
-
-        async with self._jobs_session_maker() as session:
-            count = await reschedule_digest_jobs(
-                session,
-                self._scheduler,
-                owner_telegram_id=telegram_id,
-                time_hhmm=hhmm,
-                correlation_id=correlation_id,
-            )
-        await self._sender.send_message(
-            chat_id, DIGEST_RESCHEDULED_RU.format(time=hhmm) if count else DIGEST_NONE_RU
-        )
-        _log.info(
-            "tg.pipeline.digest.rescheduled",
-            correlation_id=correlation_id,
-            telegram_id=telegram_id,
-            count=count,
-            time=hhmm,
         )
 
     # END_BLOCK_DIGEST_INTENT
@@ -2760,6 +2821,7 @@ class DefaultStreamingDelivery:
         text: str,
         intent: Intent,
         correlation_id: str,
+        action: str | None = None,
     ) -> WikiRunOutcome:
         from ai_steward_wiki.wiki.runner import final_turn_text  # lazy import
 
@@ -2781,6 +2843,7 @@ class DefaultStreamingDelivery:
                 correlation_id=correlation_id,
                 intent=intent,
                 on_event=on_event,
+                action=action,
             )
         )
 
