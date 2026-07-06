@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/scheduler/consumer.py
-# VERSION: 0.0.4
+# VERSION: 0.0.5
 # START_MODULE_CONTRACT
 #   PURPOSE: Single async drain loop over PriorityJobQueue — spawns the Claude CLI
 #            directly per cron-user item (no systemd-run wrapper, aisw-abc/ADR-010),
@@ -28,11 +28,22 @@
 #
 # START_MODULE_MAP
 #   Spawner - Protocol seam: async spawn(argv, *, cwd, env) -> _Killable + communicate
-#   CronConsumer - constructor-DI drain loop; .run() blocking; ._execute_one per-item
+#   CronConsumer - constructor-DI drain loop; .run() blocking; ._execute_one per-item,
+#                  dispatches by kind to ._execute_cron_user or ._execute_check_in
+#   CronConsumer._execute_check_in - check_in CLI exec: generated ru question, or a
+#                                     deterministic ru fallback on any failure (FR-6)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.4 - aisw-abc: drop the `systemd-run --scope --collect` wrapper
+#   LAST_CHANGE: v0.0.5 - aisw-xi8 (Phase-B, DEC-8, FR-6): _execute_one now
+#                dispatches by the validated message's 'kind' discriminator
+#                (parse_queue_msg) to _execute_cron_user (unchanged) or the NEW
+#                _execute_check_in. check_in exit!=0 / timeout / empty-output all
+#                degrade to a deterministic ru fallback "Хотел спросить: {topic}"
+#                (never the generic error line) and still mark the row 'finished'
+#                — a delivered fallback is a completed check-in (R-5). NEW
+#                CronConsumer ctor param check_in_prompt_path.
+#   PREVIOUS:    v0.0.4 - aisw-abc: drop the `systemd-run --scope --collect` wrapper
 #                from _build_argv — run the Claude CLI directly, matching
 #                wiki/runner._build_argv. The wrapper was D-038 per-UID-isolation
 #                infra; ADR-010 deferred that model for the life-MVP (simple
@@ -94,7 +105,11 @@ from ai_steward_wiki.scheduler.core import (
     kill_with_sequence,
 )
 from ai_steward_wiki.scheduler.queue import PriorityJobQueue
-from ai_steward_wiki.scheduler.queue_payloads import CronUserQueueMsg
+from ai_steward_wiki.scheduler.queue_payloads import (
+    CheckInQueueMsg,
+    CronUserQueueMsg,
+    parse_queue_msg,
+)
 from ai_steward_wiki.storage.jobs.models import Job
 from ai_steward_wiki.tg.output import ChainSplitter
 
@@ -110,6 +125,7 @@ _log = structlog.get_logger("scheduler.consumer")
 _TIMEOUT_MSG_RU = "❌ Тайм-аут: команда выполнялась дольше {seconds} с."
 _ERROR_MSG_RU = "❌ Ошибка ({code}): {stderr}"
 _EMPTY_OUTPUT_RU = "✅ Команда выполнена (без вывода)."
+_CHECK_IN_FALLBACK_RU = "Хотел спросить: {topic}"
 
 
 class _Killable(Protocol):
@@ -174,6 +190,7 @@ class CronConsumer:
         jobs_session_maker: async_sessionmaker[AsyncSession],
         timeout_s: float = 600.0,
         spawner: Spawner | None = None,
+        check_in_prompt_path: Path | None = None,
     ) -> None:
         self._queue = queue
         self._bot = bot
@@ -183,6 +200,11 @@ class CronConsumer:
         self._jobs_session_maker = jobs_session_maker
         self._timeout_s = timeout_s
         self._spawner: Spawner = spawner if spawner is not None else _AsyncioSpawner()
+        # aisw-xi8 (Phase-B, Task B7): default resolves relative to prompt_path's
+        # sibling so __main__.py (Phase-C.1's file, not touched until then) stays
+        # buildable across the Phase-B/Phase-C.1 boundary without a forced
+        # simultaneous edit. Phase C.1 passes it explicitly (Task C1.6).
+        self._check_in_prompt_path = check_in_prompt_path or (prompt_path.parent / "check_in.md")
 
     # ---- public lifecycle -------------------------------------------------
 
@@ -219,9 +241,11 @@ class CronConsumer:
 
     async def _execute_one(self, payload: object) -> None:
         # START_BLOCK_CONSUMER_VALIDATE
-        if not isinstance(payload, CronUserQueueMsg):
+        if isinstance(payload, CronUserQueueMsg | CheckInQueueMsg):
+            msg: CronUserQueueMsg | CheckInQueueMsg = payload
+        else:
             try:
-                msg = CronUserQueueMsg.model_validate(payload)
+                msg = parse_queue_msg(payload)  # type: ignore[arg-type]
             except ValidationError as exc:
                 _log.warning(
                     "scheduler.consumer.unexpected",
@@ -229,10 +253,14 @@ class CronConsumer:
                     error_class=type(exc).__name__,
                 )
                 return
-        else:
-            msg = payload
         # END_BLOCK_CONSUMER_VALIDATE
 
+        if isinstance(msg, CheckInQueueMsg):
+            await self._execute_check_in(msg)
+        else:
+            await self._execute_cron_user(msg)
+
+    async def _execute_cron_user(self, msg: CronUserQueueMsg) -> None:
         await self._set_status(msg.job_id, status="running", started=True)
 
         argv = self._build_argv(msg)
@@ -311,6 +339,129 @@ class CronConsumer:
                 status="failed",
                 last_error=f"exit={exit_code}; stderr={truncate_stderr(stderr, limit=200)}",
             )
+
+    # ---- check_in executor (aisw-xi8, Phase-B, Task B7, DEC-8/FR-6) --------
+
+    async def _execute_check_in(self, msg: CheckInQueueMsg) -> None:
+        await self._set_status(msg.job_id, status="running", started=True)
+
+        argv = self._build_check_in_argv(msg)
+        env = build_env(self._claude_config_dir)
+        cwd = neutral_cwd(self._claude_config_dir)
+        _log.info(
+            "scheduler.consumer.exec.started",
+            job_id=msg.job_id,
+            correlation_id=msg.correlation_id,
+            chat_id=msg.chat_id,
+        )
+
+        proc = await self._spawner.spawn(argv, cwd=cwd, env=env)
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout_s)
+        except TimeoutError:
+            await kill_with_sequence(proc, grace_seconds=DEFAULT_TERM_GRACE_SECONDS)
+            _log.warning(
+                "scheduler.consumer.exec.timeout",
+                job_id=msg.job_id,
+                correlation_id=msg.correlation_id,
+                timeout_s=self._timeout_s,
+            )
+            await self._deliver_check_in_fallback(msg, error_class="TimeoutError")
+            return
+        except Exception as exc:
+            _log.warning(
+                "scheduler.consumer.exec.failed",
+                job_id=msg.job_id,
+                correlation_id=msg.correlation_id,
+                error_class=type(exc).__name__,
+                reason="spawn_or_communicate",
+            )
+            await self._deliver_check_in_fallback(msg, error_class=type(exc).__name__)
+            return
+
+        exit_code = proc.returncode if proc.returncode is not None else -1
+        if exit_code != 0:
+            _log.warning(
+                "scheduler.consumer.exec.failed",
+                job_id=msg.job_id,
+                correlation_id=msg.correlation_id,
+                exit_code=exit_code,
+            )
+            await self._deliver_check_in_fallback(msg, error_class=f"exit={exit_code}")
+            return
+
+        text = stdout.decode("utf-8", "replace").strip()
+        if not text:
+            # FR-6: an empty question is as unhelpful as a failure — fall back.
+            await self._deliver_check_in_fallback(msg, error_class="EmptyOutput")
+            return
+
+        _log.info(
+            "scheduler.consumer.exec.done", job_id=msg.job_id, correlation_id=msg.correlation_id
+        )
+        try:
+            await self._bot.send_message(msg.chat_id, text)
+        except TelegramAPIError as exc:
+            _log.warning(
+                "scheduler.consumer.deliver_failed",
+                job_id=msg.job_id,
+                correlation_id=msg.correlation_id,
+                error_class=type(exc).__name__,
+            )
+            await self._set_status(
+                msg.job_id, status="failed", finished=True, last_error="telegram_api_error"
+            )
+            return
+        await self._set_status(msg.job_id, status="finished", finished=True)
+        _log.info(
+            "scheduler.consumer.delivered",
+            job_id=msg.job_id,
+            correlation_id=msg.correlation_id,
+            chat_id=msg.chat_id,
+            n_chunks=1,
+        )
+
+    async def _deliver_check_in_fallback(self, msg: CheckInQueueMsg, *, error_class: str) -> None:
+        """FR-6: a CLI failure at fire time MUST degrade to a deterministic ru
+        fallback, never silence. A delivered fallback still counts as 'finished'
+        (a completed check-in from the user's perspective — R-5 mitigation)."""
+        fallback = _CHECK_IN_FALLBACK_RU.format(topic=msg.question_topic)
+        _log.warning(
+            "scheduler.check_in.fallback",
+            job_id=msg.job_id,
+            correlation_id=msg.correlation_id,
+            error_class=error_class,
+        )
+        try:
+            await self._bot.send_message(msg.chat_id, fallback)
+        except TelegramAPIError as exc:
+            _log.warning(
+                "scheduler.consumer.deliver_failed",
+                job_id=msg.job_id,
+                correlation_id=msg.correlation_id,
+                error_class=type(exc).__name__,
+            )
+            await self._set_status(
+                msg.job_id, status="failed", finished=True, last_error="telegram_api_error"
+            )
+            return
+        await self._set_status(msg.job_id, status="finished", finished=True)
+
+    def _build_check_in_argv(self, msg: CheckInQueueMsg) -> list[str]:
+        binary = resolve_binary(self._claude_binary)
+        return [
+            binary,
+            *system_prompt_argv(self._check_in_prompt_path),
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
+            "--permission-mode",
+            "dontAsk",
+            "--disallowedTools",
+            "WebFetch",
+            "--",
+            msg.question_topic,
+        ]
 
     # ---- argv builder ------------------------------------------------------
 
