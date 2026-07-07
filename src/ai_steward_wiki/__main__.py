@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.6.0
+# VERSION: 0.6.1
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -32,7 +32,14 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.6.0 - aisw-o6m (ADR-034): adaptive scoping for wiki_query in
+#   LAST_CHANGE: v0.6.1 - aisw-xi8 (Step-12 review fix): call
+#                firing.set_recurring_scheduler(scheduler) right after
+#                set_firing_context. It was defined in Phase-B (DEC-7) for
+#                fire_recurring_job's 3rd-strike auto-disable remove_job call,
+#                but never wired here — a disabled recurring_reminder's
+#                CronTrigger would orphan in the persistent jobstore forever
+#                instead of actually being removed.
+#   PREVIOUS:    v0.6.0 - aisw-o6m (ADR-034): adaptive scoping for wiki_query in
 #                _WikiRunnerAdapter — confident hint-catalog match runs inside the
 #                matched WIKI (wiki_path swap, CLAUDE.md via assemble_prompt);
 #                ambiguous runs stay cross-root with the wiki.scope layouts block
@@ -1340,6 +1347,14 @@ async def _amain() -> None:
     # aisw-kcz: install the reminder-firing context (picklable int-arg fire_job
     # reads the bot-sender + jobs sessionmaker from here at fire time).
     firing.set_firing_context(sender=sender, jobs_session_maker=jobs_maker)
+    # aisw-xi8 (Phase-B, DEC-7; wired here in the Step-12 review fix): install
+    # the AsyncIOScheduler handle fire_recurring_job's 3rd-strike auto-disable
+    # needs to call remove_job on. set_recurring_scheduler was defined in
+    # Phase-B but never called from __main__ — in production, 3 consecutive
+    # recurring_reminder delivery failures would hit an uninitialised (None)
+    # scheduler reference instead of actually removing the trigger, orphaning
+    # the disabled job's CronTrigger in the persistent jobstore forever.
+    firing.set_recurring_scheduler(scheduler)
 
     # aisw-163 P5: install the reminder-card callback context. The on_reminder_card
     # handler (registered in tg.handlers) reads the scheduler + jobs sessionmaker

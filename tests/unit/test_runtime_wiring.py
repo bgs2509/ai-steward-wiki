@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ai_steward_wiki import __main__ as runtime
+from ai_steward_wiki.scheduler import firing
 from ai_steward_wiki.scheduler.maintenance import (
     MEDIA_STAGING_SWEEP_JOB_ID,
     PURGE_PENDING_JOB_ID,
@@ -115,35 +116,49 @@ def test_amain_composes_and_shuts_down_cleanly(tmp_path: Path) -> None:
         await asyncio.sleep(0.05)
         runtime._STOP_EVENT_FOR_TESTS.set()
 
-    with (
-        patch.object(runtime, "get_settings", return_value=settings),
-        patch.object(runtime, "configure_logging"),
-        patch.object(runtime, "_run_all_migrations", new=AsyncMock()),
-        patch.object(runtime, "build_engine", return_value=fake_engine),
-        patch.object(runtime, "build_sessionmaker", return_value=fake_sessionmaker),
-        patch.object(runtime, "sync_to_sessions_db", new=AsyncMock()),
-        patch.object(runtime, "build_scheduler", return_value=fake_scheduler),
-        patch.object(runtime, "build_bot", return_value=fake_bot),
-        patch.object(runtime, "build_dispatcher", return_value=fake_dp),
-    ):
+    # aisw-xi8 (Step-12 review fix): set_recurring_scheduler installs a
+    # module-level global in scheduler.firing — reset around the test so this
+    # run's assertion cannot leak into / be masked by another test.
+    firing._recurring_scheduler = None
+    try:
+        with (
+            patch.object(runtime, "get_settings", return_value=settings),
+            patch.object(runtime, "configure_logging"),
+            patch.object(runtime, "_run_all_migrations", new=AsyncMock()),
+            patch.object(runtime, "build_engine", return_value=fake_engine),
+            patch.object(runtime, "build_sessionmaker", return_value=fake_sessionmaker),
+            patch.object(runtime, "sync_to_sessions_db", new=AsyncMock()),
+            patch.object(runtime, "build_scheduler", return_value=fake_scheduler),
+            patch.object(runtime, "build_bot", return_value=fake_bot),
+            patch.object(runtime, "build_dispatcher", return_value=fake_dp),
+        ):
 
-        async def driver() -> None:
-            runtime._STOP_EVENT_FOR_TESTS = asyncio.Event()
-            await asyncio.gather(runtime._amain(), trigger_stop())
+            async def driver() -> None:
+                runtime._STOP_EVENT_FOR_TESTS = asyncio.Event()
+                await asyncio.gather(runtime._amain(), trigger_stop())
 
-        asyncio.run(driver())
+            asyncio.run(driver())
 
-    fake_scheduler.start.assert_called_once()
-    fake_scheduler.shutdown.assert_called_once()
-    fake_dp.start_polling.assert_awaited_once()
-    fake_bot.session.close.assert_awaited()
-    assert fake_engine.dispose.await_count >= 3
-    # aisw-7k0: all retention/maintenance jobs are registered (pending purge,
-    # DB retention, db_snapshot, media _staging sweep).
-    registered_job_ids = {c.kwargs.get("id") for c in fake_scheduler.add_job.call_args_list}
-    assert PURGE_PENDING_JOB_ID in registered_job_ids
-    assert MEDIA_STAGING_SWEEP_JOB_ID in registered_job_ids
-    assert fake_scheduler.add_job.call_count >= 5
+        fake_scheduler.start.assert_called_once()
+        fake_scheduler.shutdown.assert_called_once()
+        fake_dp.start_polling.assert_awaited_once()
+        fake_bot.session.close.assert_awaited()
+        assert fake_engine.dispose.await_count >= 3
+        # aisw-7k0: all retention/maintenance jobs are registered (pending purge,
+        # DB retention, db_snapshot, media _staging sweep).
+        registered_job_ids = {c.kwargs.get("id") for c in fake_scheduler.add_job.call_args_list}
+        assert PURGE_PENDING_JOB_ID in registered_job_ids
+        assert MEDIA_STAGING_SWEEP_JOB_ID in registered_job_ids
+        assert fake_scheduler.add_job.call_count >= 5
+        # aisw-xi8 (Step-12 review fix): firing.set_recurring_scheduler was
+        # defined but never called from __main__ — fire_recurring_job's 3rd-
+        # strike auto-disable would call remove_job on a None reference in
+        # production. _amain must wire it with the SAME scheduler instance
+        # build_scheduler() returned (so a real remove_job call lands on the
+        # live scheduler, not an orphaned/uninitialised one).
+        assert firing._recurring_scheduler is fake_scheduler
+    finally:
+        firing._recurring_scheduler = None
 
 
 def test_amain_requires_active_tg_token(tmp_path: Path) -> None:
