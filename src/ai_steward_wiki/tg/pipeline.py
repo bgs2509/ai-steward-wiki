@@ -56,7 +56,7 @@
 #   ACK_DEDUP_RU - reply on L2 dedup hit
 #   ACK_CLASSIFY_ERR_RU - safe ack on classifier failure
 #   ACK_RUNNER_ERR_RU - safe ack on runner failure
-#   SMALLTALK_REPLY_RU - short conversational reply for intent=smalltalk (aisw-df4)
+#   CHAT_REPLY_RU - short conversational reply for intent=chat (aisw-df4, ex-SMALLTALK, aisw-xi8 rename)
 #   MAX_DOC_BYTES - hard cap on incoming document size (25 MB)
 #   PDF_MAX_EXTRACT_CHARS - truncate point for pypdf-extracted text
 #   PHOTO_PROMPT_RU - synthetic Stage-1 prompt for a caption-less image (D-022)
@@ -322,6 +322,7 @@ __all__ = [
     "ACK_VOICE_RU",
     "ACK_VOICE_UNAVAILABLE_RU",
     "ACTIVE_WIKI_DEFAULT_ROUTE_RU",
+    "CHAT_REPLY_RU",
     "CLASSIFIER_CONFIDENCE_THRESHOLD",
     "DIGEST_ACK_RU",
     "DIGEST_CONFIRM_CANCELLED_RU",
@@ -364,7 +365,6 @@ __all__ = [
     "ROUTE_CONFIRM_STALE_RU",
     "ROUTE_SILENT_ACK_NOREDIR_RU",
     "ROUTE_SILENT_ACK_RU",
-    "SMALLTALK_REPLY_RU",
     "SUBTHRESHOLD_CLARIFY_RU",
     "SUPPORTED_IMAGE_MIMES",
     "Classifier",
@@ -405,7 +405,7 @@ ACK_RUNNER_ERR_RU = "Задача заняла слишком много вре�
 # "ты дурак?") gets a short friendly reply — never filed, scheduled, or run
 # through a WIKI. A single canned ru line keeps the path deterministic (no LLM
 # round-trip) and nudges the user back toward the WIKI capabilities.
-SMALLTALK_REPLY_RU = (
+CHAT_REPLY_RU = (
     "Я на связи. 🙂 Я веду твои вики-заметки: сохраняю материалы, отвечаю по ним, "
     "ставлю напоминания и присылаю сводки. Что занесём или о чём напомнить?"  # noqa: RUF001
 )
@@ -1223,14 +1223,8 @@ class DefaultPipeline:
 
         # START_BLOCK_INTENT_DISPATCH (aisw-xi8, DEC-1 — flat 6-intent switch)
         if result.intent is Intent.CHAT:
-            _log.info(
-                "tg.pipeline.smalltalk.replied",
-                correlation_id=correlation_id,
-                telegram_id=telegram_id,
-            )
-            await self._sender.send_message(chat_id, SMALLTALK_REPLY_RU)
-            await self._chatlog_out(
-                telegram_id=telegram_id, chat_id=chat_id, text=SMALLTALK_REPLY_RU
+            await self._handle_chat(
+                telegram_id=telegram_id, chat_id=chat_id, correlation_id=correlation_id
             )
             return
         if result.intent is Intent.JOB:
@@ -1243,12 +1237,9 @@ class DefaultPipeline:
             )
             return
         if result.intent is Intent.ADMIN:
-            _log.info(
-                "tg.pipeline.admin.declined",
-                correlation_id=correlation_id,
-                telegram_id=telegram_id,
+            await self._handle_admin(
+                telegram_id=telegram_id, chat_id=chat_id, correlation_id=correlation_id
             )
-            await self._sender.send_message(chat_id, ACK_ADMIN_RU)
             return
         if result.intent is Intent.WIKI:
             await self._handle_wiki(
@@ -2005,6 +1996,25 @@ class DefaultPipeline:
         )
 
     # END_BLOCK_WIKI_DISPATCH
+
+    # START_BLOCK_CHAT_DISPATCH (aisw-xi8 — ex-SMALLTALK, renamed; FR-17 unchanged behaviour)
+    async def _handle_chat(self, *, telegram_id: int, chat_id: int, correlation_id: str) -> None:
+        _log.info(
+            "tg.pipeline.chat.replied", correlation_id=correlation_id, telegram_id=telegram_id
+        )
+        await self._sender.send_message(chat_id, CHAT_REPLY_RU)
+        await self._chatlog_out(telegram_id=telegram_id, chat_id=chat_id, text=CHAT_REPLY_RU)
+
+    # END_BLOCK_CHAT_DISPATCH
+
+    # START_BLOCK_ADMIN_DISPATCH (aisw-xi8 — FR-17 unchanged behaviour)
+    async def _handle_admin(self, *, telegram_id: int, chat_id: int, correlation_id: str) -> None:
+        _log.info(
+            "tg.pipeline.admin.declined", correlation_id=correlation_id, telegram_id=telegram_id
+        )
+        await self._sender.send_message(chat_id, ACK_ADMIN_RU)
+
+    # END_BLOCK_ADMIN_DISPATCH
 
     # START_BLOCK_WEB_DISPATCH (aisw-xi8, DEC-1)
     async def _handle_web(

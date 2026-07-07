@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
-from ai_steward_wiki.tg.pipeline import SMALLTALK_REPLY_RU, DefaultPipeline
+from ai_steward_wiki.tg.pipeline import CHAT_REPLY_RU, DefaultPipeline
 from tests.unit.tg.conftest import FakeSender
 
 
@@ -14,7 +14,7 @@ def _classifier(*, confidence: float = 0.95) -> MagicMock:
     cls = MagicMock()
     cls.classify = AsyncMock(
         return_value=ClassifierResult(
-            intent=Intent.SMALLTALK,
+            intent=Intent.CHAT,
             confidence=confidence,
             distilled_payload={},
             backend="fake",
@@ -62,8 +62,8 @@ def _pipe(*, sender: FakeSender, classifier: MagicMock, runner: MagicMock, confi
     )
 
 
-async def test_smalltalk_replies_conversationally_without_running() -> None:
-    """A smalltalk-classified message gets a short ru reply; no WIKI run, no confirm."""
+async def test_chat_intent_replies_and_returns() -> None:
+    """A chat-classified message gets a short ru reply; no WIKI run, no confirm."""
     sender = FakeSender()
     runner = _runner()
     confirm = _confirm()
@@ -76,12 +76,12 @@ async def test_smalltalk_replies_conversationally_without_running() -> None:
     await pipe.on_text(telegram_id=42, chat_id=42, update_id=1, text="ты дурак?")
 
     assert sender.sends, "a reply must be sent"
-    assert sender.sends[-1]["text"] == SMALLTALK_REPLY_RU
+    assert sender.sends[-1]["text"] == CHAT_REPLY_RU
     runner.run.assert_not_awaited()
     confirm.request_explicit.assert_not_awaited()
 
 
-async def test_smalltalk_never_emits_digest_unparseable(
+async def test_chat_never_emits_digest_unparseable(
     capsys: Any,
 ) -> None:
     """Casual «расскажи что-нибудь» must NOT trip the digest fast-path."""
@@ -97,5 +97,5 @@ async def test_smalltalk_never_emits_digest_unparseable(
     )
     out = capsys.readouterr().out
     assert "tg.pipeline.digest.unparseable" not in out
-    assert "tg.pipeline.smalltalk.replied" in out
-    assert sender.sends[-1]["text"] == SMALLTALK_REPLY_RU
+    assert "tg.pipeline.chat.replied" in out
+    assert sender.sends[-1]["text"] == CHAT_REPLY_RU
