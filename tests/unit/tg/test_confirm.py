@@ -15,6 +15,7 @@ from ai_steward_wiki.storage.sessions.models import PendingConfirm
 from ai_steward_wiki.tg.confirm import (
     ConfirmationService,
     PendingConfirmDraft,
+    build_job_pick_keyboard,
     build_route_confirm_keyboard,
     compute_payload_hash,
 )
@@ -28,6 +29,19 @@ def test_route_confirm_keyboard_no_wikis_is_confirm_cancel_one_row() -> None:
     rows = kb.inline_keyboard
     assert len(rows) == 1  # single top row, no picker
     assert [b.callback_data for b in rows[0]] == ["confirm:7:confirm", "confirm:7:cancel"]
+
+
+def test_build_job_pick_keyboard_one_row_per_candidate() -> None:
+    kb = build_job_pick_keyboard(42, 3)
+    assert len(kb.inline_keyboard) == 3
+    assert kb.inline_keyboard[0][0].text == "1"
+    assert kb.inline_keyboard[0][0].callback_data == "jobpick:42:0"
+    assert kb.inline_keyboard[2][0].callback_data == "jobpick:42:2"
+
+
+def test_build_job_pick_keyboard_zero_candidates_empty() -> None:
+    kb = build_job_pick_keyboard(42, 0)
+    assert kb.inline_keyboard == []
 
 
 def test_route_confirm_keyboard_wiki_picker_two_columns() -> None:

@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/confirm.py
-# VERSION: 0.0.3
+# VERSION: 0.0.4
 # START_MODULE_CONTRACT
 #   PURPOSE: Graduated 3-tier confirmation flow (D-023) — auto / implicit /
 #            explicit. Explicit-level draft is persisted in
@@ -30,12 +30,16 @@
 #   build_explicit_keyboard - 3-button InlineKeyboardMarkup
 #   build_route_confirm_keyboard - 2-button route-confirm keyboard (Phase-C, aisw-e45)
 #   build_route_redirect_keyboard - picker-only redirect keyboard for silent auto-route (aisw-2ra)
+#   build_job_pick_keyboard - numbered one-column job/cancel|reschedule disambiguation picker (aisw-xi8, Phase-C.2)
 #   ConfirmationService - main facade
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.3 - aisw-2ra: build_route_redirect_keyboard (picker-only) for silent auto-route redirect
-#   PREVIOUS:    v0.0.2 - aisw-e45 (Phase-C): build_route_confirm_keyboard + request_explicit keyboard_factory
+#   LAST_CHANGE: v0.0.4 - aisw-xi8 (Phase-C.2, DEC-10): add build_job_pick_keyboard
+#                — numbered one-column disambiguation picker for job/cancel and
+#                job/reschedule needle matches (mirrors build_route_confirm_keyboard's
+#                wikipick precedent; a distinct jobpick: callback prefix, not reused).
+#   PREVIOUS:    v0.0.3 - aisw-2ra: build_route_redirect_keyboard (picker-only) for silent auto-route redirect
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -66,6 +70,7 @@ __all__ = [
     "ConfirmationService",
     "PendingConfirmDraft",
     "build_explicit_keyboard",
+    "build_job_pick_keyboard",
     "build_route_confirm_keyboard",
     "build_route_redirect_keyboard",
     "compute_payload_hash",
@@ -171,6 +176,20 @@ def build_route_redirect_keyboard(pending_id: int, other_wikis: Sequence[str] = 
             pick_row = []
     if pick_row:
         rows.append(pick_row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_job_pick_keyboard(pending_id: int, n_candidates: int) -> Any:
+    """Numbered one-column keyboard for job/cancel|reschedule needle disambiguation
+    (aisw-xi8, DEC-10 — mirrors the wikipick precedent above). Callback data:
+    ``jobpick:<pending_id>:<idx>``; tapping directly executes the pending
+    mutation for that candidate (no second confirm — the tap IS the confirm)."""
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows: list[list[Any]] = [
+        [InlineKeyboardButton(text=str(i + 1), callback_data=f"jobpick:{pending_id}:{i}")]
+        for i in range(n_candidates)
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
