@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from ai_steward_wiki.classifier.recurrence import Recurrence, RecurrenceParseResult
-from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
+from ai_steward_wiki.classifier.schema import Intent
 from ai_steward_wiki.storage.jobs.engine import Base
 from ai_steward_wiki.storage.jobs.models import Job
 from ai_steward_wiki.storage.jobs.payloads import DigestPayload, parse_job_payload
@@ -20,30 +20,23 @@ from ai_steward_wiki.tg.pipeline import (
     DIGEST_ACK_RU,
     DIGEST_CONFIRM_CANCELLED_RU,
     DIGEST_CONFIRM_STALE_RU,
-    DIGEST_DISABLED_RU,
-    DIGEST_NONE_RU,
-    DIGEST_RESCHEDULED_RU,
     DIGEST_UNPARSEABLE_RU,
     REMINDER_RECURRING_RU,
     DefaultPipeline,
 )
+from tests.helpers.classifier_factory import make_classifier_result
 from tests.unit.tg.conftest import FakeSender
 
 NOW = datetime(2026, 5, 12, 18, 0, tzinfo=UTC)
 
 
 def _classifier() -> MagicMock:
+    # DEC-14: v1 Intent.REMINDER (digest sub-detection via now-deleted regex
+    # forks, FR-2) -> v2 Intent.JOB, action="create", kind="digest".
     cls = MagicMock()
     cls.classify = AsyncMock(
-        return_value=ClassifierResult(
-            intent=Intent.REMINDER,
-            confidence=0.95,
-            distilled_payload={},
-            backend="fake",
-            model="m",
-            prompt_semver="1.0.0",
-            prompt_sha256="a" * 64,
-            latency_ms=1,
+        return_value=make_classifier_result(
+            Intent.JOB, action="create", kind="digest", confidence=0.95
         )
     )
     return cls
@@ -86,19 +79,11 @@ class _FakeRecurrenceParser:
 class _FakeScheduler:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
-        self.removed: list[str] = []
-        self.rescheduled: list[dict[str, Any]] = []
 
     def add_job(self, func, *, trigger=None, args=None, id=None, replace_existing=False, **kw):
         self.calls.append(
             {"func": func, "args": args, "id": id, "replace_existing": replace_existing}
         )
-
-    def remove_job(self, job_id: str) -> None:
-        self.removed.append(job_id)
-
-    def reschedule_job(self, job_id: str, *, trigger=None) -> None:
-        self.rescheduled.append({"id": job_id, "trigger": trigger})
 
 
 @pytest.fixture
@@ -399,77 +384,17 @@ async def test_confirm_stale_notice(jobs_maker) -> None:
 
 
 # --- digest control: disable / reschedule (#2, aisw-578) -------------------
-
-
-async def test_digest_disable_disables_existing_job(jobs_maker) -> None:
-    from ai_steward_wiki.scheduler.firing import create_digest_job
-
-    sched = _FakeScheduler()
-    async with jobs_maker() as s:
-        job_id = await create_digest_job(
-            s, sched, owner_telegram_id=42, chat_id=42, recurrence=_daily()
-        )
-    sender = FakeSender()
-    confirm = _confirm_request()
-    pipe = _pipe(
-        sender=sender,
-        confirmation=confirm,
-        recurrence_parser=_FakeRecurrenceParser(RecurrenceParseResult(recurrence=_daily())),
-        jobs_session_maker=jobs_maker,
-        scheduler=sched,
-    )
-    await pipe.on_text(telegram_id=42, chat_id=42, update_id=1, text="выключи ежедневную сводку")
-
-    confirm.request_explicit.assert_not_awaited()  # disable, not a new digest
-    async with jobs_maker() as s:
-        row = await s.get(Job, job_id)
-        assert row is not None
-        assert row.status == "disabled"
-    assert f"digest:{job_id}" in sched.removed
-    assert any(m["text"] == DIGEST_DISABLED_RU for m in sender.sends)
-
-
-async def test_digest_disable_without_job_replies_none(jobs_maker) -> None:
-    sched = _FakeScheduler()
-    sender = FakeSender()
-    confirm = _confirm_request()
-    pipe = _pipe(
-        sender=sender,
-        confirmation=confirm,
-        recurrence_parser=_FakeRecurrenceParser(RecurrenceParseResult(recurrence=_daily())),
-        jobs_session_maker=jobs_maker,
-        scheduler=sched,
-    )
-    await pipe.on_text(telegram_id=42, chat_id=42, update_id=1, text="выключи сводку")
-    assert any(m["text"] == DIGEST_NONE_RU for m in sender.sends)
-
-
-async def test_digest_reschedule_moves_existing_job(jobs_maker) -> None:
-    from ai_steward_wiki.scheduler.firing import create_digest_job
-
-    sched = _FakeScheduler()
-    async with jobs_maker() as s:
-        job_id = await create_digest_job(
-            s, sched, owner_telegram_id=42, chat_id=42, recurrence=_daily()
-        )
-    sender = FakeSender()
-    confirm = _confirm_request()
-    pipe = _pipe(
-        sender=sender,
-        confirmation=confirm,
-        recurrence_parser=_FakeRecurrenceParser(RecurrenceParseResult(recurrence=_daily())),
-        jobs_session_maker=jobs_maker,
-        scheduler=sched,
-    )
-    await pipe.on_text(telegram_id=42, chat_id=42, update_id=1, text="переноси сводку на 7:30")
-
-    confirm.request_explicit.assert_not_awaited()  # reschedule, not a new digest
-    async with jobs_maker() as s:
-        row = await s.get(Job, job_id)
-        assert row is not None
-        parsed = parse_job_payload(row.payload)
-        assert isinstance(parsed, DigestPayload)
-        assert parsed.recurrence.time_hhmm == "07:30"
-    assert sched.rescheduled
-    assert sched.rescheduled[0]["id"] == f"digest:{job_id}"
-    assert any(m["text"] == DIGEST_RESCHEDULED_RU.format(time="07:30") for m in sender.sends)
+#
+# DEC-14/aisw-xi8: the three tests that used to live here
+# (test_digest_disable_disables_existing_job,
+# test_digest_disable_without_job_replies_none,
+# test_digest_reschedule_moves_existing_job) exercised a text-regex-driven
+# «выключи/переноси сводку» control that lived INSIDE the v1 digest fast-path.
+# Phase-C.1 (FR-2, already landed) deleted that mechanism along with the
+# DIGEST_DISABLED_RU/DIGEST_NONE_RU/DIGEST_RESCHEDULED_RU replies it used —
+# _handle_digest_intent is now a pure create-flow builder (see its docstring).
+# Digest disable/reschedule now goes through the SAME generic job/cancel +
+# job/reschedule surface as every other job kind (Phase-C.2); coverage lives in
+# test_pipeline_job_manage.py (see test_job_reschedule_recurring_shaped_closes_digest_defect,
+# which explicitly closes the #35/#91/#99 digest-control defect cluster this
+# file used to cover, and the kind-agnostic job_cancel tests for disable).

@@ -52,20 +52,12 @@ def _make_runner(text: str = "распознал чек") -> MagicMock:
 
 
 def _make_classifier() -> MagicMock:
-    from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
+    from ai_steward_wiki.classifier.schema import Intent
+    from tests.helpers.classifier_factory import make_classifier_result
 
     cls = MagicMock()
     cls.classify = AsyncMock(
-        return_value=ClassifierResult(
-            intent=Intent.WIKI_QUERY,
-            confidence=0.9,
-            distilled_payload={},
-            backend="fake",
-            model="fake-m",
-            prompt_semver="1.0.0",
-            prompt_sha256="a" * 64,
-            latency_ms=5,
-        )
+        return_value=make_classifier_result(Intent.WIKI, action="query", confidence=0.9)
     )
     return cls
 

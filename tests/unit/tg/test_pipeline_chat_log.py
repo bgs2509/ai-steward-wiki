@@ -11,20 +11,13 @@ from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
 from ai_steward_wiki.inbox.router import RouterDecision, RouterIntent
 from ai_steward_wiki.storage.audit.chat_log import ChatTurn
 from ai_steward_wiki.tg.pipeline import DefaultPipeline, WikiRunOutcome
+from tests.helpers.classifier_factory import make_classifier_result
 from tests.unit.tg.conftest import FakeSender
 
 
 def _classifier_result(intent: Intent) -> ClassifierResult:
-    return ClassifierResult(
-        intent=intent,
-        confidence=0.9,
-        distilled_payload={"q": "x"},
-        backend="fake",
-        model="fake-m",
-        prompt_semver="1.1.0",
-        prompt_sha256="a" * 64,
-        latency_ms=10,
-    )
+    action = "query" if intent is Intent.WIKI else None
+    return make_classifier_result(intent, action=action, confidence=0.9)
 
 
 def _make_idem() -> MagicMock:
@@ -75,7 +68,7 @@ async def test_writes_in_turn_on_inbound() -> None:
         sender=sender,
         idempotency=_make_idem(),
         confirmation=MagicMock(),
-        classifier=_make_classifier(Intent.WIKI_QUERY),
+        classifier=_make_classifier(Intent.WIKI),
         runner=_make_runner(),
         output=_make_output(),
         chat_log=chat_log,
@@ -98,7 +91,7 @@ async def test_writes_out_turn_on_final_reply() -> None:
         sender=sender,
         idempotency=_make_idem(),
         confirmation=MagicMock(),
-        classifier=_make_classifier(Intent.WIKI_QUERY),
+        classifier=_make_classifier(Intent.WIKI),
         runner=_make_runner(text="120 на 80"),
         output=_make_output(),
         chat_log=chat_log,
@@ -155,7 +148,7 @@ async def test_no_chat_log_keeps_pipeline_working() -> None:
         sender=sender,
         idempotency=_make_idem(),
         confirmation=MagicMock(),
-        classifier=_make_classifier(Intent.WIKI_QUERY),
+        classifier=_make_classifier(Intent.WIKI),
         runner=_make_runner(text="ok"),
         output=output,
         chat_log=None,

@@ -13,25 +13,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
+from ai_steward_wiki.classifier.schema import Intent
 from ai_steward_wiki.inbox.router import RouterDecision, RouterIntent
 from ai_steward_wiki.tg.pipeline import DefaultPipeline
+from tests.helpers.classifier_factory import make_classifier_result
 from tests.unit.tg.conftest import FakeSender
 
 
-def _classifier(intent: Intent = Intent.WIKI_INGEST) -> MagicMock:
+def _classifier(intent: Intent = Intent.WIKI) -> MagicMock:
     cls = MagicMock()
     cls.classify = AsyncMock(
-        return_value=ClassifierResult(
-            intent=intent,
-            confidence=0.9,
-            distilled_payload={"q": "x"},
-            backend="fake",
-            model="fake-m",
-            prompt_semver="1.1.0",
-            prompt_sha256="a" * 64,
-            latency_ms=10,
-        )
+        return_value=make_classifier_result(intent, action="ingest", confidence=0.9)
     )
     return cls
 
@@ -87,7 +79,7 @@ def _pipe(
     librarian: MagicMock | None,
     output: MagicMock | None = None,
     runner: MagicMock | None = None,
-    classifier_intent: Intent = Intent.WIKI_INGEST,
+    classifier_intent: Intent = Intent.WIKI,
 ) -> tuple[DefaultPipeline, MagicMock, MagicMock]:
     output = output or _output()
     runner = runner or _runner()

@@ -28,20 +28,12 @@ from ai_steward_wiki.tg.pipeline import (
     WikiRunOutcome,
 )
 from ai_steward_wiki.wiki.runner import WikiRunnerTimeoutError
+from tests.helpers.classifier_factory import make_classifier_result
 from tests.unit.tg.conftest import FakeSender
 
 
-def _classifier_result(intent: Intent = Intent.WIKI_QUERY) -> ClassifierResult:
-    return ClassifierResult(
-        intent=intent,
-        confidence=0.91,
-        distilled_payload={"q": "hi"},
-        backend="fake",
-        model="fake-m",
-        prompt_semver="1.0.0",
-        prompt_sha256="a" * 64,
-        latency_ms=12,
-    )
+def _classifier_result(intent: Intent = Intent.WIKI) -> ClassifierResult:
+    return make_classifier_result(intent, action="query", confidence=0.91)
 
 
 def _make_idem(*, new_update: bool = True, l2_match: SeenFileMatch | None = None) -> MagicMock:
@@ -145,7 +137,7 @@ async def test_text_happy_path_invokes_full_pipeline_once() -> None:
     args = runner.run.await_args.kwargs
     assert args["text"] == "привет"
     assert args["owner_telegram_id"] == 42
-    assert args["intent"] == Intent.WIKI_QUERY
+    assert args["intent"] == Intent.WIKI
 
 
 @pytest.mark.asyncio

@@ -11,20 +11,12 @@ from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
 from ai_steward_wiki.inbox.route import route_action_to_payload
 from ai_steward_wiki.inbox.router import RouterDecision, RouterIntent
 from ai_steward_wiki.tg.pipeline import DefaultPipeline, IngestOutcome, WikiRunOutcome
+from tests.helpers.classifier_factory import make_classifier_result
 from tests.unit.tg.conftest import FakeSender
 
 
-def _classifier_result(intent: Intent) -> ClassifierResult:
-    return ClassifierResult(
-        intent=intent,
-        confidence=0.9,
-        distilled_payload={"q": "x"},
-        backend="fake",
-        model="fake-m",
-        prompt_semver="1.1.0",
-        prompt_sha256="a" * 64,
-        latency_ms=10,
-    )
+def _classifier_result(intent: Intent, *, action: str | None = None) -> ClassifierResult:
+    return make_classifier_result(intent, action=action, confidence=0.9)
 
 
 def _make_idem() -> MagicMock:
@@ -35,9 +27,9 @@ def _make_idem() -> MagicMock:
     return idem
 
 
-def _make_classifier(intent: Intent) -> MagicMock:
+def _make_classifier(intent: Intent, *, action: str | None = None) -> MagicMock:
     cls = MagicMock()
-    cls.classify = AsyncMock(return_value=_classifier_result(intent))
+    cls.classify = AsyncMock(return_value=_classifier_result(intent, action=action))
     return cls
 
 
@@ -174,7 +166,7 @@ async def test_confident_route_does_not_override_with_pointer() -> None:
         sender=sender,
         idempotency=_make_idem(),
         confirmation=confirm,
-        classifier=_make_classifier(Intent.WIKI_INGEST),
+        classifier=_make_classifier(Intent.WIKI, action="ingest"),
         runner=_make_runner(),
         output=_make_output(),
         router=router,
@@ -217,7 +209,7 @@ async def test_set_active_on_successful_route_confirm() -> None:
         sender=sender,
         idempotency=_make_idem(),
         confirmation=confirm,
-        classifier=_make_classifier(Intent.WIKI_INGEST),
+        classifier=_make_classifier(Intent.WIKI, action="ingest"),
         runner=_make_runner(),
         output=_make_output(),
         librarian=_make_librarian("Medical-WIKI"),
@@ -240,7 +232,7 @@ async def test_no_active_wiki_port_keeps_pipeline_working() -> None:
         sender=sender,
         idempotency=_make_idem(),
         confirmation=_make_confirm(),
-        classifier=_make_classifier(Intent.WIKI_QUERY),
+        classifier=_make_classifier(Intent.WIKI, action="query"),
         runner=_make_runner(),
         output=output,
         active_wiki=None,

@@ -11,7 +11,6 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from ai_steward_wiki.classifier.schema import (
-    ClassifierResult,
     ClassifierSchemaError,
     ClassifierTimeoutError,
     Intent,
@@ -32,6 +31,7 @@ from ai_steward_wiki.tg.pipeline import (
     DefaultPipeline,
     _extract_lead_minutes,
 )
+from tests.helpers.classifier_factory import make_classifier_result
 from tests.unit.tg.conftest import FakeSender
 
 NOW = datetime(2026, 5, 12, 18, 0, tzinfo=UTC)  # 21:00 Europe/Moscow
@@ -41,21 +41,21 @@ PAST = datetime(2026, 5, 1, 6, 0, tzinfo=UTC)
 
 def _classifier(
     *,
-    intent: Intent = Intent.REMINDER,
+    intent: Intent = Intent.JOB,
     confidence: float = 0.93,
+    kind: str = "once",
     distilled: dict[str, Any] | None = None,
 ) -> MagicMock:
+    # DEC-14: v1 Intent.REMINDER -> v2 Intent.JOB, action="create", kind="once".
+    # v1 distilled_payload's "reminder_text" key -> v2 JobSlots.text (call sites
+    # below pass "text", not "reminder_text" — _handle_job_create's "once" branch
+    # (pipeline.py) forwards slots.text back out as distilled_payload["reminder_text"]
+    # internally when invoking the reused _handle_reminder_intent).
     cls = MagicMock()
+    payload = distilled if distilled is not None else {}
     cls.classify = AsyncMock(
-        return_value=ClassifierResult(
-            intent=intent,
-            confidence=confidence,
-            distilled_payload=distilled if distilled is not None else {},
-            backend="fake",
-            model="m",
-            prompt_semver="1.0.0",
-            prompt_sha256="a" * 64,
-            latency_ms=1,
+        return_value=make_classifier_result(
+            intent, action="create", kind=kind, confidence=confidence, **payload
         )
     )
     return cls
@@ -165,7 +165,7 @@ async def test_future_time_requests_confirm() -> None:
     tp = _FakeTimeParser(_tpr(when_utc=FUTURE))
     pipe = _pipe(
         sender=sender,
-        classifier=_classifier(distilled={"reminder_text": "позвонить врачу"}),
+        classifier=_classifier(distilled={"text": "позвонить врачу"}),
         confirmation=confirm,
         time_parser=tp,
     )
@@ -203,7 +203,7 @@ async def test_message_falls_back_to_raw_text() -> None:
     confirm2 = _confirm()
     pipe2 = _pipe(
         sender=FakeSender(),
-        classifier=_classifier(distilled={"reminder_text": "   "}),
+        classifier=_classifier(distilled={"text": "   "}),
         confirmation=confirm2,
         time_parser=_FakeTimeParser(_tpr(when_utc=FUTURE)),
     )
@@ -240,10 +240,17 @@ async def test_explicitly_past_date_rejected() -> None:
 
 
 async def test_recurring_phrasing_not_yet() -> None:
+    """DEC-14: v1's regex-based recurring-phrase punt inside the reminder handler
+    was deleted (FR-2). Haiku now classifies "сводка"-shaped recurring phrasing as
+    Intent.JOB kind="digest" — REMINDER_RECURRING_RU survives only as
+    _handle_digest_intent's no-recurrence_parser-wired fallback (no recurrence_parser
+    passed to _pipe() here), so this test still exercises the same ru reply."""
     sender = FakeSender()
     confirm = _confirm()
     tp = _FakeTimeParser(_tpr(when_utc=FUTURE))
-    pipe = _pipe(sender=sender, classifier=_classifier(), confirmation=confirm, time_parser=tp)
+    pipe = _pipe(
+        sender=sender, classifier=_classifier(kind="digest"), confirmation=confirm, time_parser=tp
+    )
     await pipe.on_text(telegram_id=42, chat_id=42, update_id=1, text="каждый день в 9 сводка")
     assert sender.sends[-1]["text"] == REMINDER_RECURRING_RU
     assert tp.calls == []
@@ -285,9 +292,7 @@ async def test_reminder_intent_passes_distilled_time_expr_to_parser() -> None:
     tp = _FakeTimeParser(_tpr(when_utc=FUTURE))
     pipe = _pipe(
         sender=sender,
-        classifier=_classifier(
-            distilled={"time_expr": "через 5 минут", "reminder_text": "пойти гулять"}
-        ),
+        classifier=_classifier(distilled={"time_expr": "через 5 минут", "text": "пойти гулять"}),
         confirmation=confirm,
         time_parser=tp,
     )
@@ -309,7 +314,7 @@ async def test_reminder_intent_falls_back_to_raw_text_when_time_expr_missing() -
     tp = _FakeTimeParser(_tpr(when_utc=FUTURE))
     pipe = _pipe(
         sender=sender,
-        classifier=_classifier(distilled={"reminder_text": "позвонить"}),
+        classifier=_classifier(distilled={"text": "позвонить"}),
         confirmation=confirm,
         time_parser=tp,
     )

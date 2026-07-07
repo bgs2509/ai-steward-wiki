@@ -22,6 +22,7 @@ import pytest
 from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
 from ai_steward_wiki.inbox.router import RouterIntent
 from ai_steward_wiki.tg.pipeline import DefaultPipeline, IngestOutcome
+from tests.helpers.classifier_factory import make_classifier_result
 from tests.unit.tg.conftest import FakeSender
 
 # A hint catalog rich enough that a clearly-on-topic message clears
@@ -31,17 +32,8 @@ _INVEST_HINT = "Ключевые слова: акции, облигации, д�
 _CATALOG = {"Health-WIKI": _HEALTH_HINT, "Investment-WIKI": _INVEST_HINT}
 
 
-def _classifier_result(intent: Intent = Intent.WIKI_INGEST) -> ClassifierResult:
-    return ClassifierResult(
-        intent=intent,
-        confidence=0.9,
-        distilled_payload={"q": "x"},
-        backend="fake",
-        model="fake-m",
-        prompt_semver="1.1.0",
-        prompt_sha256="a" * 64,
-        latency_ms=10,
-    )
+def _classifier_result(intent: Intent = Intent.WIKI) -> ClassifierResult:
+    return make_classifier_result(intent, action="ingest", confidence=0.9)
 
 
 def _idem() -> MagicMock:
@@ -52,7 +44,7 @@ def _idem() -> MagicMock:
     return idem
 
 
-def _classifier(intent: Intent = Intent.WIKI_INGEST) -> MagicMock:
+def _classifier(intent: Intent = Intent.WIKI) -> MagicMock:
     cls = MagicMock()
     cls.classify = AsyncMock(return_value=_classifier_result(intent))
     return cls
@@ -124,7 +116,7 @@ def _pipe(
     output: object = _UNSET,
     owner_wikis_resolver: object | None = None,
     active_wiki: object | None = None,
-    intent: Intent = Intent.WIKI_INGEST,
+    intent: Intent = Intent.WIKI,
 ) -> DefaultPipeline:
     return DefaultPipeline(
         sender=sender,

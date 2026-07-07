@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from ai_steward_wiki.classifier.recurrence import Recurrence, RecurrenceParseResult
-from ai_steward_wiki.classifier.schema import ClassifierResult, Intent
+from ai_steward_wiki.classifier.schema import Intent
 from ai_steward_wiki.scheduler import firing
 from ai_steward_wiki.scheduler.firing import fire_digest_job, set_digest_context
 from ai_steward_wiki.storage.jobs.engine import Base as JobsBase
@@ -25,6 +25,7 @@ from ai_steward_wiki.storage.jobs.payloads import DigestPayload, parse_job_paylo
 from ai_steward_wiki.storage.sessions.models import PendingConfirm
 from ai_steward_wiki.tg.confirm import ConfirmationService
 from ai_steward_wiki.tg.pipeline import DefaultPipeline
+from tests.helpers.classifier_factory import make_classifier_result
 from tests.unit.tg.conftest import FakeSender
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -115,17 +116,12 @@ class _DigestRunner:
 
 
 def _classifier() -> MagicMock:
+    # DEC-14: v1 Intent.REMINDER (digest sub-detection via regex) -> v2
+    # Intent.JOB, action="create", kind="digest".
     c = MagicMock()
     c.classify = AsyncMock(
-        return_value=ClassifierResult(
-            intent=Intent.REMINDER,
-            confidence=0.95,
-            distilled_payload={},
-            backend="fake",
-            model="m",
-            prompt_semver="1.0.0",
-            prompt_sha256="a" * 64,
-            latency_ms=1,
+        return_value=make_classifier_result(
+            Intent.JOB, action="create", kind="digest", confidence=0.95
         )
     )
     return c
