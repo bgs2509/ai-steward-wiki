@@ -72,6 +72,7 @@
 #   build_route_recap - build the ru recap text for a RouterDecision route confirm
 #   CLASSIFIER_CONFIDENCE_THRESHOLD - Stage-0 confidence floor for the reminder fast-path (aisw-kcz); renamed aisw-xi8 (DEC-2)
 #   SUBTHRESHOLD_CLARIFY_RU - ru clarify reply for a below-threshold job/admin classification (aisw-xi8, DEC-2/FR-10)
+#   ACK_JOB_STUB_RU - Phase-C.1 stub reply for intent=job (aisw-xi8, replaced by Phase-C.2/C.3)
 #   REMINDER_RECAP_RU - recap template for a reminder confirm (aisw-kcz)
 #   REMINDER_ACK_RU - ack sent after a reminder is scheduled (aisw-kcz)
 #   REMINDER_UNPARSEABLE_RU - reply when the reminder time is ambiguous/unparseable (aisw-kcz)
@@ -369,8 +370,8 @@ ACK_ADMIN_RU = "Админ-действия пока не поддерживаю
 # reach the write-capable generic root runner — structural guarantee, not just
 # a UX nicety (kills defect class #78/#96 by construction).
 SUBTHRESHOLD_CLARIFY_RU = "Не уверен, что правильно понял — уточни, пожалуйста, что нужно сделать."  # noqa: RUF001
-# aisw-xi8 (Phase-C.1 stub — see the START_BLOCK_JOB_DISPATCH note; REPLACED by
-# Phase-C.2/C.3's real job handlers).
+# aisw-xi8 (Phase-C.1 stub — see the JOB_DISPATCH block's note below; REPLACED
+# by Phase-C.2/C.3's real job handlers).
 ACK_JOB_STUB_RU = "Понял, но эта функция ещё дорабатывается."
 ACK_DOC_PDF_NO_TEXT_RU = "Не вижу текста в PDF. Попробуйте отправить страницу как фото."  # noqa: RUF001
 ACK_DOC_TOO_LARGE_RU = "Файл слишком большой (лимит 25 МБ)."
