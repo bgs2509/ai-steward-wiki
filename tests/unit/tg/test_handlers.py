@@ -15,9 +15,11 @@ from ai_steward_wiki.auth.users_toml import UserRecord, UsersConfig
 from ai_steward_wiki.tg.bot import build_dispatcher
 from ai_steward_wiki.tg.handlers import (
     CONFIRM_CALLBACK_PREFIX,
+    JOBPICK_CALLBACK_PREFIX,
     _download_bytes,
     build_router,
     parse_confirm_callback,
+    parse_jobpick_callback,
     parse_wikipick_callback,
 )
 
@@ -32,6 +34,29 @@ def test_parse_wikipick_callback_invalid() -> None:
     assert parse_wikipick_callback("wikipick:42") is None  # too few parts
     assert parse_wikipick_callback("wikipick:x:0") is None  # non-int id
     assert parse_wikipick_callback("wikipick:42:y") is None  # non-int idx
+
+
+def test_jobpick_callback_prefix_constant() -> None:
+    assert JOBPICK_CALLBACK_PREFIX == "jobpick:"
+
+
+def test_parse_jobpick_callback_ok() -> None:
+    assert parse_jobpick_callback("jobpick:42:1") == (42, 1)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "jobpick:",
+        "jobpick:abc:1",
+        "jobpick:42",
+        "wikipick:42:1",
+        "jobpick:42:abc",
+        "jobpick:42:1:extra",
+    ],
+)
+def test_parse_jobpick_callback_rejects_malformed(data: str) -> None:
+    assert parse_jobpick_callback(data) is None
 
 
 def test_parse_confirm_callback_valid_confirm() -> None:
@@ -252,6 +277,37 @@ def _handler_by_name(router: Any, name: str) -> Any:
     raise AssertionError(f"no message handler named {name!r}")
 
 
+def _find_callback_handler(router: Any, handler_name: str) -> Any:
+    """Find a registered callback_query handler by its function __name__
+    (aisw-xi8, Phase-C.2) — mirrors _handler_by_name for message handlers.
+    aiogram's MagicFilter has no inspectable prefix in its repr, so lookup
+    goes by the handler function's own name (same identity check already used
+    by test_build_router_registers_reminder_card_callback_first)."""
+    for h in router.callback_query.handlers:
+        if getattr(h.callback, "__name__", "") == handler_name:
+            return h.callback
+    raise AssertionError(f"no callback_query handler named {handler_name!r}")
+
+
+@dataclass
+class _FakeCallbackQuery:
+    data: str
+    from_user: FakeUser
+    message: FakeMessage
+    answers: list[Any] = field(default_factory=list)
+
+    async def answer(self, *a: Any, **kw: Any) -> None:
+        self.answers.append((a, kw))
+
+
+def _fake_callback_query(*, data: str, telegram_id: int, chat_id: int) -> _FakeCallbackQuery:
+    """Build a minimal fake aiogram CallbackQuery for a callback handler
+    invoked directly (bypassing aiogram's own dispatch machinery), matching
+    the FakeCallback shape already used inline by the confirm-callback tests."""
+    msg = FakeMessage(message_id=1, chat=FakeChat(id=chat_id), from_user=FakeUser(id=telegram_id))
+    return _FakeCallbackQuery(data=data, from_user=FakeUser(id=telegram_id), message=msg)
+
+
 @pytest.mark.asyncio
 async def test_router_audio_handler_routes_to_on_voice() -> None:
     pipeline = MagicMock()
@@ -447,6 +503,22 @@ async def test_router_callback_handler_malformed_data_just_answers() -> None:
     await cb_handler(cb)
     pipeline.on_confirm_callback.assert_not_awaited()
     assert cb.answers == [1]
+
+
+@pytest.mark.asyncio
+async def test_jobpick_callback_dispatches_to_pipeline() -> None:
+    pipeline = MagicMock()
+    pipeline.on_jobpick_callback = AsyncMock(return_value=None)
+    router = build_router(pipeline, get_user_tz=AsyncMock(return_value="Europe/Moscow"))
+    handler = _find_callback_handler(router, "_on_jobpick")
+    callback = _fake_callback_query(data="jobpick:7:2", telegram_id=1, chat_id=10)
+
+    await handler(callback)
+
+    pipeline.on_jobpick_callback.assert_awaited_once_with(
+        telegram_id=1, chat_id=10, pending_id=7, job_index=2
+    )
+    assert callback.answers  # was acknowledged
 
 
 # ---- aisw-cla: create-project reply-keyboard button intercept -----------

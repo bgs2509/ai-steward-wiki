@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/handlers.py
-# VERSION: 0.5.1
+# VERSION: 0.6.0
 # START_MODULE_CONTRACT
 #   PURPOSE: aiogram Router that adapts Telegram message/callback events to
 #            the MessagePipeline Protocol (+ the bot's first slash commands).
@@ -34,15 +34,20 @@
 #   DIGESTSEC_CALLBACK_PREFIX - "digestsec:" callback_data prefix (ADR-026)
 #   EXPAND_SECTION_KEYS - the four /expand <section> keys (mirror D-024 headers)
 #   WIKIPICK_CALLBACK_PREFIX - "wikipick:" callback_data prefix (aisw-13h)
+#   JOBPICK_CALLBACK_PREFIX - "jobpick:" callback_data prefix (aisw-xi8, Phase-C.2, DEC-10)
 #   build_router - factory wiring the slash commands + message/callback handlers
 #                  to a MessagePipeline (optional templates_dir + on_start_unknown for /start)
 #   parse_confirm_callback - parse `confirm:<pending_id>:<action>` payload
 #   parse_digestsec_callback - parse `digestsec:<section>:<0|1>` -> (section, target_enabled)
 #   parse_wikipick_callback - parse `wikipick:<pending_id>:<idx>` -> (pending_id, wiki_index)
+#   parse_jobpick_callback - parse `jobpick:<pending_id>:<idx>` -> (pending_id, job_index)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.5.1 - aisw-cla: text handler intercepts the create-project reply-keyboard
+#   LAST_CHANGE: v0.6.0 - aisw-xi8 (Phase-C.2, DEC-10): wire jobpick: callback
+#                prefix (JOBPICK_CALLBACK_PREFIX / parse_jobpick_callback /
+#                _on_jobpick handler) — mirrors the wikipick: precedent exactly.
+#   PREVIOUS:    v0.5.1 - aisw-cla: text handler intercepts the create-project reply-keyboard
 #                button (CREATE_PROJECT_BUTTON_TEXT) BEFORE classify/aggregate and replies
 #                with the NL create-WIKI guidance prompt; never reaches Stage-0 / a domain
 #                WIKI. New anchor tg.handlers.text.create_project_button(.send_failed).
@@ -203,10 +208,12 @@ __all__ = [
     "CREATE_PROJECT_BUTTON_TEXT",
     "DIGESTSEC_CALLBACK_PREFIX",
     "EXPAND_SECTION_KEYS",
+    "JOBPICK_CALLBACK_PREFIX",
     "WIKIPICK_CALLBACK_PREFIX",
     "build_router",
     "parse_confirm_callback",
     "parse_digestsec_callback",
+    "parse_jobpick_callback",
     "parse_wikipick_callback",
 ]
 
@@ -221,6 +228,9 @@ _VALID_ACTIONS: frozenset[str] = frozenset({"confirm", "correct", "cancel"})
 
 # WIKI-picker on the route-confirm card — `wikipick:<pending_id>:<idx>` (aisw-13h).
 WIKIPICK_CALLBACK_PREFIX = "wikipick:"
+
+# Job-management disambiguation picker — `jobpick:<pending_id>:<idx>` (aisw-xi8, DEC-10).
+JOBPICK_CALLBACK_PREFIX = "jobpick:"
 
 # /digest_sections — inline-toggle callbacks `digestsec:<section>:<0|1>` (ADR-026).
 DIGESTSEC_CALLBACK_PREFIX = "digestsec:"
@@ -335,6 +345,20 @@ def parse_wikipick_callback(data: str) -> tuple[int, int] | None:
         return None
     try:
         return int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+
+
+def parse_jobpick_callback(data: str) -> tuple[int, int] | None:
+    """Parse ``jobpick:<pending_id>:<idx>`` → ``(pending_id, job_index)`` or None (aisw-xi8)."""
+    if not data.startswith(JOBPICK_CALLBACK_PREFIX):
+        return None
+    rest = data[len(JOBPICK_CALLBACK_PREFIX) :]
+    parts = rest.split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
     except ValueError:
         return None
 
@@ -892,6 +916,28 @@ def build_router(
         )
         await callback.answer()
         # END_BLOCK_HANDLER_WIKIPICK_CB
+
+    @router.callback_query(F.data.startswith(JOBPICK_CALLBACK_PREFIX))
+    async def _on_jobpick(callback: CallbackQuery) -> None:
+        # START_BLOCK_HANDLER_JOBPICK_CB (aisw-xi8, DEC-10)
+        if callback.from_user is None or callback.data is None or callback.message is None:
+            _log.debug("tg.handlers.callback.skip_missing_fields")
+            await callback.answer()
+            return
+        parsed = parse_jobpick_callback(callback.data)
+        if parsed is None:
+            _log.info("tg.handlers.callback.malformed", data=callback.data)
+            await callback.answer()
+            return
+        pending_id, job_index = parsed
+        await pipeline.on_jobpick_callback(
+            telegram_id=callback.from_user.id,
+            chat_id=callback.message.chat.id,
+            pending_id=pending_id,
+            job_index=job_index,
+        )
+        await callback.answer()
+        # END_BLOCK_HANDLER_JOBPICK_CB
 
     @router.callback_query(F.data.startswith(DIGESTSEC_CALLBACK_PREFIX))
     async def _on_digestsec_callback(cb: CallbackQuery) -> None:
