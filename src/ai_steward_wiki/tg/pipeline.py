@@ -331,12 +331,18 @@ __all__ = [
     "DIGEST_WIKI_UNKNOWN_RU",
     "JOB_CANCEL_ACK_RU",
     "JOB_CANCEL_RECAP_RU",
+    "JOB_CHECKIN_ACK_RU",
+    "JOB_CHECKIN_RECAP_RU",
+    "JOB_CHECKIN_UNPARSEABLE_RU",
     "JOB_CONFIRM_CANCELLED_RU",
     "JOB_CONFIRM_STALE_RU",
     "JOB_LIST_EMPTY_RU",
     "JOB_LIST_HEADER_RU",
     "JOB_NOT_FOUND_RU",
     "JOB_PICK_PROMPT_RU",
+    "JOB_RECURRING_ACK_RU",
+    "JOB_RECURRING_RECAP_RU",
+    "JOB_RECURRING_UNPARSEABLE_RU",
     "JOB_RESCHEDULE_ACK_RU",
     "JOB_RESCHEDULE_RECAP_RU",
     "JOB_RESCHEDULE_UNPARSEABLE_RU",
@@ -429,6 +435,12 @@ JOB_RESCHEDULE_UNPARSEABLE_RU = "Не понял, на какое время п�
 JOB_CONFIRM_CANCELLED_RU = "Хорошо, не буду."
 JOB_CONFIRM_STALE_RU = "Время на подтверждение истекло — повтори запрос."
 JOB_PICK_PROMPT_RU = "Нашёл несколько похожих задач — какую?"
+JOB_RECURRING_RECAP_RU = "Буду напоминать {schedule}: «{message}». Подтверждаешь?"
+JOB_RECURRING_ACK_RU = "Готово — буду напоминать {schedule}."
+JOB_RECURRING_UNPARSEABLE_RU = "Не понял расписание. Скажи, например: «каждый день в 8»."  # noqa: RUF001
+JOB_CHECKIN_RECAP_RU = "Буду спрашивать {schedule}: «{topic}». Подтверждаешь?"
+JOB_CHECKIN_ACK_RU = "Готово — буду спрашивать {schedule}."
+JOB_CHECKIN_UNPARSEABLE_RU = "Не понял расписание. Скажи, например: «каждый вечер в 21»."  # noqa: RUF001
 ACK_DOC_PDF_NO_TEXT_RU = "Не вижу текста в PDF. Попробуйте отправить страницу как фото."  # noqa: RUF001
 ACK_DOC_TOO_LARGE_RU = "Файл слишком большой (лимит 25 МБ)."
 
@@ -1313,9 +1325,13 @@ class DefaultPipeline:
                 correlation_id=correlation_id,
             )
             return
-        # action == "create" -> Phase-C.3's _handle_job_create (Task C3.1 replaces
-        # this branch; DEC-2 structural guarantee preserved in the meantime).
-        await self._sender.send_message(chat_id, ACK_JOB_STUB_RU)
+        await self._handle_job_create(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            text=text,
+            slots=slots,
+            correlation_id=correlation_id,
+        )
 
     async def _handle_job_list(
         self, *, telegram_id: int, chat_id: int, correlation_id: str
@@ -1661,6 +1677,206 @@ class DefaultPipeline:
                 job_id=job_id,
             )
 
+    async def _handle_job_create(
+        self, *, telegram_id: int, chat_id: int, text: str, slots: object, correlation_id: str
+    ) -> None:
+        if slots.kind == "once":  # type: ignore[attr-defined]
+            # DEC-2: job never falls through to the generic runner, unlike v1's
+            # REMINDER fast-path.
+            if self._time_parser is None:
+                await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
+                return
+            await self._handle_reminder_intent(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                text=text,
+                distilled_payload={
+                    "time_expr": slots.time_expr,  # type: ignore[attr-defined]
+                    "reminder_text": slots.text,  # type: ignore[attr-defined]
+                },
+                correlation_id=correlation_id,
+            )
+            return
+        if slots.kind == "digest":  # type: ignore[attr-defined]
+            # FR-4/FR-7: byte-identical to v1's digest fast-path — only the ENTRY
+            # point (classifier slots vs regex) changed.
+            await self._handle_digest_intent(
+                telegram_id=telegram_id, chat_id=chat_id, text=text, correlation_id=correlation_id
+            )
+            return
+        if slots.kind == "recurring":  # type: ignore[attr-defined]
+            await self._handle_job_create_recurring(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                text=text,
+                slots=slots,
+                correlation_id=correlation_id,
+            )
+            return
+        # kind == "check_in"
+        await self._handle_job_create_check_in(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            text=text,
+            slots=slots,
+            correlation_id=correlation_id,
+        )
+
+    async def _handle_job_create_recurring(
+        self, *, telegram_id: int, chat_id: int, text: str, slots: object, correlation_id: str
+    ) -> None:
+        if self._recurrence_parser is None:
+            await self._sender.send_message(chat_id, JOB_RECURRING_UNPARSEABLE_RU)
+            return
+        user_tz = self._resolve_user_tz(telegram_id)
+        schedule_expr = slots.schedule_expr or text  # type: ignore[attr-defined]
+        res = self._recurrence_parser(
+            schedule_expr, user_tz=str(user_tz), correlation_id=correlation_id
+        )
+        if res.recurrence is None:
+            await self._sender.send_message(chat_id, JOB_RECURRING_UNPARSEABLE_RU)
+            _log.info(
+                "tg.pipeline.job.recurring_unparseable",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                reason=res.reason,
+            )
+            return
+        message = slots.text or text  # type: ignore[attr-defined]
+        draft = {
+            "message": message,
+            "recurrence": res.recurrence.model_dump(mode="json"),
+            "correlation_id": correlation_id,
+        }
+        recap = JOB_RECURRING_RECAP_RU.format(
+            schedule=humanize_recurrence(res.recurrence), message=message
+        )
+        confirm_draft = PendingConfirmDraft(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            category="job_recurring",
+            draft=draft,
+            recap_text=recap,
+        )
+        rec = await self._confirm.request_explicit(
+            confirm_draft, keyboard_factory=build_route_confirm_keyboard
+        )
+        _log.info(
+            "tg.pipeline.job.confirm_requested",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=rec.pending_id,
+            category="job_recurring",
+        )
+
+    async def _handle_job_create_check_in(
+        self, *, telegram_id: int, chat_id: int, text: str, slots: object, correlation_id: str
+    ) -> None:
+        if self._recurrence_parser is None:
+            await self._sender.send_message(chat_id, JOB_CHECKIN_UNPARSEABLE_RU)
+            return
+        user_tz = self._resolve_user_tz(telegram_id)
+        schedule_expr = slots.schedule_expr or text  # type: ignore[attr-defined]
+        res = self._recurrence_parser(
+            schedule_expr, user_tz=str(user_tz), correlation_id=correlation_id
+        )
+        if res.recurrence is None:
+            await self._sender.send_message(chat_id, JOB_CHECKIN_UNPARSEABLE_RU)
+            _log.info(
+                "tg.pipeline.job.checkin_unparseable",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                reason=res.reason,
+            )
+            return
+        topic = slots.text or text  # type: ignore[attr-defined]
+        draft = {
+            "question_topic": topic,
+            "recurrence": res.recurrence.model_dump(mode="json"),
+            "correlation_id": correlation_id,
+        }
+        recap = JOB_CHECKIN_RECAP_RU.format(
+            schedule=humanize_recurrence(res.recurrence), topic=topic
+        )
+        confirm_draft = PendingConfirmDraft(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            category="job_checkin",
+            draft=draft,
+            recap_text=recap,
+        )
+        rec = await self._confirm.request_explicit(
+            confirm_draft, keyboard_factory=build_route_confirm_keyboard
+        )
+        _log.info(
+            "tg.pipeline.job.confirm_requested",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=rec.pending_id,
+            category="job_checkin",
+        )
+
+    async def _execute_job_create_recurring(
+        self, *, telegram_id: int, chat_id: int, draft: dict[str, object]
+    ) -> None:
+        from ai_steward_wiki.classifier.recurrence import Recurrence
+        from ai_steward_wiki.scheduler.firing import create_recurring_job
+
+        correlation_id = str(draft.get("correlation_id") or f"job-recurring-{telegram_id}")
+        if self._jobs_session_maker is None or self._scheduler is None:
+            await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
+            return
+        rec = Recurrence(**draft["recurrence"])  # type: ignore[arg-type]
+        message = str(draft["message"])
+        async with self._jobs_session_maker() as session:
+            job_id = await create_recurring_job(
+                session,
+                self._scheduler,
+                owner_telegram_id=telegram_id,
+                chat_id=chat_id,
+                message=message,
+                recurrence=rec,
+                correlation_id=correlation_id,
+            )
+        await self._sender.send_message(
+            chat_id, JOB_RECURRING_ACK_RU.format(schedule=humanize_recurrence(rec))
+        )
+        _log.info(
+            "tg.pipeline.job.confirm_created",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            job_id=job_id,
+            category="job_recurring",
+        )
+
+    async def _execute_job_create_check_in(
+        self, *, telegram_id: int, chat_id: int, draft: dict[str, object]
+    ) -> None:
+        from ai_steward_wiki.classifier.recurrence import Recurrence
+        from ai_steward_wiki.scheduler.cron_user import create_check_in_job
+
+        correlation_id = str(draft.get("correlation_id") or f"job-checkin-{telegram_id}")
+        rec = Recurrence(**draft["recurrence"])  # type: ignore[arg-type]
+        topic = str(draft["question_topic"])
+        job_id = await create_check_in_job(
+            owner_telegram_id=telegram_id,
+            chat_id=chat_id,
+            recurrence=rec,
+            question_topic=topic,
+            user_tz=str(rec.tz),
+            wiki_id=None,
+        )
+        await self._sender.send_message(
+            chat_id, JOB_CHECKIN_ACK_RU.format(schedule=humanize_recurrence(rec))
+        )
+        _log.info(
+            "tg.pipeline.job.confirm_created",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            job_id=job_id,
+            category="job_checkin",
+        )
+
     async def _handle_job_confirm(
         self,
         *,
@@ -1669,12 +1885,16 @@ class DefaultPipeline:
         pending_id: int,
         action: ConfirmKeyboardAction,
         draft_json: str | None,
+        category: str,
     ) -> None:
         status = await self._confirm.resolve(telegram_id, pending_id, action)
         if status is None:
             await self._sender.send_message(chat_id, JOB_CONFIRM_STALE_RU)
             _log.info(
-                "tg.pipeline.job.confirm_stale", telegram_id=telegram_id, pending_id=pending_id
+                "tg.pipeline.job.confirm_stale",
+                telegram_id=telegram_id,
+                pending_id=pending_id,
+                category=category,
             )
             return
         if status != "confirmed":
@@ -1684,9 +1904,22 @@ class DefaultPipeline:
                 telegram_id=telegram_id,
                 pending_id=pending_id,
                 status=status,
+                category=category,
             )
             return
         draft = json.loads(draft_json or "{}")
+        if category == "job_recurring":
+            await self._execute_job_create_recurring(
+                telegram_id=telegram_id, chat_id=chat_id, draft=draft
+            )
+            return
+        if category == "job_checkin":
+            await self._execute_job_create_check_in(
+                telegram_id=telegram_id, chat_id=chat_id, draft=draft
+            )
+            return
+        # category == "job_cancel" (covers both cancel AND reschedule mutations —
+        # see Task C2.2's category-naming design decision)
         await self._execute_job_mutation(telegram_id=telegram_id, chat_id=chat_id, draft=draft)
 
     async def on_jobpick_callback(
@@ -2845,6 +3078,27 @@ class DefaultPipeline:
                 pending_id=pending_id,
                 action=action,
                 draft_json=pending.draft_json,
+                category="job_cancel",
+            )
+            return
+        if pending is not None and getattr(pending, "category", None) == "job_recurring":
+            await self._handle_job_confirm(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                pending_id=pending_id,
+                action=action,
+                draft_json=pending.draft_json,
+                category="job_recurring",
+            )
+            return
+        if pending is not None and getattr(pending, "category", None) == "job_checkin":
+            await self._handle_job_confirm(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                pending_id=pending_id,
+                action=action,
+                draft_json=pending.draft_json,
+                category="job_checkin",
             )
             return
         # (note: category == "job_pick" rows are resolved exclusively through
