@@ -44,6 +44,9 @@ async def test_real_cli_returns_valid_result() -> None:
         prompt_path=PROMPT,
         cache=PromptCache(),
     )
-    assert res.intent.value in {"reminder", "unknown"}
+    # DEC-14: v1 "reminder" -> v2 "job" (a real Haiku call for this prompt would
+    # classify job/create kind=once; "unknown" stays a tolerant sub-threshold
+    # fallback per FR-10).
+    assert res.intent.value in {"job", "unknown"}
     assert 0.0 <= res.confidence <= 1.0
     assert res.backend == "claude_cli"
