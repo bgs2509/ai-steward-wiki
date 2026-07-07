@@ -77,6 +77,13 @@ class FakeSender:
         )
         return FakeMessage(message_id=self._next_id)
 
+    def last_reply_markup_pending_id(self) -> int:
+        """Extract <pending_id> from the last sent message's inline keyboard
+        callback_data (format 'confirm:<id>:...' or 'jobpick:<id>:...')."""
+        markup = self.sends[-1]["reply_markup"]
+        first_button = markup.inline_keyboard[0][0]
+        return int(first_button.callback_data.split(":")[1])
+
 
 @dataclass
 class FakeClock:

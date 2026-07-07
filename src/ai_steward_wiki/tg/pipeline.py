@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.14.0
+# VERSION: 0.15.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -73,6 +73,17 @@
 #   CLASSIFIER_CONFIDENCE_THRESHOLD - Stage-0 confidence floor for the reminder fast-path (aisw-kcz); renamed aisw-xi8 (DEC-2)
 #   SUBTHRESHOLD_CLARIFY_RU - ru clarify reply for a below-threshold job/admin classification (aisw-xi8, DEC-2/FR-10)
 #   ACK_JOB_STUB_RU - Phase-C.1 stub reply for intent=job (aisw-xi8, replaced by Phase-C.2/C.3)
+#   JOB_LIST_EMPTY_RU - reply when the owner has no active jobs (aisw-xi8, Phase-C.2, DEC-9)
+#   JOB_LIST_HEADER_RU - list header template for job/list (aisw-xi8, Phase-C.2, DEC-9)
+#   JOB_NOT_FOUND_RU - reply when a needle matches no owner job (aisw-xi8, Phase-C.2, DEC-9)
+#   JOB_CANCEL_RECAP_RU - destructive-confirm recap for job/cancel (aisw-xi8, Phase-C.2, DEC-10)
+#   JOB_CANCEL_ACK_RU - ack sent after a job is cancelled (aisw-xi8, Phase-C.2, DEC-9)
+#   JOB_RESCHEDULE_RECAP_RU - destructive-confirm recap for job/reschedule (aisw-xi8, Phase-C.2, DEC-10)
+#   JOB_RESCHEDULE_ACK_RU - ack sent after a job is rescheduled (aisw-xi8, Phase-C.2, DEC-9)
+#   JOB_RESCHEDULE_UNPARSEABLE_RU - reply when the reschedule time/schedule is unparseable (aisw-xi8, Phase-C.2)
+#   JOB_CONFIRM_CANCELLED_RU - reply on cancel of a job_cancel confirm (aisw-xi8, Phase-C.2)
+#   JOB_CONFIRM_STALE_RU - reply when a job confirm was already resolved/expired (aisw-xi8, Phase-C.2)
+#   JOB_PICK_PROMPT_RU - prompt shown alongside build_job_pick_keyboard candidates (aisw-xi8, Phase-C.2, DEC-10)
 #   REMINDER_RECAP_RU - recap template for a reminder confirm (aisw-kcz)
 #   REMINDER_ACK_RU - ack sent after a reminder is scheduled (aisw-kcz)
 #   REMINDER_UNPARSEABLE_RU - reply when the reminder time is ambiguous/unparseable (aisw-kcz)
@@ -108,7 +119,26 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.14.0 - aisw-df4: intent=smalltalk dispatch. A new SMALLTALK
+#   LAST_CHANGE: v0.15.0 - aisw-xi8 (Phase-C.2, DEC-9/DEC-10): _handle_job's
+#                Task-C1.4 stub is REPLACED wholesale — list/cancel/reschedule
+#                dispatch on JobSlots.action over scheduler/manage.py
+#                (list_owner_jobs/match_jobs_by_needle/cancel_job/
+#                reschedule_once/reschedule_recurring). A zero-match needle
+#                replies JOB_NOT_FOUND_RU; a single match proposes a
+#                category="job_cancel" destructive explicit confirm (cancel AND
+#                single-match reschedule share this category — the draft's
+#                action field disambiguates the mutation, DEC-10); a >1-match
+#                needle proposes category="job_pick" via the new
+#                build_job_pick_keyboard (jobpick:<pending_id>:<idx>, tap-IS-
+#                confirm, resolved by the new on_jobpick_callback /
+#                MessagePipeline.on_jobpick_callback, never through
+#                on_confirm_callback). on_confirm_callback gains a job_cancel
+#                category branch to _handle_job_confirm. New anchors
+#                tg.pipeline.job.list|cancel|reschedule|pick_requested|
+#                not_found|confirm_requested|confirm_cancelled|confirm_stale|
+#                pick_resolved. action="create" still falls through to
+#                ACK_JOB_STUB_RU pending Phase-C.3.
+#   PREVIOUS:    v0.14.0 - aisw-df4: intent=smalltalk dispatch. A new SMALLTALK
 #                branch (before the reminder/digest fast-paths) replies with a short
 #                ru line (SMALLTALK_REPLY_RU) and returns — no time/recurrence
 #                parsing, no router, no generic runner. Stops casual chitchat
@@ -262,6 +292,7 @@ from ai_steward_wiki.tg.bot import TgSender
 from ai_steward_wiki.tg.confirm import (
     ConfirmationService,
     PendingConfirmDraft,
+    build_job_pick_keyboard,
     build_route_confirm_keyboard,
     build_route_redirect_keyboard,
 )
@@ -274,6 +305,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from ai_steward_wiki.classifier.schema import TimeParseResult
+    from ai_steward_wiki.scheduler.manage import OwnerJob
     from ai_steward_wiki.storage.audit.chat_log import ChatTurn
 
 __all__ = [
@@ -297,6 +329,17 @@ __all__ = [
     "DIGEST_RECAP_RU",
     "DIGEST_UNPARSEABLE_RU",
     "DIGEST_WIKI_UNKNOWN_RU",
+    "JOB_CANCEL_ACK_RU",
+    "JOB_CANCEL_RECAP_RU",
+    "JOB_CONFIRM_CANCELLED_RU",
+    "JOB_CONFIRM_STALE_RU",
+    "JOB_LIST_EMPTY_RU",
+    "JOB_LIST_HEADER_RU",
+    "JOB_NOT_FOUND_RU",
+    "JOB_PICK_PROMPT_RU",
+    "JOB_RESCHEDULE_ACK_RU",
+    "JOB_RESCHEDULE_RECAP_RU",
+    "JOB_RESCHEDULE_UNPARSEABLE_RU",
     "MAX_DOC_BYTES",
     "PDF_MAX_EXTRACT_CHARS",
     "PHOTO_CAPTION_PROMPT_RU",
@@ -373,6 +416,19 @@ SUBTHRESHOLD_CLARIFY_RU = "Не уверен, что правильно поня
 # aisw-xi8 (Phase-C.1 stub — see the JOB_DISPATCH block's note below; REPLACED
 # by Phase-C.2/C.3's real job handlers).
 ACK_JOB_STUB_RU = "Понял, но эта функция ещё дорабатывается."
+# aisw-xi8 (Phase-C.2, DEC-9/DEC-10): job list/cancel/reschedule + needle
+# disambiguation + destructive confirm reply strings.
+JOB_LIST_EMPTY_RU = "У тебя нет активных задач."  # noqa: RUF001
+JOB_LIST_HEADER_RU = "Твои задачи:\n{items}"
+JOB_NOT_FOUND_RU = "Не нашёл подходящую задачу.\n{list}"  # noqa: RUF001
+JOB_CANCEL_RECAP_RU = "Отменить «{rendered}»?"
+JOB_CANCEL_ACK_RU = "Отменил."
+JOB_RESCHEDULE_RECAP_RU = "Перенести «{rendered}» на {when}?"
+JOB_RESCHEDULE_ACK_RU = "Перенёс на {when}."
+JOB_RESCHEDULE_UNPARSEABLE_RU = "Не понял, на какое время перенести — уточни."  # noqa: RUF001
+JOB_CONFIRM_CANCELLED_RU = "Хорошо, не буду."
+JOB_CONFIRM_STALE_RU = "Время на подтверждение истекло — повтори запрос."
+JOB_PICK_PROMPT_RU = "Нашёл несколько похожих задач — какую?"
 ACK_DOC_PDF_NO_TEXT_RU = "Не вижу текста в PDF. Попробуйте отправить страницу как фото."  # noqa: RUF001
 ACK_DOC_TOO_LARGE_RU = "Файл слишком большой (лимит 25 МБ)."
 
@@ -829,6 +885,10 @@ class MessagePipeline(Protocol):
         wiki_index: int,
     ) -> None: ...
 
+    async def on_jobpick_callback(
+        self, *, telegram_id: int, chat_id: int, pending_id: int, job_index: int
+    ) -> None: ...
+
 
 # START_CONTRACT: _extract_pdf_text
 #   PURPOSE: Pure-python text extraction from PDF bytes via pypdf.
@@ -1217,10 +1277,7 @@ class DefaultPipeline:
 
     # END_BLOCK_TEXT_PIPELINE
 
-    # START_BLOCK_JOB_DISPATCH (aisw-xi8, Phase-C.1 stub — REPLACED by Phase-C.2
-    # Task C2.1 (list/cancel/reschedule) and Phase-C.3 Task C3.1 (create flows).
-    # Do NOT extend this method's body incrementally — later tasks REPLACE it
-    # wholesale, since the final shape dispatches on JobSlots.action/kind.)
+    # START_BLOCK_JOB_DISPATCH (aisw-xi8; Phase-C.2 REPLACES the Task-C1.4 stub)
     async def _handle_job(
         self,
         *,
@@ -1233,17 +1290,438 @@ class DefaultPipeline:
         from ai_steward_wiki.classifier.schema import JobSlots, parse_slots
 
         slots = parse_slots(JobSlots, distilled_payload)
+        if slots.action == "list":
+            await self._handle_job_list(
+                telegram_id=telegram_id, chat_id=chat_id, correlation_id=correlation_id
+            )
+            return
+        if slots.action == "cancel":
+            await self._handle_job_cancel(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                needle=slots.needle,
+                correlation_id=correlation_id,
+            )
+            return
+        if slots.action == "reschedule":
+            await self._handle_job_reschedule(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                needle=slots.needle,
+                time_expr=slots.time_expr,
+                schedule_expr=slots.schedule_expr,
+                correlation_id=correlation_id,
+            )
+            return
+        # action == "create" -> Phase-C.3's _handle_job_create (Task C3.1 replaces
+        # this branch; DEC-2 structural guarantee preserved in the meantime).
+        await self._sender.send_message(chat_id, ACK_JOB_STUB_RU)
+
+    async def _handle_job_list(
+        self, *, telegram_id: int, chat_id: int, correlation_id: str
+    ) -> None:
+        if self._jobs_session_maker is None or self._scheduler is None:
+            await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
+            return
+        from ai_steward_wiki.scheduler.manage import list_owner_jobs
+
+        user_tz = str(self._resolve_user_tz(telegram_id))
+        async with self._jobs_session_maker() as session:
+            jobs = await list_owner_jobs(session, telegram_id, user_tz=user_tz)
+        if not jobs:
+            await self._sender.send_message(chat_id, JOB_LIST_EMPTY_RU)
+        else:
+            items = "\n".join(f"- {j.rendered}" for j in jobs)
+            await self._sender.send_message(chat_id, JOB_LIST_HEADER_RU.format(items=items))
         _log.info(
-            "tg.pipeline.job.dispatched",
+            "tg.pipeline.job.list",
             correlation_id=correlation_id,
             telegram_id=telegram_id,
-            action=slots.action,
-            kind=slots.kind,
+            count=len(jobs),
         )
-        # DEC-2 structural guarantee preserved even in this intermediate stub:
-        # job NEVER falls through to the generic runner — only a deterministic
-        # ru reply, here and in every later replacement of this method.
-        await self._sender.send_message(chat_id, ACK_JOB_STUB_RU)
+
+    async def _handle_job_cancel(
+        self, *, telegram_id: int, chat_id: int, needle: str, correlation_id: str
+    ) -> None:
+        matches = await self._match_owner_jobs(telegram_id, needle)
+        if matches is None:  # misconfigured
+            await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
+            return
+        if not matches:
+            await self._send_not_found(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                needle=needle,
+                correlation_id=correlation_id,
+            )
+            return
+        if len(matches) > 1:
+            await self._request_job_pick(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                action="cancel",
+                candidates=matches,
+                correlation_id=correlation_id,
+            )
+            return
+        job = matches[0]
+        draft = {
+            "job_id": job.id,
+            "job_kind": job.kind,
+            "action": "cancel",
+            "correlation_id": correlation_id,
+        }
+        confirm_draft = PendingConfirmDraft(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            category="job_cancel",
+            draft=draft,
+            recap_text=JOB_CANCEL_RECAP_RU.format(rendered=job.rendered),
+        )
+        rec = await self._confirm.request_explicit(
+            confirm_draft, keyboard_factory=build_route_confirm_keyboard
+        )
+        _log.info(
+            "tg.pipeline.job.confirm_requested",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=rec.pending_id,
+            category="job_cancel",
+            action="cancel",
+        )
+
+    async def _handle_job_reschedule(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        needle: str,
+        time_expr: str,
+        schedule_expr: str,
+        correlation_id: str,
+    ) -> None:
+        matches = await self._match_owner_jobs(telegram_id, needle)
+        if matches is None:
+            await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
+            return
+        if not matches:
+            await self._send_not_found(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                needle=needle,
+                correlation_id=correlation_id,
+            )
+            return
+        if len(matches) > 1:
+            await self._request_job_pick(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                action="reschedule",
+                candidates=matches,
+                correlation_id=correlation_id,
+                time_expr=time_expr,
+                schedule_expr=schedule_expr,
+            )
+            return
+        await self._build_reschedule_confirm(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            job=matches[0],
+            time_expr=time_expr,
+            schedule_expr=schedule_expr,
+            correlation_id=correlation_id,
+        )
+
+    async def _match_owner_jobs(self, telegram_id: int, needle: str) -> list[OwnerJob] | None:
+        """Returns None if scheduler/jobs_session_maker are unwired."""
+        if self._jobs_session_maker is None or self._scheduler is None:
+            return None
+        from ai_steward_wiki.scheduler.manage import list_owner_jobs, match_jobs_by_needle
+
+        user_tz = str(self._resolve_user_tz(telegram_id))
+        async with self._jobs_session_maker() as session:
+            jobs = await list_owner_jobs(session, telegram_id, user_tz=user_tz)
+        return match_jobs_by_needle(jobs, needle)
+
+    async def _send_not_found(
+        self, *, telegram_id: int, chat_id: int, needle: str, correlation_id: str
+    ) -> None:
+        from ai_steward_wiki.scheduler.manage import list_owner_jobs
+
+        user_tz = str(self._resolve_user_tz(telegram_id))
+        assert self._jobs_session_maker is not None
+        async with self._jobs_session_maker() as session:
+            jobs = await list_owner_jobs(session, telegram_id, user_tz=user_tz)
+        rendered = "\n".join(f"- {j.rendered}" for j in jobs) if jobs else JOB_LIST_EMPTY_RU
+        await self._sender.send_message(chat_id, JOB_NOT_FOUND_RU.format(list=rendered))
+        _log.info(
+            "tg.pipeline.job.not_found",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            needle=needle,
+        )
+
+    async def _build_reschedule_confirm(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        job: object,
+        time_expr: str,
+        schedule_expr: str,
+        correlation_id: str,
+    ) -> None:
+        if job.kind == "reminder_job":  # type: ignore[attr-defined]
+            if self._time_parser is None or not time_expr:
+                await self._sender.send_message(chat_id, JOB_RESCHEDULE_UNPARSEABLE_RU)
+                return
+            user_tz = self._resolve_user_tz(telegram_id)
+            now_utc = self._clock()
+            tp = await self._time_parser.parse_time(
+                time_expr,
+                user_tz=user_tz,
+                now_utc=now_utc,
+                prefer_future=True,
+                correlation_id=correlation_id,
+            )
+            if tp.escalate or tp.when_utc is None or tp.when_utc <= now_utc:
+                await self._sender.send_message(chat_id, JOB_RESCHEDULE_UNPARSEABLE_RU)
+                return
+            when_local = tp.when_utc.astimezone(user_tz).strftime("%d.%m %H:%M")
+            draft = {
+                "job_id": job.id,  # type: ignore[attr-defined]
+                "job_kind": job.kind,  # type: ignore[attr-defined]
+                "action": "reschedule",
+                "new_when_utc": tp.when_utc.astimezone(UTC).isoformat(),
+                "correlation_id": correlation_id,
+            }
+            recap = JOB_RESCHEDULE_RECAP_RU.format(rendered=job.rendered, when=when_local)  # type: ignore[attr-defined]
+        else:
+            new_rec = None
+            if self._recurrence_parser is not None and schedule_expr:
+                res = self._recurrence_parser(
+                    schedule_expr,
+                    user_tz=str(self._resolve_user_tz(telegram_id)),
+                    correlation_id=correlation_id,
+                )
+                new_rec = res.recurrence
+            if new_rec is None:
+                hhmm = _extract_hhmm(schedule_expr or time_expr)
+                existing_rec = getattr(job.payload, "recurrence", None)  # type: ignore[attr-defined]
+                if hhmm is not None and existing_rec is not None:
+                    new_rec = existing_rec.model_copy(update={"time_hhmm": hhmm})
+            if new_rec is None:
+                await self._sender.send_message(chat_id, JOB_RESCHEDULE_UNPARSEABLE_RU)
+                return
+            draft = {
+                "job_id": job.id,  # type: ignore[attr-defined]
+                "job_kind": job.kind,  # type: ignore[attr-defined]
+                "action": "reschedule",
+                "new_recurrence": new_rec.model_dump(mode="json"),
+                "correlation_id": correlation_id,
+            }
+            recap = JOB_RESCHEDULE_RECAP_RU.format(
+                rendered=job.rendered,  # type: ignore[attr-defined]
+                when=humanize_recurrence(new_rec),
+            )
+        confirm_draft = PendingConfirmDraft(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            category="job_cancel",
+            draft=draft,
+            recap_text=recap,
+        )
+        rec = await self._confirm.request_explicit(
+            confirm_draft, keyboard_factory=build_route_confirm_keyboard
+        )
+        _log.info(
+            "tg.pipeline.job.confirm_requested",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=rec.pending_id,
+            category="job_cancel",
+            action="reschedule",
+        )
+
+    async def _request_job_pick(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        action: str,
+        candidates: list[OwnerJob],
+        correlation_id: str,
+        time_expr: str = "",
+        schedule_expr: str = "",
+    ) -> None:
+        payload_candidates = []
+        for job in candidates:
+            entry: dict[str, object] = {"job_id": job.id, "job_kind": job.kind, "action": action}
+            if action == "reschedule":
+                entry["time_expr"] = time_expr
+                entry["schedule_expr"] = schedule_expr
+            payload_candidates.append(entry)
+        draft = {"candidates": payload_candidates, "correlation_id": correlation_id}
+        rendered_list = "\n".join(f"{i + 1}. {j.rendered}" for i, j in enumerate(candidates))
+        confirm_draft = PendingConfirmDraft(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            category="job_pick",
+            draft=draft,
+            recap_text=f"{JOB_PICK_PROMPT_RU}\n{rendered_list}",
+        )
+        rec = await self._confirm.request_explicit(
+            confirm_draft,
+            keyboard_factory=lambda pid: build_job_pick_keyboard(pid, len(candidates)),
+        )
+        _log.info(
+            "tg.pipeline.job.pick_requested",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=rec.pending_id,
+            n_candidates=len(candidates),
+        )
+
+    async def _execute_job_mutation(
+        self, *, telegram_id: int, chat_id: int, draft: dict[str, object]
+    ) -> None:
+        from ai_steward_wiki.classifier.recurrence import Recurrence
+        from ai_steward_wiki.scheduler.manage import (
+            OwnerJob,
+            cancel_job,
+            reschedule_once,
+            reschedule_recurring,
+        )
+        from ai_steward_wiki.storage.jobs.models import Job
+        from ai_steward_wiki.storage.jobs.payloads import parse_job_payload
+
+        job_id = int(draft["job_id"])  # type: ignore[call-overload]
+        action = str(draft.get("action") or "cancel")
+        correlation_id = str(draft.get("correlation_id") or f"job-mutate-{job_id}")
+        assert self._jobs_session_maker is not None
+        assert self._scheduler is not None
+        async with self._jobs_session_maker() as session:
+            row = await session.get(Job, job_id)
+            if row is None:
+                await self._sender.send_message(chat_id, JOB_CONFIRM_STALE_RU)
+                return
+            try:
+                payload = parse_job_payload(row.payload)
+            except Exception:
+                await self._sender.send_message(chat_id, JOB_CONFIRM_STALE_RU)
+                return
+            job = OwnerJob(
+                id=row.id,
+                kind=row.kind,
+                payload=payload,
+                scheduled_at_utc=row.scheduled_at_utc,
+                rendered="",
+            )
+            if action == "cancel":
+                await cancel_job(self._scheduler, session, job)
+                await self._sender.send_message(chat_id, JOB_CANCEL_ACK_RU)
+                _log.info(
+                    "tg.pipeline.job.cancel",
+                    correlation_id=correlation_id,
+                    telegram_id=telegram_id,
+                    job_id=job_id,
+                )
+                return
+            if "new_when_utc" in draft:
+                new_when = datetime.fromisoformat(str(draft["new_when_utc"]))
+                await reschedule_once(self._scheduler, session, job, new_when)
+                when_local = new_when.astimezone(self._resolve_user_tz(telegram_id)).strftime(
+                    "%d.%m %H:%M"
+                )
+                await self._sender.send_message(
+                    chat_id, JOB_RESCHEDULE_ACK_RU.format(when=when_local)
+                )
+            elif "new_recurrence" in draft:
+                new_rec = Recurrence(**draft["new_recurrence"])  # type: ignore[arg-type]
+                await reschedule_recurring(self._scheduler, session, job, new_rec)
+                await self._sender.send_message(
+                    chat_id, JOB_RESCHEDULE_ACK_RU.format(when=humanize_recurrence(new_rec))
+                )
+            else:
+                # job_pick reschedule path — raw time_expr/schedule_expr deferred
+                # to this point (see the plan's design note in Task C2.2).
+                await self._build_reschedule_confirm(
+                    telegram_id=telegram_id,
+                    chat_id=chat_id,
+                    job=job,
+                    time_expr=str(draft.get("time_expr") or ""),
+                    schedule_expr=str(draft.get("schedule_expr") or ""),
+                    correlation_id=correlation_id,
+                )
+                return
+            _log.info(
+                "tg.pipeline.job.reschedule",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+                job_id=job_id,
+            )
+
+    async def _handle_job_confirm(
+        self,
+        *,
+        telegram_id: int,
+        chat_id: int,
+        pending_id: int,
+        action: ConfirmKeyboardAction,
+        draft_json: str | None,
+    ) -> None:
+        status = await self._confirm.resolve(telegram_id, pending_id, action)
+        if status is None:
+            await self._sender.send_message(chat_id, JOB_CONFIRM_STALE_RU)
+            _log.info(
+                "tg.pipeline.job.confirm_stale", telegram_id=telegram_id, pending_id=pending_id
+            )
+            return
+        if status != "confirmed":
+            await self._sender.send_message(chat_id, JOB_CONFIRM_CANCELLED_RU)
+            _log.info(
+                "tg.pipeline.job.confirm_cancelled",
+                telegram_id=telegram_id,
+                pending_id=pending_id,
+                status=status,
+            )
+            return
+        draft = json.loads(draft_json or "{}")
+        await self._execute_job_mutation(telegram_id=telegram_id, chat_id=chat_id, draft=draft)
+
+    async def on_jobpick_callback(
+        self, *, telegram_id: int, chat_id: int, pending_id: int, job_index: int
+    ) -> None:
+        pending = await self._confirm.get_pending(pending_id)
+        if pending is None or getattr(pending, "category", None) != "job_pick":
+            await self._sender.send_message(chat_id, JOB_CONFIRM_STALE_RU)
+            return
+        draft = json.loads(pending.draft_json or "{}")
+        candidates = draft.get("candidates", [])
+        if job_index < 0 or job_index >= len(candidates):
+            await self._sender.send_message(chat_id, JOB_CONFIRM_STALE_RU)
+            return
+        status = await self._confirm.resolve(telegram_id, pending_id, "correct")
+        if status is None:
+            await self._sender.send_message(chat_id, JOB_CONFIRM_STALE_RU)
+            return
+        if status != "corrected":
+            await self._sender.send_message(chat_id, JOB_CONFIRM_CANCELLED_RU)
+            return
+        chosen = candidates[job_index]
+        correlation_id = str(draft.get("correlation_id") or f"jobpick-{pending_id}-{telegram_id}")
+        await self._execute_job_mutation(
+            telegram_id=telegram_id,
+            chat_id=chat_id,
+            draft={**chosen, "correlation_id": correlation_id},
+        )
+        _log.info(
+            "tg.pipeline.job.pick_resolved",
+            correlation_id=correlation_id,
+            telegram_id=telegram_id,
+            pending_id=pending_id,
+            job_index=job_index,
+        )
 
     # END_BLOCK_JOB_DISPATCH
 
@@ -2360,6 +2838,20 @@ class DefaultPipeline:
                 draft_json=pending.draft_json,
             )
             return
+        if pending is not None and getattr(pending, "category", None) == "job_cancel":
+            await self._handle_job_confirm(
+                telegram_id=telegram_id,
+                chat_id=chat_id,
+                pending_id=pending_id,
+                action=action,
+                draft_json=pending.draft_json,
+            )
+            return
+        # (note: category == "job_pick" rows are resolved exclusively through
+        # on_jobpick_callback, never through on_confirm_callback — a job_pick
+        # row tapped via the generic confirm: prefix should never occur since
+        # its keyboard only emits jobpick: callback data; no dispatch branch is
+        # added for it here — see the plan's design note in Task C2.2.)
         status = await self._confirm.resolve(telegram_id, pending_id, action)
         _log.info(
             "tg.pipeline.confirm",
