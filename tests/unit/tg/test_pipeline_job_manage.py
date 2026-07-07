@@ -352,7 +352,7 @@ async def test_job_reschedule_recurring_shaped_closes_digest_defect(
     """Closes the measured #35/#91/#99 digest-control defect cluster."""
     job_id = await _insert(
         jobs_session_maker,
-        kind="digest",
+        kind="digest_job",
         status="scheduled",
         payload={
             "kind": "digest",

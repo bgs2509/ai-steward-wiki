@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/scheduler/manage.py
-# VERSION: 0.0.1
+# VERSION: 0.0.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Generic job-management surface — list/needle-match/cancel/reschedule
 #            over the 5 user-facing job kinds (aisw-xi8, DEC-9). Every function
@@ -29,7 +29,17 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - aisw-xi8 (Phase-B, DEC-9): initial job-management module.
+#   LAST_CHANGE: v0.0.2 - aisw-xi8 (Step-12 review fix): _USER_FACING_KINDS/
+#                _JOB_KEY_PREFIX/_render_job used the DB Job.kind literal
+#                'digest' (the JobPayload discriminator's literal, a different
+#                field) instead of the real 'digest_job' firing.create_digest_job
+#                persists — list_owner_jobs' Job.kind.in_(...) filter never
+#                matched a real digest row, so list/cancel/reschedule could
+#                never find one in production. Fixed both to 'digest_job'; added
+#                test_list_owner_jobs_finds_a_real_create_digest_job_row (wires
+#                the real firing.create_digest_job into list_owner_jobs/
+#                cancel_job) as a standing regression guard against this drift.
+#   PREVIOUS:    v0.0.1 - aisw-xi8 (Phase-B, DEC-9): initial job-management module.
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
@@ -72,18 +82,24 @@ _log = structlog.get_logger("scheduler.manage")
 # Kinds a user ever sees via "какие у меня напоминания"-style queries. purge and  # noqa: RUF003
 # wiki_run are system-internal — never listed, never cancellable this way.
 _USER_FACING_KINDS = frozenset(
-    {"reminder_job", "recurring_reminder", "check_in", "digest", "cron_user"}
+    {"reminder_job", "recurring_reminder", "check_in", "digest_job", "cron_user"}
 )
 
 # SSoT job-id-string registry — MUST match the literal id= strings already used
-# at firing.py:217 (reminder:), firing.py:564 (digest:), and cron_user.py:125
+# at firing.py:217 (reminder:), firing.py:756 (digest:), and cron_user.py:125
 # (cron_user:). recurring_reminder/check_in are new in this feature (Phase B
-# Tasks B4/B5 register their APScheduler jobs under these exact prefixes).
+# Tasks B4/B5 register their APScheduler jobs under these exact prefixes). The
+# DB Job.kind for a digest row is 'digest_job' (firing.create_digest_job), NOT
+# 'digest' — 'digest' is only the JobPayload's own discriminator literal
+# (storage/jobs/payloads.DigestPayload.kind), a different field entirely. This
+# key MUST stay 'digest_job' -> 'digest' (aisw-xi8 Step-12 review: the previous
+# 'digest' -> 'digest' entry never matched a real row, silently breaking
+# list/cancel/reschedule for every digest job in production).
 _JOB_KEY_PREFIX = {
     "reminder_job": "reminder",
     "recurring_reminder": "recurring",
     "check_in": "check_in",
-    "digest": "digest",
+    "digest_job": "digest",
     "cron_user": "cron_user",
 }
 
@@ -139,7 +155,7 @@ def _render_job(row: Job, payload: JobPayload, zone: ZoneInfo) -> str:
         rec = getattr(payload, "recurrence", None)
         schedule = _humanize_recurrence(rec) if rec is not None else "?"
         return f"{schedule} — вопрос: {topic}"
-    if row.kind == "digest":
+    if row.kind == "digest_job":
         rec = getattr(payload, "recurrence", None)
         schedule = _humanize_recurrence(rec) if rec is not None else "?"
         return f"сводка {schedule}"

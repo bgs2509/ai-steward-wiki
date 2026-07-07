@@ -65,7 +65,7 @@ def test_job_key_matches_existing_literals() -> None:
     assert _job_key("reminder_job", 5) == "reminder:5"
     assert _job_key("recurring_reminder", 5) == "recurring:5"
     assert _job_key("check_in", 5) == "check_in:5"
-    assert _job_key("digest", 5) == "digest:5"
+    assert _job_key("digest_job", 5) == "digest:5"
     assert _job_key("cron_user", 5) == "cron_user:5"
 
 
@@ -90,7 +90,7 @@ async def test_list_owner_jobs_returns_only_enabled_user_facing_kinds(session_fa
     await _insert(
         session_factory,
         owner=owner,
-        kind="digest",
+        kind="digest_job",
         status="scheduled",
         payload={
             "kind": "digest",
@@ -129,7 +129,7 @@ async def test_list_owner_jobs_returns_only_enabled_user_facing_kinds(session_fa
     )
     async with session_factory() as s:
         jobs = await list_owner_jobs(s, owner)
-    assert {j.kind for j in jobs} == {"reminder_job", "digest"}
+    assert {j.kind for j in jobs} == {"reminder_job", "digest_job"}
 
 
 async def test_list_owner_jobs_owner_isolation(session_factory) -> None:
@@ -193,7 +193,7 @@ async def test_match_jobs_by_needle_single_clear_winner(session_factory) -> None
     await _insert(
         session_factory,
         owner=1,
-        kind="digest",
+        kind="digest_job",
         status="scheduled",
         payload={
             "kind": "digest",
@@ -291,7 +291,7 @@ async def test_cancel_job_tolerates_missing_apscheduler_entry(session_factory) -
     job_id = await _insert(
         session_factory,
         owner=1,
-        kind="digest",
+        kind="digest_job",
         status="scheduled",
         payload={
             "kind": "digest",
@@ -331,12 +331,42 @@ async def test_reschedule_once_moves_date_trigger(session_factory) -> None:
     assert jobs_after[0].scheduled_at_utc == new_when.replace(tzinfo=None)
 
 
+async def test_list_owner_jobs_finds_a_real_create_digest_job_row(session_factory) -> None:
+    """Regression guard for the digest_job kind-literal mismatch (aisw-xi8 Step-12
+    review): seed the row via the REAL firing.create_digest_job (the actual
+    production writer), not a hand-rolled kind= guess — so a future drift between
+    the DB Job.kind literal firing.py persists ('digest_job') and the one
+    manage.py's _USER_FACING_KINDS/_JOB_KEY_PREFIX expect fails loudly here
+    instead of silently no-oping list/cancel/reschedule forever."""
+    from ai_steward_wiki.scheduler.firing import create_digest_job
+
+    scheduler = MagicMock()
+    async with session_factory() as s:
+        job_id = await create_digest_job(
+            s, scheduler, owner_telegram_id=1, chat_id=10, recurrence=_rec()
+        )
+    scheduler.add_job.assert_called_once()
+    assert scheduler.add_job.call_args.kwargs["id"] == f"digest:{job_id}"
+
+    async with session_factory() as s:
+        jobs = await list_owner_jobs(s, 1)
+    assert len(jobs) == 1
+    assert jobs[0].id == job_id
+    assert jobs[0].kind == "digest_job"
+
+    # cancel_job must remove the SAME apscheduler id create_digest_job registered.
+    async with session_factory() as s:
+        jobs2 = await list_owner_jobs(s, 1)
+        await cancel_job(scheduler, s, jobs2[0])
+    scheduler.remove_job.assert_called_once_with(f"digest:{job_id}")
+
+
 async def test_reschedule_recurring_rewrites_payload_recurrence(session_factory) -> None:
     """Closes the measured #35/#91/#99 digest-control defect cluster (resolved Q3)."""
     job_id = await _insert(
         session_factory,
         owner=1,
-        kind="digest",
+        kind="digest_job",
         status="scheduled",
         payload={
             "kind": "digest",
