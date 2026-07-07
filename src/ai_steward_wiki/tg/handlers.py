@@ -29,6 +29,7 @@
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
+#   BotLoaderControl - real LoaderControl impl posting/removing the "⏳ Думаю…" loader via the Bot (aisw-378; used by InboxAggregator)
 #   CREATE_PROJECT_BUTTON_TEXT - create-project reply-keyboard literal intercepted pre-classify (aisw-cla)
 #   CONFIRM_CALLBACK_PREFIX - "confirm:" callback_data prefix (D-023)
 #   DIGESTSEC_CALLBACK_PREFIX - "digestsec:" callback_data prefix (ADR-026)
@@ -210,6 +211,7 @@ __all__ = [
     "EXPAND_SECTION_KEYS",
     "JOBPICK_CALLBACK_PREFIX",
     "WIKIPICK_CALLBACK_PREFIX",
+    "BotLoaderControl",
     "build_router",
     "parse_confirm_callback",
     "parse_digestsec_callback",

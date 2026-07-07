@@ -167,7 +167,8 @@ WRITE_TOOLS: list[str] = ["Write", "Edit", "MultiEdit"]
 # aisw-dqz (Path B, HUMAN-approved 2026-06-26): the ONLY tool a `web_task` run is allowed.
 # WebSearch (Anthropic-mediated search) lets the model answer "найди в интернете …" from
 # live web content. It is denied for every other run by the dontAsk allowlist; this carve-out
-# is intent-scoped (wired in __main__ for Intent.WEB_TASK only — M-5). The run is read-only
+# is intent-scoped (wired in __main__ for Intent.WEB only, aisw-xi8 re-anchor from the
+# deleted Intent.WEB_TASK v1 member — M-5). The run is read-only
 # (no WRITE_TOOLS) and gets no --add-dir on the WIKI tree (see _RunConfig.web_search), so
 # untrusted web content cannot be turned into WIKI writes/exfiltration (M-1). WebFetch (the
 # arbitrary-URL / SSRF vector) stays in disallowed_tools (M-2).

@@ -387,6 +387,12 @@
       </target>
       <verification-ref>V-M-SCHEDULER-MANAGE</verification-ref>
     </M-SCHEDULER-MANAGE>
+    <M-DIGEST-CARDS bd_id="aisw-163">
+      <target>
+        <source>src/ai_steward_wiki/digest/cards.py</source>
+      </target>
+      <verification-ref>V-M-DIGEST-CARDS</verification-ref>
+    </M-DIGEST-CARDS>
     <M-CLASSIFIER-REGRESS bd_id="aisw-xi8">
       <target>
         <source>scripts/classifier_regress.py</source>

@@ -1,4 +1,44 @@
 #!/usr/bin/env python3
+# FILE: scripts/classifier_regress.py
+# START_MODULE_CONTRACT
+#   PURPOSE: 100-case labelled-corpus regression harness gating every
+#            prompts/classifier.md change against the REAL ClaudeCliBackend
+#            (DEC-13, FR-13, aisw-xi8).
+#   SCOPE: Load tests/corpus/classifier/questions.json, classify every case
+#          through the real Stage-0 backend with bounded concurrency +
+#          harness-only timeout retries, score intent/action/kind accuracy
+#          plus the FR-12 verbatim-slot invariant, render a per-cluster
+#          report, and gate (intent 100%, intent+action+kind >=99%).
+#   DEPENDS: ai_steward_wiki.classifier.backend.ClaudeCliBackend,
+#            ai_steward_wiki.classifier.schema (ClassifierError, ClassifierTimeoutError),
+#            ai_steward_wiki.claude_cli.common.default_claude_config_dir
+#   LINKS: M-CLASSIFIER-REGRESS, M-CLASSIFIER-STAGE0, DEC-13, FR-12, FR-13, aisw-xi8
+#   ROLE: SCRIPT
+#   MAP_MODE: EXPORTS
+# END_MODULE_CONTRACT
+#
+# START_MODULE_MAP
+#   CorpusCase - one labelled corpus row (id, text, expected, accept)
+#   Verdict - per-case scoring result (actual intent/action/kind, intent_ok/full_ok/verbatim_ok, error)
+#   load_corpus - parse tests/corpus/classifier/questions.json into CorpusCase rows
+#   score_verdict - score one classified case's distilled_payload against expected/accept + FR-12 verbatim invariant
+#   run_regression - async: classify every corpus case via ClaudeCliBackend (semaphore=CONCURRENCY), collect Verdicts
+#   render_report - render the per-cluster breakdown + misses/violations, decide gate pass/fail
+# END_MODULE_MAP
+#
+# START_CHANGE_SUMMARY
+#   LAST_CHANGE: v0.1.0 - aisw-xi8 (e6ac1ad, DEC-13/FR-13): initial 100-case
+#                classifier v2 regression harness against the real
+#                ClaudeCliBackend; gates every prompts/classifier.md change,
+#                deliberately excluded from make total-test/CI (100 real Haiku
+#                calls per run). Step-13 grace-refresh added this contract
+#                header (script previously had none) and fixed
+#                docs/knowledge-graph.xml's M-CLASSIFIER-REGRESS node, which
+#                referenced nonexistent fn-run_corpus/fn-score_verdicts and
+#                was still STATUS="planned" despite being shipped and gated
+#                green (make classifier-regress 100/100).
+# END_CHANGE_SUMMARY
+#
 """Classifier v2 regression harness (aisw-xi8, DEC-13, FR-13).
 
 Runs tests/corpus/classifier/questions.json against the REAL ClaudeCliBackend

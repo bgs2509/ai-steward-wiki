@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.6.1
+# VERSION: 0.6.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -32,7 +32,30 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.6.1 - aisw-xi8 (Step-12 review fix): call
+#   LAST_CHANGE: v0.6.2 - aisw-xi8 (Step-13 grace-refresh): retroactively
+#                document two aisw-xi8 commits that landed without a
+#                VERSION/CHANGE_SUMMARY bump (Step-13 GRACE-integrity gap, no
+#                logic changed by this entry itself). (1) f9f82a6 — Stage-0
+#                thinking off: _build_classifier_backend's ClaudeCliBackend
+#                now passes max_thinking_tokens=0 (unbounded thinking made
+#                complex phrasings systematically cross the 30s timeout;
+#                0/100 timeouts and ~2.5s/call at budget=0); the NL-time
+#                Haiku fallback (_build_time_parse_backend) deliberately keeps
+#                a SEPARATE ClaudeCliBackend instance WITHOUT the override —
+#                date arithmetic verified live to need reasoning (a 0-budget
+#                run returned a past-year date for «за месяц до 25 июня
+#                следующего года»). (2) f740ec7 — _WikiRunnerAdapter.run's
+#                scope-resolution gate and the WebSearch-config gate re-anchor
+#                from the deleted 9-member enum's `intent is
+#                Intent.WIKI_QUERY` / `intent is Intent.WEB_TASK` onto `(intent
+#                is Intent.WIKI and action == "query")` / `(intent is
+#                Intent.WEB)`, threaded through the widened `action: str |
+#                None = None` param on WikiRunner.run/StreamingDelivery.
+#                run_and_deliver (DEC-5, ADR-034 deviation); also wires
+#                check_in_prompt_path=settings.prompts_dir / "check_in.md" for
+#                the Phase-C.3 check-in job kind. Both commits' actual code
+#                changes are unaffected by this docs-only entry.
+#   PREVIOUS:    v0.6.1 - aisw-xi8 (Step-12 review fix): call
 #                firing.set_recurring_scheduler(scheduler) right after
 #                set_firing_context. It was defined in Phase-B (DEC-7) for
 #                fire_recurring_job's 3rd-strike auto-disable remove_job call,
@@ -428,12 +451,15 @@ class _WikiRunnerAdapter:
         self._acquirer = acquirer
         self._spawner = spawner
         self._run_config = run_config
-        # aisw-dqz (Path B): intent-scoped WebSearch config selected for Intent.WEB_TASK
-        # only. None → web_task falls back to the default read-only run (no WebSearch).
+        # aisw-dqz (Path B): intent-scoped WebSearch config selected for Intent.WEB
+        # only (aisw-xi8 re-anchor from the deleted Intent.WEB_TASK v1 member). None
+        # → Intent.WEB falls back to the default read-only run (no WebSearch).
         self._web_run_config = web_run_config
-        # aisw-o6m (ADR-034): both resolvers wired → wiki_query runs get adaptive
-        # scoping (confident single-domain → run inside that WIKI; else cross-root
-        # run with the layouts block). Either None → legacy cross-root behaviour.
+        # aisw-o6m (ADR-034): both resolvers wired → (Intent.WIKI, action=='query')
+        # runs get adaptive scoping (confident single-domain → run inside that WIKI;
+        # else cross-root run with the layouts block). Either None → legacy
+        # cross-root behaviour. (aisw-xi8 re-anchor from the deleted Intent.WIKI_QUERY
+        # v1 member.)
         self._hint_catalog_resolver = hint_catalog_resolver
         self._owner_wikis_resolver = owner_wikis_resolver
 
@@ -459,8 +485,10 @@ class _WikiRunnerAdapter:
         # Inbox staging lands in chunks 21+.
         overlay_text = "semver: 1.0.0\n\n# User turn\n"
         # START_BLOCK_QUERY_SCOPE_RESOLVE
-        # aisw-o6m (ADR-034): adaptive scoping for wiki_query. Confident single-domain
-        # match → run inside that WIKI (its CLAUDE.md is appended by assemble_prompt,
+        # aisw-o6m (ADR-034): adaptive scoping for (Intent.WIKI, action=='query')
+        # runs (aisw-xi8 re-anchor from the deleted Intent.WIKI_QUERY v1 member).
+        # Confident single-domain match → run inside that WIKI (its CLAUDE.md is
+        # appended by assemble_prompt,
         # same mechanics as ingest). Ambiguous/long/failed → cross-root run with the
         # layouts block so the model knows every WIKI's Data layout paths. A scope
         # decision can never fail the run (FR-6).
@@ -503,8 +531,10 @@ class _WikiRunnerAdapter:
         scratch = self._runtime_dir / "overlays" / f"{run_id}.md"
         scratch.parent.mkdir(parents=True, exist_ok=True)
         scratch.write_text(overlay_text, encoding="utf-8")
-        # aisw-dqz (Path B): web_task answers from the live web with WebSearch enabled,
-        # read-only, no WIKI add-dir. Every other intent keeps the default writing config.
+        # aisw-dqz (Path B): Intent.WEB (aisw-xi8 re-anchor from the deleted
+        # Intent.WEB_TASK v1 member) answers from the live web with WebSearch
+        # enabled, read-only, no WIKI add-dir. Every other intent keeps the default
+        # writing config.
         run_config = (
             self._web_run_config
             if intent is Intent.WEB and self._web_run_config is not None
@@ -1411,8 +1441,9 @@ async def _amain() -> None:
             claude_config_dir=default_claude_config_dir(),
             allowed_tools=WRITE_TOOLS,  # aisw-t6w: ingest/wiki edits must write under dontAsk
         ),
-        # aisw-dqz (Path B, HUMAN-approved 2026-06-26): Intent.WEB_TASK runs answer from the
-        # live web with WebSearch ONLY (read-only, no WRITE_TOOLS), no --add-dir on the WIKI
+        # aisw-dqz (Path B, HUMAN-approved 2026-06-26): Intent.WEB (aisw-xi8 re-anchor
+        # from the deleted Intent.WEB_TASK v1 member) runs answer from the live web
+        # with WebSearch ONLY (read-only, no WRITE_TOOLS), no --add-dir on the WIKI
         # tree + neutral cwd (web_search=True). WebFetch stays denied (default disallowed_tools).
         # This is the ONLY config that enables WebSearch — never global (M-5).
         web_run_config=_RunConfig(

@@ -25,15 +25,22 @@
 #            ai_steward_wiki.inbox.materialize.inbox_wiki_path,
 #            ai_steward_wiki.inbox.router (RouterDecision, RouterError, RouterIntent),
 #            ai_steward_wiki.inbox.route (route_action_to_payload, route_action_from_payload),
-#            ai_steward_wiki.inbox.staging.MediaRef,
 #            ai_steward_wiki.ops.pii.PIIRedactor,
 #            ai_steward_wiki.tg.voice.VoiceHandler (optional),
 #            ai_steward_wiki.tg.photo.PhotoIngestor (optional),
 #            ai_steward_wiki.tg.confirm (ConfirmationService, PendingConfirmDraft,
 #            build_route_confirm_keyboard),
 #            ai_steward_wiki.tg.bot.TgSender, ai_steward_wiki.classifier.schema.TimeParseResult,
-#            ai_steward_wiki.scheduler.firing.create_reminder_job (lazy import in the
-#            reminder confirm callback), apscheduler (AsyncIOScheduler, typing only),
+#            ai_steward_wiki.storage.audit.chat_log.ChatTurn (typing only),
+#            ai_steward_wiki.scheduler.firing (create_reminder_job/create_recurring_job/
+#            create_digest_job, lazy imports in the confirm callbacks),
+#            ai_steward_wiki.scheduler.manage (OwnerJob, _render_job, list_owner_jobs,
+#            match_jobs_by_needle, cancel_job, reschedule_once, reschedule_recurring;
+#            lazy imports in the job list/mutate handlers, aisw-xi8 Phase-C.2/C.3),
+#            ai_steward_wiki.scheduler.cron_user (CronUserContextNotInitialisedError,
+#            create_check_in_job; lazy import, aisw-xi8 Phase-C.3),
+#            ai_steward_wiki.storage.jobs.models.Job, ai_steward_wiki.storage.jobs.payloads.parse_job_payload
+#            (lazy imports, aisw-xi8 Phase-C.2), apscheduler (AsyncIOScheduler, typing only),
 #            sqlalchemy.ext.asyncio (async_sessionmaker, typing only), structlog, pypdf
 #   LINKS: M-TG-PIPELINE-CLASSIFIER (chunk 20), M-TG-PIPELINE-STREAMING
 #          (chunk 21), M-TG-DOCUMENT-FULL (chunk 22), M-TG-HANDLERS-WIRING
@@ -71,8 +78,8 @@
 #   ACTIVE_WIKI_DEFAULT_ROUTE_RU - notice when a bare follow-up is default-routed to the sticky WIKI (aisw-0ym)
 #   build_route_recap - build the ru recap text for a RouterDecision route confirm
 #   CLASSIFIER_CONFIDENCE_THRESHOLD - Stage-0 confidence floor for the reminder fast-path (aisw-kcz); renamed aisw-xi8 (DEC-2)
+#   ACK_ADMIN_RU - reply for intent=admin (no real handler; aisw-aca)
 #   SUBTHRESHOLD_CLARIFY_RU - ru clarify reply for a below-threshold job/admin classification (aisw-xi8, DEC-2/FR-10)
-#   ACK_JOB_STUB_RU - Phase-C.1 stub reply for intent=job (aisw-xi8, replaced by Phase-C.2/C.3)
 #   JOB_LIST_EMPTY_RU - reply when the owner has no active jobs (aisw-xi8, Phase-C.2, DEC-9)
 #   JOB_LIST_HEADER_RU - list header template for job/list (aisw-xi8, Phase-C.2, DEC-9)
 #   JOB_NOT_FOUND_RU - reply when a needle matches no owner job (aisw-xi8, Phase-C.2, DEC-9)
@@ -92,6 +99,7 @@
 #   JOB_CHECKIN_UNPARSEABLE_RU - reply when the check-in schedule_expr is unparseable (aisw-xi8, Phase-C.3)
 #   REMINDER_RECAP_RU - recap template for a reminder confirm (aisw-kcz)
 #   REMINDER_ACK_RU - ack sent after a reminder is scheduled (aisw-kcz)
+#   REMINDER_ACK_LEAD_RU - ack sent after a reminder with a pre-reminder lead is scheduled (aisw-5wr)
 #   REMINDER_UNPARSEABLE_RU - reply when the reminder time is ambiguous/unparseable (aisw-kcz)
 #   REMINDER_PAST_RU - reply when the reminder names an explicitly-past absolute date (aisw-kcz)
 #   REMINDER_RECURRING_RU - reply when recurring-digest phrasing is detected (aisw-kcz)
@@ -159,8 +167,20 @@
 #                category branch to _handle_job_confirm. New anchors
 #                tg.pipeline.job.list|cancel|reschedule|pick_requested|
 #                not_found|confirm_requested|confirm_cancelled|confirm_stale|
-#                pick_resolved. action="create" still falls through to
-#                ACK_JOB_STUB_RU pending Phase-C.3.
+#                pick_resolved. action="create" fell through to ACK_JOB_STUB_RU
+#                at this point (Phase-C.1 stub). Phase-C.3 (457b7b7, landed
+#                under this same v0.15.0 line — no version bump recorded at the
+#                time) REPLACED that stub wholesale with real job/create
+#                kind=recurring|check_in confirm+dispatch handlers
+#                (_execute_job_create_recurring/_execute_job_create_check_in,
+#                see JOB_RECURRING_*/JOB_CHECKIN_* MODULE_MAP entries above).
+#                As of v0.15.1, dispatch is fully wired end-to-end
+#                (list/cancel/reschedule/create) and ACK_JOB_STUB_RU is dead
+#                code — no live branch sends it — so it has been dropped from
+#                __all__/MODULE_MAP (Step-13 grace-refresh); the string
+#                constant itself is left in place as an orphaned historical
+#                artifact rather than touched as a logic change in a docs-only
+#                pass.
 #   PREVIOUS:    v0.14.0 - aisw-df4: intent=smalltalk dispatch. A new SMALLTALK
 #                branch (before the reminder/digest fast-paths) replies with a short
 #                ru line (SMALLTALK_REPLY_RU) and returns — no time/recurrence
@@ -332,13 +352,13 @@ if TYPE_CHECKING:
     from ai_steward_wiki.storage.audit.chat_log import ChatTurn
 
 __all__ = [
+    "ACK_ADMIN_RU",
     "ACK_CLASSIFY_ERR_RU",
     "ACK_DEDUP_RU",
     "ACK_DOC_PDF_NO_TEXT_RU",
     "ACK_DOC_RU",
     "ACK_DOC_TOO_LARGE_RU",
     "ACK_DOC_UNSUPPORTED_RU",
-    "ACK_JOB_STUB_RU",
     "ACK_PHOTO_RU",
     "ACK_RUNNER_ERR_RU",
     "ACK_TEXT_RU",
@@ -374,6 +394,7 @@ __all__ = [
     "PDF_MAX_EXTRACT_CHARS",
     "PHOTO_CAPTION_PROMPT_RU",
     "PHOTO_PROMPT_RU",
+    "REMINDER_ACK_LEAD_RU",
     "REMINDER_ACK_RU",
     "REMINDER_CONFIRM_CANCELLED_RU",
     "REMINDER_CONFIRM_STALE_RU",
