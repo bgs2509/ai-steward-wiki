@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from ai_steward_wiki.classifier.recurrence import Recurrence
+from ai_steward_wiki.scheduler import cron_user
 from ai_steward_wiki.scheduler.consumer import CronConsumer
 from ai_steward_wiki.scheduler.queue import PriorityJobQueue
 from ai_steward_wiki.scheduler.queue_payloads import CheckInQueueMsg
@@ -118,7 +120,12 @@ async def test_check_in_happy_path_sends_generated_question(
     bot.send_message.assert_awaited_once_with(99, "Как прошёл твой день сегодня?")
     async with session_factory() as s:
         row = await s.get(Job, job_id)
-    assert row.status == "finished"
+    # aisw-xi8 Step-12 review fix: check_in is a RECURRING CronTrigger — a
+    # completed fire must rewind status to 'scheduled' (not a terminal
+    # 'finished') so the next CronTrigger fire is not silently skipped by
+    # fire_check_in_job's `row.status != "scheduled"` guard.
+    assert row.status == "scheduled"
+    assert row.finished_at_utc is not None
 
 
 async def test_check_in_uses_check_in_prompt_path_in_argv(session_factory, tmp_path: Path) -> None:
@@ -164,7 +171,9 @@ async def test_check_in_nonzero_exit_sends_deterministic_fallback_not_error(
     bot.send_message.assert_awaited_once_with(99, "Хотел спросить: принимала ли лекарства")
     async with session_factory() as s:
         row = await s.get(Job, job_id)
-    assert row.status == "finished"  # a delivered fallback is a completed check-in, not a failure
+    # a delivered fallback is a completed check-in, not a failure — AND (aisw-xi8
+    # Step-12 review fix) check_in is recurring, so it rewinds to 'scheduled'.
+    assert row.status == "scheduled"
 
 
 async def test_check_in_timeout_sends_deterministic_fallback(
@@ -194,7 +203,61 @@ async def test_check_in_timeout_sends_deterministic_fallback(
     bot.send_message.assert_awaited_once_with(99, "Хотел спросить: как дела в школе")
     async with session_factory() as s:
         row = await s.get(Job, job_id)
-    assert row.status == "finished"
+    # aisw-xi8 Step-12 review fix: recurring — rewinds to 'scheduled'.
+    assert row.status == "scheduled"
+
+
+async def test_check_in_fires_twice_across_two_cron_trigger_fires(
+    session_factory, tmp_path: Path
+) -> None:
+    """Core regression guard (aisw-xi8 Step-12 review): check_in's whole point is
+    a RECURRING CronTrigger (fires daily/weekly forever) — before this fix, a
+    completed fire left the row at a terminal 'finished'/'failed' status, and
+    fire_check_in_job's `row.status != "scheduled"` guard then silently no-oped
+    every subsequent CronTrigger fire. Exercises the REAL producer
+    (cron_user.create_check_in_job / fire_check_in_job) + the REAL consumer
+    twice, simulating two separate CronTrigger fires of the same recurring job."""
+    scheduler = MagicMock()
+    queue = PriorityJobQueue()
+    cron_user.set_cron_user_context(scheduler, queue, session_factory)
+    try:
+        job_id = await cron_user.create_check_in_job(
+            owner_telegram_id=1,
+            chat_id=99,
+            recurrence=Recurrence(kind="daily", time_hhmm="21:00", tz="Europe/Moscow"),
+            question_topic="как прошёл день",
+            user_tz="Europe/Moscow",
+            wiki_id=None,
+        )
+
+        # --- fire #1 ---
+        await cron_user.fire_check_in_job(job_id)
+        item1 = await queue.get()
+        consumer1, bot1 = _make_consumer(
+            _FakeSpawner(_FakeProc(rc=0, stdout="Как прошёл твой день?".encode())), tmp_path
+        )
+        consumer1._jobs_session_maker = session_factory
+        await consumer1._execute_one(item1.payload)
+        bot1.send_message.assert_awaited_once_with(99, "Как прошёл твой день?")
+        async with session_factory() as s:
+            row = await s.get(Job, job_id)
+        assert row.status == "scheduled"  # rewound — schedulable again
+
+        # --- fire #2 (this is the regression: must NOT be skipped) ---
+        await cron_user.fire_check_in_job(job_id)
+        item2 = await queue.get()
+        assert item2.payload.job_id == job_id
+        consumer2, bot2 = _make_consumer(
+            _FakeSpawner(_FakeProc(rc=0, stdout="Как прошёл твой день?".encode())), tmp_path
+        )
+        consumer2._jobs_session_maker = session_factory
+        await consumer2._execute_one(item2.payload)
+        bot2.send_message.assert_awaited_once_with(99, "Как прошёл твой день?")
+        async with session_factory() as s:
+            row2 = await s.get(Job, job_id)
+        assert row2.status == "scheduled"
+    finally:
+        cron_user._ctx = None
 
 
 async def test_cron_user_kind_still_dispatches_via_parse_queue_msg(

@@ -1,11 +1,13 @@
 # FILE: src/ai_steward_wiki/scheduler/consumer.py
-# VERSION: 0.0.5
+# VERSION: 0.0.6
 # START_MODULE_CONTRACT
 #   PURPOSE: Single async drain loop over PriorityJobQueue — spawns the Claude CLI
 #            directly per cron-user item (no systemd-run wrapper, aisw-abc/ADR-010),
 #            captures stdout (timeout 600s), delivers via aiogram.Bot
-#            (chunked via ChainSplitter). Mutates jobs.Job status through the
-#            'queued' → 'running' → 'finished'|'failed' arc.
+#            (chunked via ChainSplitter). cron_user mutates jobs.Job status
+#            through the 'queued' → 'running' → 'finished'|'failed' arc
+#            (one-off, per-command); check_in instead rewinds back to
+#            'scheduled' once a fire completes (recurring — Step-12 review fix).
 #   SCOPE: CronConsumer (constructor-DI bot/queue/jobs_session_maker — R-1 mitigation);
 #          Spawner Protocol seam for unit tests; default _AsyncioSpawner wraps
 #          asyncio.create_subprocess_exec; .run() blocking drain loop; ._execute_one
@@ -32,10 +34,24 @@
 #                  dispatches by kind to ._execute_cron_user or ._execute_check_in
 #   CronConsumer._execute_check_in - check_in CLI exec: generated ru question, or a
 #                                     deterministic ru fallback on any failure (FR-6)
+#   CronConsumer._finish_check_in - rewind a completed check_in row to 'scheduled'
+#                                    (recurring — not a terminal finished/failed)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.5 - aisw-xi8 (Phase-B, DEC-8, FR-6): _execute_one now
+#   LAST_CHANGE: v0.0.6 - aisw-xi8 (Step-12 review fix): check_in's whole point is
+#                a RECURRING CronTrigger, but a completed fire left the row at a
+#                terminal 'finished'/'failed' status forever — fire_check_in_job's
+#                `row.status != "scheduled"` guard then silently no-oped every
+#                CronTrigger fire after the first, so the feature could never ask
+#                its question more than once (contradicted FR-6 and the "спрашивать
+#                каждый вечер" user-facing recap). New _finish_check_in helper
+#                rewinds status back to 'scheduled' (keeping finished_at_utc/
+#                last_error for observability) after both the happy path and the
+#                FR-6 fallback path, mirroring fire_recurring_job's DEC-7 "no
+#                terminal status transition on success" shape. cron_user's own
+#                one-off status arc is intentionally untouched.
+#   PREVIOUS:    v0.0.5 - aisw-xi8 (Phase-B, DEC-8, FR-6): _execute_one now
 #                dispatches by the validated message's 'kind' discriminator
 #                (parse_queue_msg) to _execute_cron_user (unchanged) or the NEW
 #                _execute_check_in. check_in exit!=0 / timeout / empty-output all
@@ -408,11 +424,9 @@ class CronConsumer:
                 correlation_id=msg.correlation_id,
                 error_class=type(exc).__name__,
             )
-            await self._set_status(
-                msg.job_id, status="failed", finished=True, last_error="telegram_api_error"
-            )
+            await self._finish_check_in(msg.job_id, last_error="telegram_api_error")
             return
-        await self._set_status(msg.job_id, status="finished", finished=True)
+        await self._finish_check_in(msg.job_id)
         _log.info(
             "scheduler.consumer.delivered",
             job_id=msg.job_id,
@@ -423,8 +437,8 @@ class CronConsumer:
 
     async def _deliver_check_in_fallback(self, msg: CheckInQueueMsg, *, error_class: str) -> None:
         """FR-6: a CLI failure at fire time MUST degrade to a deterministic ru
-        fallback, never silence. A delivered fallback still counts as 'finished'
-        (a completed check-in from the user's perspective — R-5 mitigation)."""
+        fallback, never silence. A delivered fallback still counts as a completed
+        check-in (R-5 mitigation), NOT a permanent failure."""
         fallback = _CHECK_IN_FALLBACK_RU.format(topic=msg.question_topic)
         _log.warning(
             "scheduler.check_in.fallback",
@@ -441,11 +455,9 @@ class CronConsumer:
                 correlation_id=msg.correlation_id,
                 error_class=type(exc).__name__,
             )
-            await self._set_status(
-                msg.job_id, status="failed", finished=True, last_error="telegram_api_error"
-            )
+            await self._finish_check_in(msg.job_id, last_error="telegram_api_error")
             return
-        await self._set_status(msg.job_id, status="finished", finished=True)
+        await self._finish_check_in(msg.job_id)
 
     def _build_check_in_argv(self, msg: CheckInQueueMsg) -> list[str]:
         binary = resolve_binary(self._claude_binary)
@@ -589,6 +601,34 @@ class CronConsumer:
                 row.finished_at_utc = now
             if last_error is not None:
                 row.last_error = last_error
+
+    async def _finish_check_in(self, job_id: int, *, last_error: str | None = None) -> None:
+        """Rewind a check_in row back to 'scheduled' once a fire fully completes
+        (success OR a degraded-fallback delivery), instead of leaving it at a
+        terminal 'finished'/'failed' status (aisw-xi8 Step-12 review).
+
+        check_in is registered with a RECURRING CronTrigger (mirrors
+        fire_recurring_job's DEC-7 "no terminal status transition on success"
+        shape) — unlike cron_user's one-off '/cron_add'-style commands,
+        check_in's whole point is to ask again on the next cycle. Before this
+        fix, `fire_check_in_job`'s `row.status != "scheduled"` guard silently
+        no-oped every CronTrigger fire after the first, because nothing ever
+        reset status away from a terminal value. finished_at_utc/last_error are
+        still recorded for observability; only the status column stops being
+        terminal, so the row keeps recurring like fire_recurring_job's own
+        (unlike cron_user, this module does NOT add strike-based auto-disable —
+        out of scope for this fix, matching what was explicitly asked for)."""
+        now = datetime.now(UTC).replace(tzinfo=None)
+        async with self._jobs_session_maker() as session, session.begin():
+            row = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
+            if row is None:
+                _log.warning(
+                    "scheduler.consumer.row_missing", job_id=job_id, intended_status="scheduled"
+                )
+                return
+            row.status = "scheduled"
+            row.finished_at_utc = now
+            row.last_error = last_error
 
 
 # Suppress unused-import warnings on optional contextlib (kept for future).
