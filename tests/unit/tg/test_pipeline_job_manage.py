@@ -346,6 +346,195 @@ async def test_job_reschedule_once_shaped(jobs_session_maker, sessions_session_m
     assert scheduler.reschedule_job.call_args[0][0] == f"reminder:{job_id}"
 
 
+async def test_job_reschedule_once_stale_status_degrades_gracefully(
+    jobs_session_maker, sessions_session_maker
+) -> None:
+    """aisw-xi8 Step-12 review: _execute_job_mutation never re-checked row.status
+    before mutating. Simulates the race the reviewer described — the job fires
+    (and its row leaves the 'pending' state) in the gap between the confirm
+    request and the user's tap — by mutating the row directly after the draft
+    is built. Before this fix, reschedule_once would still run against a stale/
+    fired row and falsely ack "moved"."""
+    job_id = await _insert(
+        jobs_session_maker,
+        kind="reminder_job",
+        status="pending",
+        payload={
+            "kind": "reminder_job",
+            "message": "забрать костюм",
+            "lead_time_min": 0,
+            "category": "generic",
+        },
+        scheduled_at_utc=datetime(2026, 8, 1, 6, 0),
+    )
+    sender = FakeSender()
+    time_parser = MagicMock()
+    from ai_steward_wiki.classifier.schema import TimeParseResult
+
+    time_parser.parse_time = AsyncMock(
+        return_value=TimeParseResult(
+            when_utc=datetime(2026, 8, 2, 7, 0, tzinfo=UTC),
+            source="dateparser",
+            escalate=False,
+            raw="завтра в 10",
+            user_tz="Europe/Moscow",
+        )
+    )
+    classifier = MagicMock()
+    classifier.classify = AsyncMock(
+        return_value=make_classifier_result(
+            Intent.JOB, action="reschedule", needle="костюм", time_expr="завтра в 10"
+        )
+    )
+    scheduler = MagicMock()
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=ConfirmationService(sender, sessions_session_maker),
+        classifier=classifier,
+        runner=MagicMock(),
+        output=MagicMock(),
+        jobs_session_maker=jobs_session_maker,
+        scheduler=scheduler,
+        time_parser=time_parser,
+    )
+    await pipe.on_text(
+        telegram_id=1, chat_id=10, update_id=2, text="перенеси костюм на завтра в 10"
+    )
+    pending_id = sender.last_reply_markup_pending_id()
+
+    # Simulate the race: the reminder fired (and moved off 'pending') between
+    # the confirm request above and the user's tap below.
+    async with jobs_session_maker() as s, s.begin():
+        row = await s.get(Job, job_id)
+        row.status = "done"
+
+    await pipe.on_confirm_callback(
+        telegram_id=1, chat_id=10, pending_id=pending_id, action="confirm"
+    )
+
+    scheduler.reschedule_job.assert_not_called()
+    assert "истекло" in sender.sends[-1]["text"].lower()
+
+
+async def test_job_reschedule_once_job_lookup_error_degrades_gracefully(
+    jobs_session_maker, sessions_session_maker
+) -> None:
+    """aisw-xi8 Step-12 review: reschedule_once/reschedule_recurring didn't catch
+    JobLookupError the way cancel_job already does — a vanished APScheduler
+    trigger (e.g. a one-shot DateTrigger auto-removed by APScheduler right after
+    firing) must degrade to the same graceful stale-confirm message other races
+    use, not raise unhandled out of the aiogram callback."""
+    from apscheduler.jobstores.base import JobLookupError
+
+    job_id = await _insert(
+        jobs_session_maker,
+        kind="reminder_job",
+        status="pending",
+        payload={
+            "kind": "reminder_job",
+            "message": "забрать костюм",
+            "lead_time_min": 0,
+            "category": "generic",
+        },
+        scheduled_at_utc=datetime(2026, 8, 1, 6, 0),
+    )
+    sender = FakeSender()
+    time_parser = MagicMock()
+    from ai_steward_wiki.classifier.schema import TimeParseResult
+
+    time_parser.parse_time = AsyncMock(
+        return_value=TimeParseResult(
+            when_utc=datetime(2026, 8, 2, 7, 0, tzinfo=UTC),
+            source="dateparser",
+            escalate=False,
+            raw="завтра в 10",
+            user_tz="Europe/Moscow",
+        )
+    )
+    classifier = MagicMock()
+    classifier.classify = AsyncMock(
+        return_value=make_classifier_result(
+            Intent.JOB, action="reschedule", needle="костюм", time_expr="завтра в 10"
+        )
+    )
+    scheduler = MagicMock()
+    scheduler.reschedule_job.side_effect = JobLookupError(f"reminder:{job_id}")
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=ConfirmationService(sender, sessions_session_maker),
+        classifier=classifier,
+        runner=MagicMock(),
+        output=MagicMock(),
+        jobs_session_maker=jobs_session_maker,
+        scheduler=scheduler,
+        time_parser=time_parser,
+    )
+    await pipe.on_text(
+        telegram_id=1, chat_id=10, update_id=2, text="перенеси костюм на завтра в 10"
+    )
+    pending_id = sender.last_reply_markup_pending_id()
+
+    await pipe.on_confirm_callback(
+        telegram_id=1, chat_id=10, pending_id=pending_id, action="confirm"
+    )  # must not raise
+
+    assert "истекло" in sender.sends[-1]["text"].lower()
+    async with jobs_session_maker() as s:
+        row = await s.get(Job, job_id)
+    assert row.status == "pending"  # untouched — no false "moved" ack
+
+
+async def test_job_reschedule_recurring_job_lookup_error_degrades_gracefully(
+    jobs_session_maker, sessions_session_maker
+) -> None:
+    """Same JobLookupError-tolerance guard as reschedule_once, for the
+    cron-shaped (CronTrigger) reschedule path — e.g. a digest job auto-disabled
+    by the 3-strike policy (which removes its trigger) between confirm-request
+    and the user's tap."""
+    from apscheduler.jobstores.base import JobLookupError
+
+    job_id = await _insert(
+        jobs_session_maker,
+        kind="digest_job",
+        status="scheduled",
+        payload={
+            "kind": "digest",
+            "wiki_scope": "all",
+            "recurrence": _rec("08:00").model_dump(mode="json"),
+            "window_hours": 24,
+        },
+    )
+    sender = FakeSender()
+    classifier = MagicMock()
+    classifier.classify = AsyncMock(
+        return_value=make_classifier_result(
+            Intent.JOB, action="reschedule", needle="сводка", schedule_expr="на 8:30"
+        )
+    )
+    scheduler = MagicMock()
+    scheduler.reschedule_job.side_effect = JobLookupError(f"digest:{job_id}")
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=ConfirmationService(sender, sessions_session_maker),
+        classifier=classifier,
+        runner=MagicMock(),
+        output=MagicMock(),
+        jobs_session_maker=jobs_session_maker,
+        scheduler=scheduler,
+    )
+    await pipe.on_text(telegram_id=1, chat_id=10, update_id=2, text="перенеси сводку на 8:30")
+    pending_id = sender.last_reply_markup_pending_id()
+
+    await pipe.on_confirm_callback(
+        telegram_id=1, chat_id=10, pending_id=pending_id, action="confirm"
+    )  # must not raise
+
+    assert "истекло" in sender.sends[-1]["text"].lower()
+
+
 async def test_job_reschedule_recurring_shaped_closes_digest_defect(
     jobs_session_maker, sessions_session_maker
 ) -> None:
@@ -438,3 +627,57 @@ async def test_jobpick_callback_executes_selected_job(
     await pipe.on_jobpick_callback(telegram_id=1, chat_id=10, pending_id=pending_id, job_index=1)
 
     scheduler.remove_job.assert_called_once_with(f"recurring:{id_b}")
+
+
+async def test_jobpick_reschedule_callback_recap_shows_real_title(
+    jobs_session_maker, sessions_session_maker
+) -> None:
+    """aisw-xi8 Step-12 review: the job_pick -> reschedule deferred path used to
+    build its disambiguation candidates with OwnerJob(rendered=""), so the
+    destructive confirm recap read 'Перенести «» на …?' — an empty title with no
+    way to tell which job was actually about to move. The candidate-pick keyboard
+    text (built from the REAL list_owner_jobs rendering) already shows the title,
+    but the FOLLOW-UP confirm recap after picking must show it too."""
+    await _insert(
+        jobs_session_maker,
+        kind="recurring_reminder",
+        status="scheduled",
+        payload={
+            "kind": "recurring_reminder",
+            "message": "Принять таблетки утром",
+            "recurrence": _rec("08:00").model_dump(mode="json"),
+        },
+    )
+    await _insert(
+        jobs_session_maker,
+        kind="recurring_reminder",
+        status="scheduled",
+        payload={
+            "kind": "recurring_reminder",
+            "message": "Принять таблетки вечером",
+            "recurrence": _rec("21:00").model_dump(mode="json"),
+        },
+    )
+    sender = FakeSender()
+    pipe, _ = _pipe(
+        sender,
+        jobs_session_maker,
+        sessions_session_maker,
+        intent=Intent.JOB,
+        action="reschedule",
+        needle="принять таблетки",
+        schedule_expr="на 22:00",
+    )
+    await pipe.on_text(telegram_id=1, chat_id=10, update_id=2, text="перенеси принять таблетки")
+    pending_id = sender.last_reply_markup_pending_id()
+
+    await pipe.on_jobpick_callback(telegram_id=1, chat_id=10, pending_id=pending_id, job_index=1)
+
+    # job_pick only builds the FOLLOW-UP destructive confirm (a second
+    # pending_id) — the actual reschedule_job call happens only after that
+    # confirm is also approved, which is not this test's concern. What matters
+    # here is that the recap text produced right after picking shows the real
+    # job title, not an empty "«»".
+    recap = sender.sends[-1]["text"]
+    assert "Принять таблетки вечером" in recap
+    assert "«»" not in recap

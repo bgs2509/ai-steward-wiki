@@ -259,3 +259,63 @@ async def test_job_create_check_in_confirm_then_create_check_in_job(
 
     assert args[0] is fire_check_in_job
     assert "готово" in sender.sends[-1]["text"].lower()
+
+
+async def test_job_create_check_in_confirm_when_cron_user_unwired_degrades_gracefully(
+    jobs_session_maker, sessions_session_maker
+) -> None:
+    """aisw-xi8 Step-12 review: _execute_job_create_check_in lacks the wiring
+    guard its 'recurring' sibling has (_execute_job_create_recurring checks
+    self._jobs_session_maker/self._scheduler before calling create_recurring_job).
+    create_check_in_job instead reads its context from cron_user's OWN module-
+    level registry (set_cron_user_context, installed once at __main__ startup);
+    if that was never called (or __main__ wiring changes/breaks), it raises
+    CronUserContextNotInitialisedError, which — before this fix — propagated
+    unhandled out of on_confirm_callback instead of a graceful user-facing
+    error, same as every other runner-unavailable path in this pipeline."""
+    sender = FakeSender()
+    recurrence_parser = MagicMock(
+        return_value=RecurrenceParseResult(
+            recurrence=Recurrence(kind="daily", time_hhmm="21:00", tz="Europe/Moscow")
+        )
+    )
+    classifier = MagicMock()
+    classifier.classify = AsyncMock(
+        return_value=make_classifier_result(
+            Intent.JOB,
+            action="create",
+            kind="check_in",
+            schedule_expr="каждый вечер в 21:00",
+            text="как прошёл день",
+        )
+    )
+    scheduler = MagicMock()
+    # aisw-xi8 (Step-12 review fix) deliberately NOT calling
+    # cron_user_mod.set_cron_user_context(...) here — this simulates the
+    # unwired-context scenario the fix must degrade gracefully from.
+    pipe = DefaultPipeline(
+        sender=sender,
+        idempotency=_make_idem(),
+        confirmation=ConfirmationService(sender, sessions_session_maker),
+        classifier=classifier,
+        runner=MagicMock(),
+        output=MagicMock(),
+        jobs_session_maker=jobs_session_maker,
+        scheduler=scheduler,
+        recurrence_parser=recurrence_parser,
+    )
+    await pipe.on_text(
+        telegram_id=1,
+        chat_id=10,
+        update_id=2,
+        text="спрашивай меня каждый вечер в 21:00, как прошёл день",
+    )
+    pending_id = sender.last_reply_markup_pending_id()
+
+    await pipe.on_confirm_callback(
+        telegram_id=1, chat_id=10, pending_id=pending_id, action="confirm"
+    )  # must not raise
+
+    assert (
+        "занял" in sender.sends[-1]["text"].lower() or "позже" in sender.sends[-1]["text"].lower()
+    )

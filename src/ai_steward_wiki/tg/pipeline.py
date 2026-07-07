@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/tg/pipeline.py
-# VERSION: 0.15.0
+# VERSION: 0.15.1
 # START_MODULE_CONTRACT
 #   PURPOSE: Coordinator over already-built ingest blocks. Aiogram routers
 #            delegate here so handler functions stay framework-thin and the
@@ -125,7 +125,24 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.15.0 - aisw-xi8 (Phase-C.2, DEC-9/DEC-10): _handle_job's
+#   LAST_CHANGE: v0.15.1 - aisw-xi8 (Step-12 review fix): three MEDIUM findings
+#                in the job list/cancel/reschedule surface. (1)
+#                _execute_job_mutation's job_pick -> reschedule deferred path
+#                built its disambiguation OwnerJob with rendered="", so the
+#                destructive confirm recap read 'Перенести «» на …?' — now
+#                rendered via scheduler.manage._render_job (same rendering
+#                list_owner_jobs already uses). (2) _execute_job_mutation never
+#                re-checked row.status before a reschedule mutation, and
+#                reschedule_once/reschedule_recurring didn't catch
+#                JobLookupError the way cancel_job already does — a job that
+#                fires or gets auto-disabled between the confirm request and
+#                the user's tap now degrades to JOB_CONFIRM_STALE_RU instead of
+#                either raising unhandled or falsely acking a reschedule that
+#                never took effect. (3) _execute_job_create_check_in lacked the
+#                unwired-context guard its 'recurring' sibling has —
+#                CronUserContextNotInitialisedError now degrades to
+#                ACK_RUNNER_ERR_RU instead of propagating unhandled.
+#   PREVIOUS:    v0.15.0 - aisw-xi8 (Phase-C.2, DEC-9/DEC-10): _handle_job's
 #                Task-C1.4 stub is REPLACED wholesale — list/cancel/reschedule
 #                dispatch on JobSlots.action over scheduler/manage.py
 #                (list_owner_jobs/match_jobs_by_needle/cancel_job/
@@ -1598,9 +1615,12 @@ class DefaultPipeline:
     async def _execute_job_mutation(
         self, *, telegram_id: int, chat_id: int, draft: dict[str, object]
     ) -> None:
+        from apscheduler.jobstores.base import JobLookupError
+
         from ai_steward_wiki.classifier.recurrence import Recurrence
         from ai_steward_wiki.scheduler.manage import (
             OwnerJob,
+            _render_job,
             cancel_job,
             reschedule_once,
             reschedule_recurring,
@@ -1628,7 +1648,14 @@ class DefaultPipeline:
                 kind=row.kind,
                 payload=payload,
                 scheduled_at_utc=row.scheduled_at_utc,
-                rendered="",
+                # aisw-xi8 (Step-12 review fix): the job_pick -> reschedule
+                # deferred path (the "else" branch below) feeds this OwnerJob
+                # straight into _build_reschedule_confirm's destructive recap —
+                # an empty rendered title there read "Перенести «» на …?" with
+                # no way to tell which job was about to move. Render it the
+                # same way list_owner_jobs already does, instead of a literal
+                # "".
+                rendered=_render_job(row, payload, self._resolve_user_tz(telegram_id)),
             )
             if action == "cancel":
                 await cancel_job(self._scheduler, session, job)
@@ -1640,9 +1667,42 @@ class DefaultPipeline:
                     job_id=job_id,
                 )
                 return
+            if "new_when_utc" in draft or "new_recurrence" in draft:
+                # aisw-xi8 (Step-12 review fix): re-check the row is still in
+                # the same 'active' state list_owner_jobs required when this
+                # job was originally matched — a job can fire (reminder_job:
+                # 'pending' -> 'in_progress'/'done'/'failed') or get disabled
+                # (cron-shaped: 'scheduled' -> 'disabled'/'cancelled', which
+                # also removes its APScheduler trigger) in the gap between the
+                # confirm request and the user's tap. Without this, a stale
+                # reschedule would either silently no-op against a vanished
+                # trigger (caught below) or, worse, "reschedule" a row that
+                # already moved on, while still falsely acking success.
+                active_status = "pending" if job.kind == "reminder_job" else "scheduled"
+                if row.status != active_status:
+                    await self._sender.send_message(chat_id, JOB_CONFIRM_STALE_RU)
+                    _log.info(
+                        "tg.pipeline.job.reschedule_stale",
+                        correlation_id=correlation_id,
+                        telegram_id=telegram_id,
+                        job_id=job_id,
+                        status=row.status,
+                    )
+                    return
             if "new_when_utc" in draft:
                 new_when = datetime.fromisoformat(str(draft["new_when_utc"]))
-                await reschedule_once(self._scheduler, session, job, new_when)
+                try:
+                    await reschedule_once(self._scheduler, session, job, new_when)
+                except JobLookupError:
+                    # aisw-xi8 (Step-12 review fix): the APScheduler trigger
+                    # vanished (e.g. a one-shot DateTrigger auto-removed right
+                    # after firing) despite the status re-check above passing —
+                    # mirrors cancel_job's own JobLookupError tolerance, but
+                    # surfaces as a graceful stale-confirm message instead of a
+                    # silent no-op, since a reschedule claims a NEW future
+                    # fire time that would never actually happen.
+                    await self._sender.send_message(chat_id, JOB_CONFIRM_STALE_RU)
+                    return
                 when_local = new_when.astimezone(self._resolve_user_tz(telegram_id)).strftime(
                     "%d.%m %H:%M"
                 )
@@ -1651,7 +1711,11 @@ class DefaultPipeline:
                 )
             elif "new_recurrence" in draft:
                 new_rec = Recurrence(**draft["new_recurrence"])  # type: ignore[arg-type]
-                await reschedule_recurring(self._scheduler, session, job, new_rec)
+                try:
+                    await reschedule_recurring(self._scheduler, session, job, new_rec)
+                except JobLookupError:
+                    await self._sender.send_message(chat_id, JOB_CONFIRM_STALE_RU)
+                    return
                 await self._sender.send_message(
                     chat_id, JOB_RESCHEDULE_ACK_RU.format(when=humanize_recurrence(new_rec))
                 )
@@ -1850,19 +1914,41 @@ class DefaultPipeline:
         self, *, telegram_id: int, chat_id: int, draft: dict[str, object]
     ) -> None:
         from ai_steward_wiki.classifier.recurrence import Recurrence
-        from ai_steward_wiki.scheduler.cron_user import create_check_in_job
+        from ai_steward_wiki.scheduler.cron_user import (
+            CronUserContextNotInitialisedError,
+            create_check_in_job,
+        )
 
         correlation_id = str(draft.get("correlation_id") or f"job-checkin-{telegram_id}")
         rec = Recurrence(**draft["recurrence"])  # type: ignore[arg-type]
         topic = str(draft["question_topic"])
-        job_id = await create_check_in_job(
-            owner_telegram_id=telegram_id,
-            chat_id=chat_id,
-            recurrence=rec,
-            question_topic=topic,
-            user_tz=str(rec.tz),
-            wiki_id=None,
-        )
+        try:
+            job_id = await create_check_in_job(
+                owner_telegram_id=telegram_id,
+                chat_id=chat_id,
+                recurrence=rec,
+                question_topic=topic,
+                user_tz=str(rec.tz),
+                wiki_id=None,
+            )
+        except CronUserContextNotInitialisedError:
+            # aisw-xi8 (Step-12 review fix): create_check_in_job reads its
+            # (scheduler, queue, jobs_session_maker) from cron_user's own
+            # module-level registry (set_cron_user_context, installed once at
+            # __main__ startup) — unlike its 'recurring' sibling
+            # (_execute_job_create_recurring), which takes self._scheduler/
+            # self._jobs_session_maker directly and already guards on them
+            # being None. A missing/broken __main__ wiring must degrade to the
+            # same graceful ACK_RUNNER_ERR_RU every other runner-unavailable
+            # path in this pipeline uses, not an unhandled exception out of
+            # the aiogram callback.
+            await self._sender.send_message(chat_id, ACK_RUNNER_ERR_RU)
+            _log.warning(
+                "tg.pipeline.job.checkin_context_unwired",
+                correlation_id=correlation_id,
+                telegram_id=telegram_id,
+            )
+            return
         await self._sender.send_message(
             chat_id, JOB_CHECKIN_ACK_RU.format(schedule=humanize_recurrence(rec))
         )
