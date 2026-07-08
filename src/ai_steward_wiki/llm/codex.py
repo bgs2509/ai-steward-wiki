@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/llm/codex.py
-# VERSION: 0.1.1
+# VERSION: 0.1.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Run Codex CLI through ChatGPT subscription authentication under explicit least-privilege profiles.
 #   SCOPE: Restricted environment and argv builders; structured, agent, and text execution;
@@ -27,7 +27,9 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.1 - aisw-8gw: keep normalized events provider-local to
+#   LAST_CHANGE: v0.1.2 - aisw-8gw: read login status from stdout and stderr;
+#                codex-cli 0.142.5 reports "Logged in using ChatGPT" on stderr.
+#   PREVIOUS:    v0.1.1 - aisw-8gw: keep normalized events provider-local to
 #                prevent an M-LLM-CODEX to M-WIKI-RUNNER dependency cycle.
 #   PREVIOUS:    v0.1.0 - aisw-8gw: implement restricted subscription-backed
 #                Codex invocation, output parsing, event normalization, and readiness.
@@ -419,7 +421,16 @@ class CodexCliAdapter:
                 binary,
                 self.expected_version,
             )
-        login_text = login_result.stdout.decode("utf-8", "replace").strip().casefold()
+        # codex-cli 0.142.5 prints "Logged in using ChatGPT" to stderr, not stdout.
+        login_text = (
+            (
+                login_result.stdout.decode("utf-8", "replace")
+                + "\n"
+                + login_result.stderr.decode("utf-8", "replace")
+            )
+            .strip()
+            .casefold()
+        )
         if "logged in using chatgpt" not in login_text:
             return CodexReadiness(
                 False,

@@ -419,6 +419,30 @@ async def test_readiness_rejects_api_key_login_mode(tmp_path: Path) -> None:
     assert readiness.reason == "subscription_auth_required"
 
 
+async def test_readiness_accepts_login_status_on_stderr(tmp_path: Path) -> None:
+    binary = tmp_path / "codex"
+    binary.write_text("stub", encoding="utf-8")
+    binary.chmod(0o755)
+    spawner = StubSpawner(
+        [
+            ProcessResult(0, b"codex-cli 0.142.5\n", b""),
+            ProcessResult(0, b"", b"Logged in using ChatGPT\n"),
+            ProcessResult(
+                0,
+                b"--ephemeral --ignore-user-config --ignore-rules --strict-config "
+                b"--json --output-schema --sandbox --model --cd --add-dir\n",
+                b"",
+            ),
+        ]
+    )
+    adapter = make_adapter(tmp_path, spawner, binary=str(binary))
+
+    readiness = await adapter.check_readiness()
+
+    assert readiness.ready is True
+    assert readiness.reason is None
+
+
 async def test_readiness_converts_login_invocation_failure(tmp_path: Path) -> None:
     binary = tmp_path / "codex"
     binary.write_text("stub", encoding="utf-8")
