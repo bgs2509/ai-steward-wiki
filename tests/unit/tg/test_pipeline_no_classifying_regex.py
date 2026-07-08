@@ -1,7 +1,7 @@
 """FR-2 regression guard: the classifying Python forks deleted in Phase C.1
 (_RECURRING_KEYWORDS punt, _DIGEST_DISABLE_RE/_DIGEST_RESCHEDULE_RE/
 _detect_digest_action) must never be reintroduced — Haiku is the SOLE
-classifier (ADR-035)."""
+classifier (ADR-036)."""
 
 from __future__ import annotations
 

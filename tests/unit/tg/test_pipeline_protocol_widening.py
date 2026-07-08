@@ -1,5 +1,5 @@
 """RED-first coverage for the WikiRunner/StreamingDelivery `action` widening
-(aisw-xi8, DEC-5, ADR-035)."""
+(aisw-xi8, DEC-5, ADR-036)."""
 
 from __future__ import annotations
 

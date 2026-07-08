@@ -4,7 +4,7 @@
 
 **Goal:** Replace the 9-member verb-multiplied Stage-0 Intent taxonomy with a closed 6-member artifact-anchored taxonomy (`wiki|job|web|chat|admin|unknown`), make Haiku the single classifier (deleting the competing Python classifying-regex forks), add `job.kind=recurring` (deterministic fixed-text cron reminders) and `check_in` (bot-generated recurring questions), and add a generic job-management surface (list/cancel/reschedule with needle-matching disambiguation and destructive confirms).
 
-**Architecture:** `classifier/schema.py` gets the new `Intent` enum plus two lenient Pydantic slot models (`WikiSlots`, `JobSlots`) parsed at the pipeline boundary. `tg/pipeline.py`'s `_run_text_pipeline` becomes a flat ordered if/elif over the 6 intents, each delegating to a thin `_handle_<intent>` method; a structural sub-threshold gate guarantees `job`/`admin` below `CLASSIFIER_CONFIDENCE_THRESHOLD` can never reach the write-capable generic runner. New storage payloads (`RecurringReminderPayload`, `CheckInPayload`) and firing/cron_user/consumer bridges deliver the two new job kinds. A new `scheduler/manage.py` module owns list/cancel/reschedule as plain functions over an injected session+scheduler. `WikiRunner`/`StreamingDelivery` Protocols gain a defaulted `action: str | None = None` param (ADR-035, a recorded deviation from ADR-034) so the `__main__.py` adapter can re-derive `wiki.action=="query"` for adaptive scoping without re-inflating the Intent enum.
+**Architecture:** `classifier/schema.py` gets the new `Intent` enum plus two lenient Pydantic slot models (`WikiSlots`, `JobSlots`) parsed at the pipeline boundary. `tg/pipeline.py`'s `_run_text_pipeline` becomes a flat ordered if/elif over the 6 intents, each delegating to a thin `_handle_<intent>` method; a structural sub-threshold gate guarantees `job`/`admin` below `CLASSIFIER_CONFIDENCE_THRESHOLD` can never reach the write-capable generic runner. New storage payloads (`RecurringReminderPayload`, `CheckInPayload`) and firing/cron_user/consumer bridges deliver the two new job kinds. A new `scheduler/manage.py` module owns list/cancel/reschedule as plain functions over an injected session+scheduler. `WikiRunner`/`StreamingDelivery` Protocols gain a defaulted `action: str | None = None` param (ADR-036, a recorded deviation from ADR-034) so the `__main__.py` adapter can re-derive `wiki.action=="query"` for adaptive scoping without re-inflating the Intent enum.
 
 **Tech Stack:** Python 3.11, Pydantic v2 (frozen, `extra="forbid"` models throughout), APScheduler 3.11 (`AsyncIOScheduler`, `DateTrigger`, `CronTrigger`), SQLAlchemy 2.x async, structlog, pytest + pytest-asyncio, the project's real `ClaudeCliBackend` for the regression harness (no new dependency anywhere in this feature).
 
@@ -20,7 +20,7 @@
 - TDD: RED test committed conceptually before GREEN implementation in every task below; `mypy --strict` clean; `ruff check`/`ruff format --check` clean; `grace lint --failOn errors` clean; coverage ≥80% core (NFR-1).
 - Conventional Commits, scope `M-CLASSIFIER-STAGE0`/`M-TG-PIPELINE-CLASSIFIER`/`M-STORAGE-JOBS`/`M-SCHEDULER-FIRING`/`M-SCHEDULER-CRON-USER`/`M-SCHEDULER-CONSUMER`/`M-SCHEDULER-MANAGE`/`M-RUNTIME-WIRING` per touched module (GRACE MODULE_ID convention).
 - Strict phase DEPENDS order: A → B → C.1 → C.2 → C.3 → C.4. Do not start a phase's tasks before the prior phase is fully green.
-- ADR-035 (already accepted, `docs/adr/ADR-035-artifact-intents-and-protocol-action-widening.md`) authorizes the `WikiRunner`/`StreamingDelivery` Protocol widening — no new ADR needed during execution.
+- ADR-036 (already accepted, `docs/adr/ADR-036-artifact-intents-and-protocol-action-widening.md`) authorizes the `WikiRunner`/`StreamingDelivery` Protocol widening — no new ADR needed during execution.
 
 ## File Structure
 
@@ -242,7 +242,7 @@ Replace lines 56–65 of `src/ai_steward_wiki/classifier/schema.py` (the `Intent
 #   SCOPE: Intent enum (closed list), ClassifierResult, TimeParseResult, error hierarchy,
 #          WikiSlots/JobSlots lenient boundary slot models + parse_slots (aisw-xi8).
 #   DEPENDS: pydantic
-#   LINKS: M-CLASSIFIER-STAGE0, D-009, D-010, D-015, aisw-xi8, ADR-035
+#   LINKS: M-CLASSIFIER-STAGE0, D-009, D-010, D-015, aisw-xi8, ADR-036
 #   ROLE: TYPES
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -3452,7 +3452,7 @@ bd_id: `aisw-xi8` (Phase-C.1). Depends on Phase A (Intent v2, `parse_slots`) and
 
 **Design decision recorded here (not fully spelled out in development-plan.xml's phase text, resolved by this plan's author for internal consistency):** Phase C.1 creates ALL SIX per-intent handler methods (`_handle_wiki`, `_handle_job`, `_handle_web`, `_handle_chat`, `_handle_admin`, `_handle_unknown`) to deliver DEC-1's flat-dispatch shape in one coherent commit. `_handle_wiki`/`_handle_web`/`_handle_unknown` are fully implemented in C.1 (they only reuse EXISTING mechanics — hint-fastpath, router, generic runner — re-gated per DEC-3/DEC-5). `_handle_chat`/`_handle_admin` are added as thin inline-equivalent bodies using the OLD constant names (`SMALLTALK_REPLY_RU`, `ACK_ADMIN_RU`) — Phase C.3 (Task C3.4) renames `SMALLTALK_REPLY_RU`→`CHAT_REPLY_RU` and the log anchor, per development-plan.xml's explicit "CHAT (ex-SMALLTALK, renamed) ... re-homed" phrasing. `_handle_job` is an INTENTIONAL, TESTED, MINIMAL stub in C.1 (development-plan.xml's own words: "`_handle_job` in THIS phase only dispatches to a stub that Phase-C.2/C.3 fill in") — its body sends a real, deterministic ru holding reply and preserves DEC-2's structural guarantee (job intents NEVER reach the generic root runner, even in this intermediate state); Phase C.2 (Task C2.1) and Phase C.3 (Task C3.1) REPLACE its body wholesale (not append). This is safe because `aisw-xi8` is one feature landing as a sequence of commits on one branch, never deployed mid-sequence (per the project's atomic-deploy convention, `docs/project_vps_deploy.md` memory).
 
-### Task C1.1: WikiRunner / StreamingDelivery Protocol widening (`action` param, ADR-035/DEC-5)
+### Task C1.1: WikiRunner / StreamingDelivery Protocol widening (`action` param, ADR-036/DEC-5)
 
 **Files:**
 - Modify: `src/ai_steward_wiki/tg/pipeline.py`
@@ -3467,7 +3467,7 @@ bd_id: `aisw-xi8` (Phase-C.1). Depends on Phase A (Intent v2, `parse_slots`) and
 ```python
 # FILE: tests/unit/tg/test_pipeline_protocol_widening.py
 """RED-first coverage for the WikiRunner/StreamingDelivery `action` widening
-(aisw-xi8, DEC-5, ADR-035)."""
+(aisw-xi8, DEC-5, ADR-036)."""
 
 from __future__ import annotations
 
@@ -3640,7 +3640,7 @@ Expected: PASS (4 tests green).
 
 ```bash
 git add src/ai_steward_wiki/tg/pipeline.py tests/unit/tg/test_pipeline_protocol_widening.py
-git commit -m "feat(M-TG-PIPELINE-CLASSIFIER): widen WikiRunner/StreamingDelivery with action param (ADR-035/DEC-5)"
+git commit -m "feat(M-TG-PIPELINE-CLASSIFIER): widen WikiRunner/StreamingDelivery with action param (ADR-036/DEC-5)"
 ```
 
 ### Task C1.2: CLASSIFIER_CONFIDENCE_THRESHOLD rename + sub-threshold gate (DEC-2, FR-10)
@@ -4735,7 +4735,7 @@ In `src/ai_steward_wiki/__main__.py`, edit `_WikiRunnerAdapter.run` (around line
 ```
 (was `intent is Intent.WEB_TASK and self._web_run_config is not None`.)
 
-All other adapter mechanics (`resolve_query_scope`, `collect_layouts`, the `wiki.run.scope`/`wiki.run.scope.degraded` log anchors, media promotion) are UNTOUCHED (ADR-034's scoping mechanics survive; only its Protocol-immutability commitment is superseded per ADR-035).
+All other adapter mechanics (`resolve_query_scope`, `collect_layouts`, the `wiki.run.scope`/`wiki.run.scope.degraded` log anchors, media promotion) are UNTOUCHED (ADR-034's scoping mechanics survive; only its Protocol-immutability commitment is superseded per ADR-036).
 
 - [ ] **Step 3: Update the `CronConsumer` construction site**
 
@@ -5103,7 +5103,7 @@ git commit -m "test(M-TG-PIPELINE-STREAMING): migrate test_pipeline_streaming.py
 - [ ] Run `uv run pytest tests/unit/tg/test_pipeline_subthreshold.py tests/unit/tg/test_pipeline_catalog_routing.py tests/unit/tg/test_pipeline_protocol_widening.py tests/unit/tg/test_pipeline_digest_control.py tests/unit/tg/test_pipeline_router.py tests/unit/tg/test_pipeline_streaming.py tests/unit/test_main_runner_adapter.py -v` — all green.
 - [ ] Run `uv run mypy src` (now WHOLE-tree — this is the first point since Task A1 where the full `src/` tree is expected to be mypy-clean again).
 - [ ] Run `uv run ruff check . && uv run ruff format --check .` — clean.
-- [ ] Run `make grace-lint` — 0 issues (refresh `docs/knowledge-graph.xml` M-TG-PIPELINE-CLASSIFIER, M-TG-PIPELINE-STREAMING, M-RUNTIME-WIRING, M-SCHEDULER-FIRING contract deltas + the new ADR-035 CrossLink).
+- [ ] Run `make grace-lint` — 0 issues (refresh `docs/knowledge-graph.xml` M-TG-PIPELINE-CLASSIFIER, M-TG-PIPELINE-STREAMING, M-RUNTIME-WIRING, M-SCHEDULER-FIRING contract deltas + the new ADR-036 CrossLink).
 - [ ] Do NOT yet run `uv run pytest tests/unit -q` (whole suite) expecting green — `tests/unit/tg/test_pipeline_hint_fastpath.py`, `test_pipeline_route_ingest.py`, `test_pipeline_route_confirm.py`, `test_pipeline_confirm_callback.py`, `test_pipeline_chat_log.py`, `test_pipeline_active_wiki.py`, `test_pipeline.py`, `test_pipeline_reminder.py`, `test_pipeline_digest.py`, `test_pipeline_classifier_wiring.py`, `test_pipeline_smalltalk.py` are still RED (Intent v1 references) until Phase C.3/C.4. This is expected — confirmed by the whole-tree `mypy`/`ruff` passing (production code is fully migrated) while `pytest tests/unit` is not yet fully green (test-file migration continues through Phase C.4).
 
 ---
@@ -6643,7 +6643,7 @@ git commit -m "test(M-CLASSIFIER-STAGE0): migrate test_real_cli.py integration t
 """FR-2 regression guard: the classifying Python forks deleted in Phase C.1
 (_RECURRING_KEYWORDS punt, _DIGEST_DISABLE_RE/_DIGEST_RESCHEDULE_RE/
 _detect_digest_action) must never be reintroduced — Haiku is the SOLE
-classifier (ADR-035)."""
+classifier (ADR-036)."""
 
 from __future__ import annotations
 

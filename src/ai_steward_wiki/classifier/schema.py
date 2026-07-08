@@ -5,7 +5,7 @@
 #   SCOPE: Intent enum (closed list), ClassifierResult, TimeParseResult, error hierarchy,
 #          WikiSlots/JobSlots lenient boundary slot models + parse_slots (aisw-xi8).
 #   DEPENDS: pydantic
-#   LINKS: M-CLASSIFIER-STAGE0, D-009, D-010, D-015, aisw-xi8, ADR-035
+#   LINKS: M-CLASSIFIER-STAGE0, D-009, D-010, D-015, aisw-xi8, ADR-036
 #   ROLE: TYPES
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT

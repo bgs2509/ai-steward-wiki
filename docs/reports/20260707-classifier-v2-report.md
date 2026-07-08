@@ -7,7 +7,7 @@
 
 ## What changed
 
-Replaced the Stage-0 classifier's 9 verb-multiplied intents (`reminder`/`wiki_ingest`/`wiki_query`/`wiki_lint`/`digest`/`web_task`/`smalltalk`/`admin`/`unknown`) with **6 artifact-anchored intents** (`wiki`/`job`/`web`/`chat`/`admin`/`unknown`); verbs/kinds moved into `WikiSlots`/`JobSlots` payload contracts. Haiku is now the SOLE classifier (ADR-035) — the classifying Python forks that competed with it (`_RECURRING_KEYWORDS` digest-punt, `_detect_digest_action`) are deleted; `tg/pipeline.py` is a flat 6-branch dispatch spine.
+Replaced the Stage-0 classifier's 9 verb-multiplied intents (`reminder`/`wiki_ingest`/`wiki_query`/`wiki_lint`/`digest`/`web_task`/`smalltalk`/`admin`/`unknown`) with **6 artifact-anchored intents** (`wiki`/`job`/`web`/`chat`/`admin`/`unknown`); verbs/kinds moved into `WikiSlots`/`JobSlots` payload contracts. Haiku is now the SOLE classifier (ADR-036) — the classifying Python forks that competed with it (`_RECURRING_KEYWORDS` digest-punt, `_detect_digest_action`) are deleted; `tg/pipeline.py` is a flat 6-branch dispatch spine.
 
 Fixes 5 of the simulation's measured defect clusters: daily check-in / recurring reminders no longer collapse into digest (#13/43/54/57/71); job management now exists (list/cancel/reschedule, #89/90); the chat-trap that swallowed diary facts and knowledge questions is closed by prompt negatives (#50/53); digest control is generic across all job kinds instead of fragile intent-dependent regex (#35/91/99); sub-threshold `job`/`admin` classifications can never reach the write-capable generic runner by construction (#78/96).
 
@@ -28,10 +28,10 @@ New capabilities: `job.kind=recurring` (fixed-text cron reminder, no LLM at fire
 - `src/ai_steward_wiki/scheduler/manage.py` (NEW) — `list_owner_jobs`/`match_jobs_by_needle`/`cancel_job`/`reschedule_once`/`reschedule_recurring`.
 - `src/ai_steward_wiki/scheduler/firing.py`, `cron_user.py`, `consumer.py` — `recurring_reminder`/`check_in` firing bridges, ru fallback.
 - `src/ai_steward_wiki/storage/jobs/payloads.py` — `RecurringReminderPayload`/`CheckInPayload` (additive union).
-- `src/ai_steward_wiki/wiki/runner.py`, `__main__.py` — `action` Protocol widening (ADR-035), Stage-0 thinking-off wiring.
+- `src/ai_steward_wiki/wiki/runner.py`, `__main__.py` — `action` Protocol widening (ADR-036), Stage-0 thinking-off wiring.
 - `scripts/classifier_regress.py` + `tests/corpus/classifier/questions.json` (NEW) — regression harness + 100-case corpus.
 - ~24 test files migrated to Intent v2 (mechanical DEC-14 mapping) across `tests/unit/tg/`, `tests/unit/scheduler/`, `tests/integration/`.
-- `docs/adr/ADR-035-*.md` — records the deliberate ADR-034 Protocol-immutability deviation.
+- `docs/adr/ADR-036-*.md` — records the deliberate ADR-034 Protocol-immutability deviation.
 
 ## Verification (evidence)
 

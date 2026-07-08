@@ -1,4 +1,4 @@
-# ADR-035: Artifact-anchored intent taxonomy and WikiRunner/StreamingDelivery `action` widening
+# ADR-036: Artifact-anchored intent taxonomy and WikiRunner/StreamingDelivery `action` widening
 
 **Status:** accepted
 **Date:** 2026-07-03
