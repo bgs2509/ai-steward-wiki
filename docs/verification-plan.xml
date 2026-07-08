@@ -113,7 +113,7 @@
       </required-trace-assertions>
       <wave-follow-up>Run classifier and WIKI adapter compatibility tests against the fake Codex CLI.</wave-follow-up>
       <phase-follow-up>Run deployment smoke for both subscription models and all capability profiles.</phase-follow-up>
-      <evidence>Unit and executable fake-CLI subprocess fixtures validate exact argv, environment allowlist, ChatGPT-only auth readiness, output parsing, cancellation, timeout, provider-local event normalization, and selected-WIKI-only write containment.</evidence>
+      <evidence>Unit and executable fake-CLI subprocess fixtures validate exact argv, environment allowlist, ChatGPT-only auth readiness (login status accepted from stdout or stderr, as codex-cli 0.142.5 reports on stderr), output parsing, cancellation, timeout, provider-local event normalization, and selected-WIKI-only write containment.</evidence>
     </V-M-LLM-CODEX>
 
     <V-M-WIKI-MIGRATION MODULE="M-WIKI-MIGRATION" PRIORITY="high">
@@ -288,8 +288,9 @@
         <marker>wiki.run.scope</marker>
         <marker>wiki.run.scope.degraded</marker>
         <marker>llm.provider.failed</marker>
+        <marker>llm.provider.ready</marker>
       </log-markers>
-      <evidence>test_llm_runtime_wiring proves one shared policy reaches classifier, schema, and WIKI configs; disabled, unready, and setup-failing Codex all preserve Claude startup. Existing runtime tests cover migrations, scheduling, adapters, scope resolution, media promotion, and clean shutdown. The extended Telegram, classifier, WIKI, and cron regression suite passes.</evidence>
+      <evidence>test_llm_runtime_wiring proves one shared policy reaches classifier, schema, and WIKI configs; disabled, unready, and setup-failing Codex all preserve Claude startup; successful readiness emits the positive llm.provider.ready fallback-enabled anchor. Existing runtime tests cover migrations, scheduling, adapters, scope resolution, media promotion, and clean shutdown. The extended Telegram, classifier, WIKI, and cron regression suite passes.</evidence>
     </V-M-RUNTIME-WIRING>
 
     <V-M-TG-HANDLERS-WIRING MODULE="M-TG-HANDLERS-WIRING">

@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/__main__.py
-# VERSION: 0.7.0
+# VERSION: 0.7.1
 # START_MODULE_CONTRACT
 #   PURPOSE: Process entrypoint (`python -m ai_steward_wiki`). Composes Settings,
 #            per-DB Alembic migrations, storage engines, allowlist sync,
@@ -34,7 +34,9 @@
 # END_MODULE_CONTRACT
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.7.0 - aisw-8gw: build one process-local provider policy,
+#   LAST_CHANGE: v0.7.1 - aisw-8gw: log llm.provider.ready when Codex readiness
+#                succeeds so operators get a positive fallback-enabled anchor.
+#   PREVIOUS:    v0.7.0 - aisw-8gw: build one process-local provider policy,
 #                degrade to Claude when Codex readiness fails, and inject the
 #                shared adapter into classifier, WIKI, schema, digest, and cron paths.
 #   PREVIOUS:    v0.6.1 - aisw-8gw: contract-only plan for one shared provider circuit.
@@ -197,7 +199,7 @@ from ai_steward_wiki.inbox.router import (
 from ai_steward_wiki.inbox.staging import promote_path_to_raw
 from ai_steward_wiki.llm.codex import CodexCliAdapter
 from ai_steward_wiki.llm.failover import FailoverEvent, FailoverPolicy
-from ai_steward_wiki.logging_events import LLM_PROVIDER_FAILED
+from ai_steward_wiki.logging_events import LLM_PROVIDER_FAILED, LLM_PROVIDER_READY
 from ai_steward_wiki.logging_setup import configure_logging
 from ai_steward_wiki.ops.observability import (
     enable_faulthandler,
@@ -386,6 +388,15 @@ async def _build_llm_runtime(settings: Settings) -> LlmRuntime:
             reason=readiness.reason,
         )
         return LlmRuntime(policy=policy, codex=None)
+    logger.info(
+        LLM_PROVIDER_READY,
+        provider="codex",
+        run_kind="readiness",
+        correlation_id="startup",
+        outcome="fallback_enabled",
+        binary=readiness.binary,
+        version=readiness.version,
+    )
     return LlmRuntime(policy=policy, codex=adapter)
 
 

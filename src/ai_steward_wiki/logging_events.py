@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/logging_events.py
-# VERSION: 0.1.0
+# VERSION: 0.1.1
 # START_MODULE_CONTRACT
 #   PURPOSE: SSoT catalog of stable snake_case dotted event-key constants for structured logging.
 #   SCOPE: module-level Final[str] constants only. No functions, no classes.
@@ -23,7 +23,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - aisw-8gw: stable provider failover event catalog.
+#   LAST_CHANGE: v0.1.1 - aisw-8gw: add llm.provider.ready positive readiness anchor.
+#   PREVIOUS:    v0.1.0 - aisw-8gw: stable provider failover event catalog.
 #   PREVIOUS:    v0.0.3 - aisw-xbc: event-loop hang diagnostics (heartbeat/lag/task_dump), handler lifecycle, I/O anchors
 #   PREVIOUS:    v0.0.2 - chunk 2: scheduler lifecycle, storage slow_query, claude CLI spawn/exit/error
 # END_CHANGE_SUMMARY
@@ -63,6 +64,7 @@ CLAUDE_CLI_EXIT: Final[str] = "claude_cli.exit"
 CLAUDE_CLI_ERROR: Final[str] = "claude_cli.error"
 
 # Subscription-provider routing and recovery anchors (aisw-8gw; M-LLM-FAILOVER).
+LLM_PROVIDER_READY: Final[str] = "llm.provider.ready"
 LLM_PROVIDER_SELECTED: Final[str] = "llm.provider.selected"
 LLM_FAILOVER_TRIGGERED: Final[str] = "llm.failover.triggered"
 LLM_CIRCUIT_CHANGED: Final[str] = "llm.circuit.changed"

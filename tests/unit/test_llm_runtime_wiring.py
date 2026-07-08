@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
+from structlog.testing import capture_logs
+
 from ai_steward_wiki import __main__ as runtime
 from ai_steward_wiki.llm.codex import CodexCliAdapter, CodexReadiness
 from ai_steward_wiki.settings import Settings
@@ -52,6 +54,29 @@ async def test_ready_codex_builds_one_shared_runtime(
     config = runtime._wiki_run_config(settings=settings, llm_runtime=llm_runtime)
     assert config.failover_policy is llm_runtime.policy
     assert config.codex_adapter is adapter
+
+
+async def test_ready_codex_logs_positive_readiness_anchor(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = _settings(tmp_path)
+    adapter = MagicMock(spec=CodexCliAdapter)
+    adapter.check_readiness = AsyncMock(
+        return_value=CodexReadiness(True, None, "/usr/local/bin/codex", "0.142.5")
+    )
+    monkeypatch.setattr(runtime, "_make_codex_adapter", lambda _settings: adapter, raising=False)
+
+    with capture_logs() as records:
+        llm_runtime = await runtime._build_llm_runtime(settings)
+
+    assert llm_runtime.codex is adapter
+    ready_events = [record for record in records if record["event"] == "llm.provider.ready"]
+    assert len(ready_events) == 1
+    assert ready_events[0]["provider"] == "codex"
+    assert ready_events[0]["run_kind"] == "readiness"
+    assert ready_events[0]["correlation_id"] == "startup"
+    assert ready_events[0]["outcome"] == "fallback_enabled"
 
 
 async def test_failed_codex_readiness_keeps_claude_runtime(
