@@ -48,6 +48,9 @@ data/*
 # full-audit skill intermediate artifacts
 .full_audit_tmp/
 
+# classifier-regress gate stamp (local evidence, not shared state)
+.classifier_regress.stamp
+
 # claude worktrees + local settings (never commit)
 .claude/
 

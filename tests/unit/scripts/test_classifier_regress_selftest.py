@@ -7,11 +7,12 @@ breakdown, exit-code decision) independent of live Haiku output.
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
-from classifier_regress import CorpusCase, render_report, score_verdict
+from classifier_regress import CorpusCase, render_report, score_verdict, write_stamp
 
 
 def _case(id_: int, expected: dict, accept: tuple = ()) -> CorpusCase:
@@ -46,6 +47,30 @@ def test_score_verdict_honours_accept_list() -> None:
     v = score_verdict(case, intent="wiki", action=None, kind=None, distilled_payload={})
     assert v.intent_ok is True
     assert v.full_ok is True  # accepted via the accept-list entry
+
+
+def test_write_stamp_records_prompt_sha256(tmp_path: Path) -> None:
+    prompt_path = tmp_path / "classifier.md"
+    prompt_path.write_text("prompt v1", encoding="utf-8")
+    stamp_path = tmp_path / ".classifier_regress.stamp"
+
+    write_stamp(prompt_path, stamp_path)
+
+    expected = hashlib.sha256(b"prompt v1").hexdigest()
+    assert stamp_path.read_text(encoding="utf-8").strip() == expected
+
+
+def test_write_stamp_overwrites_on_prompt_change(tmp_path: Path) -> None:
+    prompt_path = tmp_path / "classifier.md"
+    stamp_path = tmp_path / ".classifier_regress.stamp"
+    prompt_path.write_text("prompt v1", encoding="utf-8")
+    write_stamp(prompt_path, stamp_path)
+
+    prompt_path.write_text("prompt v2", encoding="utf-8")
+    write_stamp(prompt_path, stamp_path)
+
+    expected = hashlib.sha256(b"prompt v2").hexdigest()
+    assert stamp_path.read_text(encoding="utf-8").strip() == expected
 
 
 def test_score_verdict_error_is_a_full_miss() -> None:

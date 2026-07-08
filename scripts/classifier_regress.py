@@ -8,7 +8,8 @@
 #          through the real Stage-0 backend with bounded concurrency +
 #          harness-only timeout retries, score intent/action/kind accuracy
 #          plus the FR-12 verbatim-slot invariant, render a per-cluster
-#          report, and gate (intent 100%, intent+action+kind >=99%).
+#          report, gate (intent 100%, intent+action+kind >=99%), and stamp
+#          a sha256 of the gated prompt on PASS for the pre-commit guard.
 #   DEPENDS: ai_steward_wiki.classifier.backend.ClaudeCliBackend,
 #            ai_steward_wiki.classifier.schema (ClassifierError, ClassifierTimeoutError),
 #            ai_steward_wiki.claude_cli.common.default_claude_config_dir
@@ -24,10 +25,17 @@
 #   score_verdict - score one classified case's distilled_payload against expected/accept + FR-12 verbatim invariant
 #   run_regression - async: classify every corpus case via ClaudeCliBackend (semaphore=CONCURRENCY), collect Verdicts
 #   render_report - render the per-cluster breakdown + misses/violations, decide gate pass/fail
+#   write_stamp - record sha256(prompts/classifier.md) to .classifier_regress.stamp on GATE PASS
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.1.0 - aisw-xi8 (e6ac1ad, DEC-13/FR-13): initial 100-case
+#   LAST_CHANGE: v0.2.0 - full-audit 2026-07-08: the "mandatory manual gate"
+#                had no enforcement (not in total-test, no pre-commit guard) —
+#                add write_stamp(PROMPT_PATH) on GATE PASS; paired pre-commit
+#                hook (scripts/check_classifier_regress_stamp.py) blocks
+#                commits touching prompts/classifier.md unless the stamp's
+#                sha256 matches the staged content.
+#   PREVIOUS:    v0.1.0 - aisw-xi8 (e6ac1ad, DEC-13/FR-13): initial 100-case
 #                classifier v2 regression harness against the real
 #                ClaudeCliBackend; gates every prompts/classifier.md change,
 #                deliberately excluded from make total-test/CI (100 real Haiku
@@ -54,6 +62,7 @@ Exit code: 0 on gate pass, 1 on gate fail.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
 from collections import defaultdict
@@ -68,6 +77,15 @@ from ai_steward_wiki.claude_cli.common import default_claude_config_dir
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CORPUS_PATH = REPO_ROOT / "tests" / "corpus" / "classifier" / "questions.json"
 PROMPT_PATH = REPO_ROOT / "prompts" / "classifier.md"
+STAMP_PATH = REPO_ROOT / ".classifier_regress.stamp"
+
+
+def write_stamp(prompt_path: Path, stamp_path: Path) -> None:
+    """Record the sha256 of the gated prompt so the pre-commit guard can verify freshness."""
+    digest = hashlib.sha256(prompt_path.read_bytes()).hexdigest()
+    stamp_path.write_text(f"{digest}\n", encoding="utf-8")
+
+
 CONCURRENCY = 5  # aisw-xi8: lowering this to 2 was tried and did NOT reduce the
 # 30s-timeout rate (verified: two live runs, ~10-12/100 timeouts either way) —
 # the timeouts are inherent per-call CLI/network latency variance, not local
@@ -94,6 +112,7 @@ __all__ = [
     "render_report",
     "run_regression",
     "score_verdict",
+    "write_stamp",
 ]
 
 
@@ -285,6 +304,8 @@ async def _amain() -> int:
     verdicts = await run_regression(cases, backend)
     report, passed = render_report(verdicts)
     print(report)
+    if passed:
+        write_stamp(PROMPT_PATH, STAMP_PATH)
     return 0 if passed else 1
 
 

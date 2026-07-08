@@ -86,7 +86,12 @@ systemd-run --scope --slice=aisw-bot.slice \
 
 - [ ] `systemd-analyze verify` exits 0 on all three units.
 - [ ] `systemctl status aisw-bot` is `active (running)`.
-- [ ] `systemctl show aisw-bot.slice -p MemoryMax,TasksMax` shows `16G` / `512`.
+- [ ] `systemctl show aisw-bot.service -p MemoryMax,MemoryHigh,TasksMax,Slice` shows
+      `MemoryMax=2147483648` (2G) / `MemoryHigh=1610612736` (1.5G) / `TasksMax=4600` /
+      `Slice=bots.slice`. There is no dedicated `aisw-bot.slice` unit — the service sets
+      its own limits directly and is bound to the shared `bots.slice`
+      (`systemctl show bots.slice -p MemoryMax,TasksMax` → `3221225472` (3G) / `1024`,
+      the outer bound shared with other services on this 3.8G host).
 - [ ] `id aisw-bot` shows membership in `aisw-claude`.
 - [ ] `getcap` — none required; capabilities granted via unit, not file caps.
 - [ ] Bot writes a startup log line tagged `[Bot][startup]` visible in `journalctl -u aisw-bot`.

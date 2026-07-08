@@ -94,9 +94,9 @@ make total-test                                  # lint + grace + inv-lint + cov
 
 ## Деплой
 
-1. Код: `/opt/ai-steward-wiki/` (VPS).
+1. Код: `/home/bgs/works/ai-steward-wiki/` (VPS, vpn-2).
 2. Auth: `/var/lib/ai-steward-wiki/claude-code/` (read-only для CLI scopes).
-3. Systemd: `aisw-bot.service` + `aisw-bot.slice`, per-CLI transient `cli-<job_id>.scope` через `systemd-run`.
+3. Systemd: `aisw-bot.service` (bound to `bots.slice`, `MemoryMax=2G`/`TasksMax=4600` on the service itself — no dedicated `aisw-bot.slice` unit), per-CLI transient `cli-<job_id>.scope` через `systemd-run`.
 4. Логи: stdout → journald (structlog JSON).
 5. Backup MVP: ежедневный `db_snapshot` (`VACUUM INTO`) + per-WIKI git history. Off-site — deferred.
 
