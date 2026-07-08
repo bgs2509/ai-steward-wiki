@@ -9,6 +9,7 @@ aiogram — every external dependency is faked.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from ai_steward_wiki.classifier.recurrence import Recurrence
+from ai_steward_wiki.llm.codex import CodexRequest
+from ai_steward_wiki.llm.failover import FailoverPolicy
 from ai_steward_wiki.scheduler.consumer import CronConsumer
 from ai_steward_wiki.scheduler.queue import Lane, PriorityJobQueue
 from ai_steward_wiki.scheduler.queue_payloads import CronUserQueueMsg
@@ -108,6 +111,35 @@ class _StubSpawner:
         self.cwd = cwd
         self.env = env
         return self.proc
+
+
+class _StubCodex:
+    complex_model = "gpt-5.5"
+    complex_reasoning = "medium"
+    neutral_cwd = Path("/tmp/codex-runtime")
+
+    def __init__(self, *, result: str = "done by codex", error: Exception | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[CodexRequest] = []
+
+    async def run_text(self, request: CodexRequest) -> str:
+        self.calls.append(request)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _limit_envelope() -> bytes:
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": "error",
+            "is_error": True,
+            "api_error_status": 429,
+            "result": "subscription limit reached",
+        }
+    ).encode()
 
 
 async def _insert_queued_job(factory) -> int:
@@ -422,6 +454,9 @@ def test_build_argv_applies_runner_hardening_flags(session_factory, fake_prompt_
     # --disallowedTools WebFetch (matches runner's default disallow surface).
     assert "--disallowedTools" in argv
     assert argv[argv.index("--disallowedTools") + 1] == "WebFetch"
+    assert "-p" in argv
+    assert argv[argv.index("--output-format") + 1] == "json"
+    assert argv[argv.index("--tools") + 1] == ""
 
 
 def test_build_argv_hardening_precedes_command_separator(session_factory, fake_prompt_file) -> None:
@@ -464,3 +499,96 @@ async def test_execute_one_ignores_non_message_items(session_factory, fake_promp
     await consumer._execute_one("not-a-msg")  # type: ignore[arg-type]
     assert bot.sent == []
     assert spawner.argv is None
+
+
+# --- provider failover -----------------------------------------------------
+
+
+async def test_limit_falls_back_before_single_delivery(session_factory, fake_prompt_file) -> None:
+    job_id = await _insert_queued_job(session_factory)
+    bot = _FakeBot()
+    spawner = _StubSpawner(_FakeProc(stdout=_limit_envelope(), returncode=1))
+    codex = _StubCodex()
+    consumer = CronConsumer(
+        queue=PriorityJobQueue(),
+        bot=bot,
+        claude_binary="/usr/bin/echo",
+        claude_config_dir=Path("/var/lib/ai-steward-wiki/claude-code"),
+        prompt_path=fake_prompt_file,
+        jobs_session_maker=session_factory,
+        timeout_s=600,
+        spawner=spawner,
+        failover_policy=FailoverPolicy(cooldown_s=900.0),
+        codex_adapter=codex,  # type: ignore[arg-type]
+    )
+
+    await consumer._execute_one(_msg(job_id, command="summarize"))
+
+    assert len(bot.sent) == 1
+    assert bot.sent[0][0] == 100
+    assert "done by codex" in bot.sent[0][1]
+    request = codex.calls[0]
+    assert request.model == "gpt-5.5"
+    assert request.reasoning == "medium"
+    assert "system prompt body" in request.prompt
+    assert "summarize" in request.prompt
+    async with session_factory() as session:
+        row = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    assert row.status == "finished"
+
+
+async def test_generic_nonzero_does_not_use_codex(session_factory, fake_prompt_file) -> None:
+    job_id = await _insert_queued_job(session_factory)
+    bot = _FakeBot()
+    spawner = _StubSpawner(_FakeProc(stdout=b"", stderr=b"boom", returncode=1))
+    codex = _StubCodex()
+    consumer = CronConsumer(
+        queue=PriorityJobQueue(),
+        bot=bot,
+        claude_binary="/usr/bin/echo",
+        claude_config_dir=Path("/var/lib/ai-steward-wiki/claude-code"),
+        prompt_path=fake_prompt_file,
+        jobs_session_maker=session_factory,
+        timeout_s=600,
+        spawner=spawner,
+        failover_policy=FailoverPolicy(cooldown_s=900.0),
+        codex_adapter=codex,  # type: ignore[arg-type]
+    )
+
+    await consumer._execute_one(_msg(job_id))
+
+    assert codex.calls == []
+    assert len(bot.sent) == 1
+    assert "Ошибка" in bot.sent[0][1]
+
+
+async def test_dual_failure_sends_one_recoverable_message(
+    session_factory,
+    fake_prompt_file,
+) -> None:
+    job_id = await _insert_queued_job(session_factory)
+    bot = _FakeBot()
+    spawner = _StubSpawner(_FakeProc(stdout=_limit_envelope(), returncode=1))
+    codex = _StubCodex(error=RuntimeError("codex unavailable"))
+    consumer = CronConsumer(
+        queue=PriorityJobQueue(),
+        bot=bot,
+        claude_binary="/usr/bin/echo",
+        claude_config_dir=Path("/var/lib/ai-steward-wiki/claude-code"),
+        prompt_path=fake_prompt_file,
+        jobs_session_maker=session_factory,
+        timeout_s=600,
+        spawner=spawner,
+        failover_policy=FailoverPolicy(cooldown_s=900.0),
+        codex_adapter=codex,  # type: ignore[arg-type]
+    )
+
+    await consumer._execute_one(_msg(job_id))
+
+    assert len(bot.sent) == 1
+    assert "Claude и Codex" in bot.sent[0][1]
+    assert "повторите позже" in bot.sent[0][1]
+    async with session_factory() as session:
+        row = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    assert row.status == "failed"
+    assert row.last_error == "providers_unavailable"

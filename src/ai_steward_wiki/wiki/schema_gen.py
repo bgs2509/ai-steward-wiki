@@ -1,14 +1,16 @@
 # FILE: src/ai_steward_wiki/wiki/schema_gen.py
-# VERSION: 0.0.1
+# VERSION: 0.1.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Generate a tailored Karpathy schema (CLAUDE.md managed zone) for an
 #            arbitrary-domain WIKI at create time, when no static preset matches.
-#   SCOPE: SchemaGenerator Protocol + Claude-CLI impl + Fake; validate_schema;
+#   SCOPE: SchemaGenerator Protocol + Claude/Codex failover impl + Fake; validate_schema;
 #          apply_generated_schema orchestration (generate -> validate -> write via
 #          repair_managed_zone with template_id=_generated, never clobbered later).
 #   DEPENDS: ai_steward_wiki.classifier.backend (Spawner seam),
-#            ai_steward_wiki.claude_cli.common, ai_steward_wiki.wiki.migration
-#   LINKS: M-WIKI-LIFECYCLE, M-WIKI-MIGRATION, aisw-b50, D-017 (Variant D), D-039
+#            ai_steward_wiki.claude_cli.common, ai_steward_wiki.llm.{failover,codex},
+#            ai_steward_wiki.wiki.migration
+#   LINKS: M-WIKI-LIFECYCLE, M-WIKI-MIGRATION, M-LLM-FAILOVER, M-LLM-CODEX,
+#          aisw-b50, aisw-8gw, D-017 (Variant D), D-039
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -19,18 +21,23 @@
 #   SchemaGenError - generation failure (non-zero CLI rc / empty output)
 #   SchemaGenerator - Protocol; async generate(wiki_name, first_content, correlation_id) -> str
 #   ClaudeCliSchemaGenerator - default impl spawning `claude -p` with prompts/schema-gen.md
+#   FailoverSchemaGenerator - Claude-first text generator with safe gpt-5.5 fallback
 #   FakeSchemaGenerator - test double returning canned markdown
 #   validate_schema - structural check: required sections + >=1 topic-specific section
 #   apply_generated_schema - generate+validate+write managed zone; True if applied, False on fallback
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.1 - aisw-b50: arbitrary-domain schema generation at create.
+#   LAST_CHANGE: v0.1.0 - aisw-8gw: unwrap Claude JSON envelopes and add safe
+#                gpt-5.5 medium text fallback before managed-zone validation and write.
+#   PREVIOUS:    v0.0.2 - aisw-8gw: contract-only plan for safe Codex text fallback.
+#   PREVIOUS:    v0.0.1 - aisw-b50: arbitrary-domain schema generation at create.
 # END_CHANGE_SUMMARY
 
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -41,9 +48,17 @@ from ai_steward_wiki.classifier.backend import AsyncioSpawner, Spawner
 from ai_steward_wiki.claude_cli.common import (
     build_env,
     neutral_cwd,
+    parse_claude_subscription_limit,
     resolve_binary,
     system_prompt_argv,
     truncate_stderr,
+)
+from ai_steward_wiki.llm.codex import CodexCliAdapter, CodexRequest, CodexRunKind
+from ai_steward_wiki.llm.failover import (
+    AttemptEvidence,
+    EvidenceKind,
+    FailoverPolicy,
+    ProviderLimitError,
 )
 from ai_steward_wiki.wiki.migration import repair_managed_zone
 
@@ -51,6 +66,7 @@ __all__ = [
     "GENERATED_TEMPLATE_ID",
     "REQUIRED_SECTIONS",
     "ClaudeCliSchemaGenerator",
+    "FailoverSchemaGenerator",
     "FakeSchemaGenerator",
     "SchemaGenError",
     "SchemaGenerator",
@@ -104,13 +120,13 @@ class ClaudeCliSchemaGenerator:
     spawner: Spawner = field(default_factory=AsyncioSpawner)
 
     def _argv(self) -> list[str]:
-        # No --output-format: `claude -p` prints the assistant text verbatim, which
-        # is exactly the markdown schema we want (the classifier path uses json).
         return [
             self.binary,
             "-p",
             "--model",
             self.model,
+            "--output-format",
+            "json",
             "--max-turns",
             "1",
             *system_prompt_argv(self.prompt_path),
@@ -136,12 +152,71 @@ class ClaudeCliSchemaGenerator:
             timeout_s=self.timeout_s,
             cwd=str(neutral_cwd(self.claude_config_dir)),
         )
+        try:
+            envelope = json.loads(stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            if rc != 0:
+                raise SchemaGenError(
+                    f"schema-gen CLI rc={rc}; stderr={truncate_stderr(stderr)}"
+                ) from exc
+            raise SchemaGenError("schema-gen CLI returned invalid JSON") from exc
+        if not isinstance(envelope, dict):
+            raise SchemaGenError("schema-gen CLI JSON is not an object")
+        limit = parse_claude_subscription_limit(envelope)
+        if limit is not None:
+            raise ProviderLimitError(
+                provider="claude",
+                reset_at=limit.reset_at,
+                evidence=AttemptEvidence(EvidenceKind.READ_ONLY, "schema generation"),
+            )
         if rc != 0:
             raise SchemaGenError(f"schema-gen CLI rc={rc}; stderr={truncate_stderr(stderr)}")
-        text = stdout.decode("utf-8", errors="replace").strip()
+        result = envelope.get("result")
+        if envelope.get("subtype") != "success" or not isinstance(result, str):
+            raise SchemaGenError("schema-gen CLI envelope is not successful text")
+        text = result.strip()
         if not text:
             raise SchemaGenError("schema-gen CLI returned empty output")
         return text
+
+
+@dataclass
+class FailoverSchemaGenerator:
+    """Generate text through Claude first and Codex only after a typed safe limit."""
+
+    primary: SchemaGenerator
+    codex: CodexCliAdapter
+    policy: FailoverPolicy
+    prompt_path: Path
+    timeout_s: float
+
+    async def generate(self, *, wiki_name: str, first_content: str, correlation_id: str) -> str:
+        system_prompt = self.prompt_path.read_text(encoding="utf-8")
+        return await self.policy.execute(
+            run_kind="text",
+            correlation_id=correlation_id,
+            claude=lambda: self.primary.generate(
+                wiki_name=wiki_name,
+                first_content=first_content,
+                correlation_id=correlation_id,
+            ),
+            codex=lambda: self.codex.run_text(
+                CodexRequest(
+                    prompt=(
+                        f"{system_prompt}\n\n"
+                        f"WIKI name: {wiki_name}\n"
+                        "First content from the user:\n"
+                        f"{first_content}\n"
+                    ),
+                    model=self.codex.complex_model,
+                    reasoning=self.codex.complex_reasoning,
+                    run_kind=CodexRunKind.TEXT,
+                    correlation_id=correlation_id,
+                    timeout_s=self.timeout_s,
+                    cwd=self.codex.neutral_cwd,
+                )
+            ),
+        )
 
 
 @dataclass

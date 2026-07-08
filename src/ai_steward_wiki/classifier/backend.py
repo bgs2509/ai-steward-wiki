@@ -1,12 +1,15 @@
 # FILE: src/ai_steward_wiki/classifier/backend.py
-# VERSION: 0.0.8
+# VERSION: 0.1.2
 # START_MODULE_CONTRACT
 #   PURPOSE: Backend abstraction for Stage-0 classifier — Claude CLI default + optional API + Fake.
 #   SCOPE: ClassifierBackend Protocol; ClaudeCliBackend (subprocess); AnthropicApiBackend stub;
-#          FakeClaudeRunner test double; Spawner Protocol seam for chunk 16 systemd-run wrap.
+#          FakeClaudeRunner test double; typed Claude limit detection; provider failover adapter;
+#          Spawner Protocol seam for chunk 16 systemd-run wrap.
 #   DEPENDS: asyncio, json, ai_steward_wiki.classifier.schema,
-#            ai_steward_wiki.claude_cli.common (M-CLAUDE-CLI-COMMON)
-#   LINKS: M-CLASSIFIER-STAGE0, M-CLAUDE-CLI-COMMON, D-009, D-013, INV-6, aisw-d3i, aisw-0mg
+#            ai_steward_wiki.claude_cli.common (M-CLAUDE-CLI-COMMON),
+#            ai_steward_wiki.llm.{failover,codex}
+#   LINKS: M-CLASSIFIER-STAGE0, M-CLAUDE-CLI-COMMON, M-LLM-FAILOVER, M-LLM-CODEX,
+#          D-009, D-013, INV-6, aisw-d3i, aisw-0mg, aisw-8gw
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -16,12 +19,18 @@
 #   Spawner - Protocol; subprocess spawn primitive (chunk 16 injects systemd-run prefix)
 #   AsyncioSpawner - default Spawner using asyncio.create_subprocess_exec
 #   ClaudeCliBackend - default backend invoking `claude` CLI in JSON mode (resolves binary)
+#   FailoverClassifierBackend - preserves ClassifierBackend while routing typed limits to Codex
 #   AnthropicApiBackend - optional backend; activated only when STAGE0_BACKEND=anthropic_api
 #   FakeClaudeRunner - deterministic test double, records calls
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.8 - aisw-xi8: (1) ClaudeCliBackend.max_thinking_tokens field —
+#   LAST_CHANGE: v0.1.2 - aisw-8gw: expose failover backend name and model as
+#                concrete Protocol-compatible fields during runtime wiring.
+#   PREVIOUS:    v0.1.1 - aisw-8gw: raise typed structured Claude limits and
+#                add gpt-5.4-mini structured fallback behind ClassifierBackend.
+#   PREVIOUS:    v0.1.0 - aisw-8gw: contract-only plan for typed limit and Codex fallback.
+#   PREVIOUS:    v0.0.8 - aisw-xi8: (1) ClaudeCliBackend.max_thinking_tokens field —
 #                         when set, passes MAX_THINKING_TOKENS to the CLI env. Stage-0
 #                         wiring sets 0 (classification = recognition, not computation;
 #                         unbounded thinking made complex phrasings systematically cross
@@ -73,9 +82,17 @@ from ai_steward_wiki.classifier.schema import (
 from ai_steward_wiki.claude_cli.common import (
     build_env,
     neutral_cwd,
+    parse_claude_subscription_limit,
     resolve_binary,
     system_prompt_argv,
     truncate_stderr,
+)
+from ai_steward_wiki.llm.codex import CodexCliAdapter, CodexRequest, CodexRunKind
+from ai_steward_wiki.llm.failover import (
+    AttemptEvidence,
+    EvidenceKind,
+    FailoverPolicy,
+    ProviderLimitError,
 )
 from ai_steward_wiki.logging_events import (
     CLAUDE_CLI_ERROR,
@@ -91,6 +108,7 @@ __all__ = [
     "AsyncioSpawner",
     "ClassifierBackend",
     "ClaudeCliBackend",
+    "FailoverClassifierBackend",
     "FakeClaudeRunner",
     "Spawner",
 ]
@@ -238,19 +256,86 @@ class ClaudeCliBackend:
             timeout_s=self.timeout_s,
             cwd=str(neutral_cwd(self.claude_config_dir)),
         )
+        try:
+            envelope = json.loads(stdout.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            if rc != 0:
+                raise ClassifierError(
+                    f"claude CLI exited with rc={rc}; stderr={truncate_stderr(stderr)}"
+                ) from e
+            raise ClassifierSchemaError(f"claude CLI returned non-JSON: {stdout[:512]!r}") from e
+        if not isinstance(envelope, dict):
+            if rc != 0:
+                raise ClassifierError(
+                    f"claude CLI exited with rc={rc}; stderr={truncate_stderr(stderr)}"
+                )
+            raise ClassifierSchemaError(
+                f"claude CLI JSON is not an object: {type(envelope).__name__}"
+            )
+        limit = parse_claude_subscription_limit(envelope)
+        if limit is not None:
+            raise ProviderLimitError(
+                provider="claude",
+                reset_at=limit.reset_at,
+                evidence=AttemptEvidence(EvidenceKind.READ_ONLY, "structured classifier"),
+            )
         if rc != 0:
             raise ClassifierError(
                 f"claude CLI exited with rc={rc}; stderr={truncate_stderr(stderr)}"
             )
-        try:
-            envelope = json.loads(stdout.decode("utf-8"))
-        except json.JSONDecodeError as e:
-            raise ClassifierSchemaError(f"claude CLI returned non-JSON: {stdout[:512]!r}") from e
-        if not isinstance(envelope, dict):
-            raise ClassifierSchemaError(
-                f"claude CLI JSON is not an object: {type(envelope).__name__}"
-            )
         return _unwrap_cli_envelope(envelope)
+
+
+_GENERIC_OBJECT_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "additionalProperties": True,
+}
+
+
+@dataclass
+class FailoverClassifierBackend:
+    """Preserve ClassifierBackend while sharing the process-local provider policy."""
+
+    primary: ClassifierBackend
+    codex: CodexCliAdapter
+    policy: FailoverPolicy
+    timeout_s: float
+    name: str = field(init=False)
+    model: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.name = self.primary.name
+        self.model = self.primary.model
+
+    async def call(
+        self,
+        *,
+        text: str,
+        prompt_path: Path,
+        correlation_id: str,
+    ) -> dict[str, Any]:
+        prompt = prompt_path.read_text(encoding="utf-8")
+        return await self.policy.execute(
+            run_kind="structured",
+            correlation_id=correlation_id,
+            claude=lambda: self.primary.call(
+                text=text,
+                prompt_path=prompt_path,
+                correlation_id=correlation_id,
+            ),
+            codex=lambda: self.codex.run_structured(
+                CodexRequest(
+                    prompt=(f"{prompt}\n\n" "<user_input>\n" f"{text}\n" "</user_input>"),
+                    model=self.codex.light_model,
+                    reasoning=self.codex.light_reasoning,
+                    run_kind=CodexRunKind.STRUCTURED,
+                    correlation_id=correlation_id,
+                    timeout_s=self.timeout_s,
+                    cwd=self.codex.neutral_cwd,
+                    output_schema=_GENERIC_OBJECT_SCHEMA,
+                )
+            ),
+        )
 
 
 def _unwrap_cli_envelope(envelope: dict[str, Any]) -> dict[str, Any]:

@@ -1,17 +1,19 @@
 # FILE: src/ai_steward_wiki/wiki/runner.py
-# VERSION: 0.0.14
+# VERSION: 0.1.0
 # START_MODULE_CONTRACT
-#   PURPOSE: Stage-1a/1b Sonnet runner orchestrator — assemble prompt, acquire
-#            locks, spawn `claude` CLI, stream events, persist transcript
-#            atomically. Subprocess is behind a Spawner Protocol seam for tests.
+#   PURPOSE: Stage-1a/1b runner orchestrator — assemble prompt, hold one WIKI lock
+#            across Claude and safe Codex fallback, stream provider-neutral events,
+#            and persist the transcript atomically.
 #   SCOPE: run_wiki_session(...); Spawner Protocol; AsyncioSpawner default;
-#          assemble_prompt helper; transcript persistence; SIGTERM→SIGKILL on
-#          timeout via scheduler.core.kill_with_sequence.
+#          assemble_prompt helper; typed Claude limit detection; replay evidence;
+#          Codex JSONL normalization; transcript persistence; SIGTERM→SIGKILL.
 #   DEPENDS: asyncio, contextlib, os, pathlib, time, structlog,
 #            ai_steward_wiki.claude_cli.common (M-CLAUDE-CLI-COMMON),
+#            ai_steward_wiki.llm.{failover,codex},
 #            ai_steward_wiki.wiki.{acquire,streaming},
 #            ai_steward_wiki.scheduler.core (kill_with_sequence)
-#   LINKS: M-WIKI-RUNNER, M-CLAUDE-CLI-COMMON, D-007, D-011, D-012, D-021, aisw-d3i, aisw-0mg, aisw-w83
+#   LINKS: M-WIKI-RUNNER, M-CLAUDE-CLI-COMMON, M-LLM-FAILOVER, M-LLM-CODEX,
+#          D-007, D-011, D-012, D-021, aisw-d3i, aisw-0mg, aisw-w83, aisw-8gw
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
@@ -27,13 +29,17 @@
 #   WEB_SEARCH_TOOLS - sole tool a web_task run allows (WebSearch) — read-only, no WIKI add-dir (aisw-dqz)
 #   WikiRunResult - dataclass result of one run (run_id, exit_code, events, permission_denials, …)
 #   extract_permission_denials - pull permission_denials from the CLI result event (aisw-t6w)
+#   AttemptEvidenceTracker - monotonic fail-closed Claude side-effect evidence
 #   run_wiki_session - public entrypoint orchestrating one Stage-1a/1b run; extra_add_dirs adds read-only --add-dir targets (digest multi-WIKI, aisw-oqq)
 #   aggregate_text - extract assistant text from WikiRunResult.events
 #   final_turn_text - assistant text after the last tool_use (drops inter-tool narration; aisw-2n2)
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.14 - aisw-9io: deny Bash on every wiki run-kind. _RunConfig.
+#   LAST_CHANGE: v0.1.0 - aisw-8gw: hold one WIKI lock across Claude and safe
+#                Codex fallback, block unsafe replay, and persist one transcript.
+#   PREVIOUS:    v0.0.15 - aisw-8gw: contract-only plan for locked safe Codex fallback.
+#   PREVIOUS:    v0.0.14 - aisw-9io: deny Bash on every wiki run-kind. _RunConfig.
 #                disallowed_tools default is now ["Bash", "WebFetch"] — no run needs a
 #                shell and the sandbox forbids it, so the agent stopped wasting turns on
 #                Bash permission_denied (17x on day-25). Paired with dropping the Bash
@@ -113,6 +119,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import re
 import time
@@ -126,9 +133,17 @@ import structlog
 
 from ai_steward_wiki.claude_cli.common import (
     build_env,
+    parse_claude_subscription_limit,
     resolve_binary,
     system_prompt_argv,
     truncate_stderr,
+)
+from ai_steward_wiki.llm.codex import CodexCliAdapter, CodexRequest, CodexRunKind
+from ai_steward_wiki.llm.failover import (
+    AttemptEvidence,
+    EvidenceKind,
+    FailoverPolicy,
+    ProviderLimitError,
 )
 from ai_steward_wiki.logging_events import (
     CLAUDE_CLI_ERROR,
@@ -145,6 +160,7 @@ __all__ = [
     "WEB_SEARCH_TOOLS",
     "WRITE_TOOLS",
     "AsyncioSpawner",
+    "AttemptEvidenceTracker",
     "SpawnedProcess",
     "Spawner",
     "WikiRunResult",
@@ -485,6 +501,71 @@ class _RunConfig:
     # aisw-dqz (Path B): when True the run is a web_task — it gets NO --add-dir on the WIKI
     # tree and a neutral cwd (no WIKI read access). Pair with allowed_tools=WEB_SEARCH_TOOLS.
     web_search: bool = False
+    failover_policy: FailoverPolicy | None = None
+    codex_adapter: CodexCliAdapter | None = None
+
+
+_EVIDENCE_PRIORITY = {
+    EvidenceKind.READ_ONLY: 0,
+    EvidenceKind.UNKNOWN: 1,
+    EvidenceKind.DELIVERED: 2,
+    EvidenceKind.MUTATION: 3,
+}
+_READ_ONLY_CLAUDE_TOOLS = {"Glob", "Grep", "Read", "WebSearch"}
+_MUTATING_CLAUDE_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
+
+
+@dataclass
+class AttemptEvidenceTracker:
+    evidence: AttemptEvidence = field(
+        default_factory=lambda: AttemptEvidence(EvidenceKind.READ_ONLY, "no side effect")
+    )
+
+    def observe(self, evidence: AttemptEvidence) -> None:
+        if _EVIDENCE_PRIORITY[evidence.kind] > _EVIDENCE_PRIORITY[self.evidence.kind]:
+            self.evidence = evidence
+
+
+@dataclass(frozen=True, slots=True)
+class _AttemptResult:
+    exit_code: int
+    events: list[StreamEvent]
+    stderr_text: str = ""
+
+
+def _claude_event_evidence(event: StreamEvent) -> AttemptEvidence:
+    tool_names: list[str] = []
+    if event.type == "tool_use":
+        name = event.payload.get("name") or event.payload.get("tool_name")
+        if isinstance(name, str):
+            tool_names.append(name)
+        else:
+            return AttemptEvidence(EvidenceKind.UNKNOWN, "unnamed Claude tool")
+    elif event.type == "assistant_chunk":
+        message = event.payload.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, list):
+                tool_names.extend(
+                    str(item.get("name"))
+                    for item in content
+                    if isinstance(item, dict) and item.get("type") == "tool_use"
+                )
+    if not tool_names:
+        return AttemptEvidence(EvidenceKind.READ_ONLY, "no tool action")
+    if any(name in _MUTATING_CLAUDE_TOOLS for name in tool_names):
+        return AttemptEvidence(EvidenceKind.MUTATION, "Claude mutation tool")
+    if all(name in _READ_ONLY_CLAUDE_TOOLS for name in tool_names):
+        return AttemptEvidence(EvidenceKind.READ_ONLY, "Claude read-only tool")
+    return AttemptEvidence(EvidenceKind.UNKNOWN, "unknown Claude tool")
+
+
+def _codex_run_kind(config: _RunConfig) -> CodexRunKind:
+    if config.web_search:
+        return CodexRunKind.WEB
+    if config.allowed_tools and any(tool in WRITE_TOOLS for tool in config.allowed_tools):
+        return CodexRunKind.AGENT_WRITE
+    return CodexRunKind.AGENT_READ
 
 
 @traced(event_prefix=WIKI_RUN)
@@ -526,6 +607,24 @@ async def run_wiki_session(
     if config is None:
         raise WikiRunnerError(
             "run_wiki_session requires a _RunConfig (claude_config_dir is mandatory)"
+        )
+    if config.failover_policy is not None and config.codex_adapter is not None:
+        return await _run_wiki_session_with_failover(
+            wiki_id=wiki_id,
+            wiki_path=wiki_path,
+            base_prompt_path=base_prompt_path,
+            overlay_prompt_path=overlay_prompt_path,
+            run_id=run_id,
+            correlation_id=correlation_id,
+            runtime_dir=runtime_dir,
+            acquirer=acquirer,
+            spawner=spawner,
+            config=config,
+            on_event=on_event,
+            user_input=user_input,
+            media_paths=media_paths,
+            extra_add_dirs=extra_add_dirs,
+            timeout_s=timeout_s,
         )
     cfg = config
     effective_timeout_s = timeout_s if timeout_s is not None else cfg.timeout_s
@@ -719,6 +818,263 @@ async def run_wiki_session(
         run_id=run_id,
         exit_code=exit_code,
         events=events,
+        transcript_path=transcript_path,
+        latency_ms=latency_ms,
+        permission_denials=permission_denials,
+    )
+
+
+async def _run_wiki_session_with_failover(
+    *,
+    wiki_id: str,
+    wiki_path: Path,
+    base_prompt_path: Path,
+    overlay_prompt_path: Path,
+    run_id: str,
+    correlation_id: str,
+    runtime_dir: Path,
+    acquirer: LockAcquirer,
+    spawner: Spawner,
+    config: _RunConfig,
+    on_event: Callable[[StreamEvent], Awaitable[None]] | None,
+    user_input: str,
+    media_paths: list[Path] | None,
+    extra_add_dirs: list[Path] | None,
+    timeout_s: float | None,
+) -> WikiRunResult:
+    """Run Claude and a safe Codex fallback under one acquired WIKI lock."""
+    policy = config.failover_policy
+    codex = config.codex_adapter
+    if policy is None or codex is None:
+        raise WikiRunnerError("failover runner requires policy and Codex adapter")
+    effective_timeout_s = timeout_s if timeout_s is not None else config.timeout_s
+    started = time.monotonic()
+    prompt_path = assemble_prompt(
+        base_path=base_prompt_path,
+        overlay_path=overlay_prompt_path,
+        runtime_dir=runtime_dir,
+        run_id=run_id,
+        wiki_path=wiki_path,
+    )
+    transcript_path = wiki_path / "runs" / run_id / "transcript.jsonl"
+    transcript_events: list[StreamEvent] = []
+    evidence = AttemptEvidenceTracker()
+    media_dirs = sorted({path.parent for path in media_paths}) if media_paths else None
+    claude_env = build_env(config.claude_config_dir)
+    if config.web_search:
+        claude_cwd = runtime_dir / "web_task_cwd"
+        claude_cwd.mkdir(parents=True, exist_ok=True)
+    else:
+        claude_cwd = wiki_path
+    claude_argv = _build_argv(
+        binary=resolve_binary(config.binary),
+        model=config.model,
+        wiki_path=wiki_path,
+        prompt_path=prompt_path,
+        allowed_tools=config.allowed_tools,
+        disallowed_tools=config.disallowed_tools,
+        media_dirs=media_dirs,
+        extra_add_dirs=extra_add_dirs,
+        add_wiki_dir=not config.web_search,
+    )
+
+    async def notify(event: StreamEvent, *, track_primary: bool) -> None:
+        if track_primary:
+            evidence.observe(_claude_event_evidence(event))
+        if on_event is None:
+            return
+        try:
+            await on_event(event)
+        except Exception as exc:
+            if track_primary:
+                evidence.observe(AttemptEvidence(EvidenceKind.UNKNOWN, "callback failed"))
+            _log.warning(
+                "wiki.run.on_event_error",
+                run_id=run_id,
+                correlation_id=correlation_id,
+                error=type(exc).__name__,
+            )
+            return
+        if track_primary and event.type == "assistant_chunk" and _assistant_text(event):
+            evidence.observe(AttemptEvidence(EvidenceKind.DELIVERED, "streamed output"))
+
+    async def run_claude() -> _AttemptResult:
+        attempt_events: list[StreamEvent] = []
+        stdin_bytes = user_input.encode("utf-8") if user_input else None
+        proc = await spawner.spawn(
+            claude_argv,
+            env=claude_env,
+            cwd=claude_cwd,
+            stdin_data=stdin_bytes,
+        )
+        if proc.stdout is None:
+            raise WikiRunnerError("spawned process has no stdout pipe")
+        if stdin_bytes is not None and proc.stdin is not None:
+            proc.stdin.write(stdin_bytes)
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                await proc.stdin.drain()
+            proc.stdin.close()
+
+        async def drain() -> int:
+            assert proc.stdout is not None
+            last_type: str | None = None
+            async for event in parse_stream_json(proc.stdout):
+                attempt_events.append(event)
+                transcript_events.append(event)
+                await notify(event, track_primary=True)
+                if event.type != last_type:
+                    _log.info(
+                        "wiki.run.event",
+                        run_id=run_id,
+                        correlation_id=correlation_id,
+                        event_type=event.type,
+                    )
+                    last_type = event.type
+            return await proc.wait()
+
+        try:
+            exit_code = await asyncio.wait_for(drain(), timeout=effective_timeout_s)
+        except TimeoutError as exc:
+            with contextlib.suppress(ProcessLookupError):
+                await kill_with_sequence(proc, grace_seconds=config.term_grace_s)
+            latency_ms = int((time.monotonic() - started) * 1000)
+            _log.error(
+                CLAUDE_CLI_ERROR,
+                exit_code=None,
+                duration_ms=latency_ms,
+                stdout_bytes=0,
+                stderr_bytes=0,
+                reason="timeout",
+            )
+            raise WikiRunnerTimeoutError(
+                f"wiki run exceeded timeout {effective_timeout_s}s"
+            ) from exc
+        stderr_text = await _drain_stderr(proc)
+        for event in reversed(attempt_events):
+            if event.type != "final":
+                continue
+            limit = parse_claude_subscription_limit(event.payload)
+            if limit is not None:
+                raise ProviderLimitError(
+                    provider="claude",
+                    reset_at=limit.reset_at,
+                    evidence=evidence.evidence,
+                )
+            break
+        if exit_code != 0:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            _log.error(
+                "wiki.run.error",
+                correlation_id=correlation_id,
+                wiki_id=wiki_id,
+                run_id=run_id,
+                exit_code=exit_code,
+                n_events=len(attempt_events),
+                latency_ms=latency_ms,
+                stderr=stderr_text,
+            )
+            raise WikiRunnerError(f"claude CLI exited rc={exit_code}; stderr={stderr_text}")
+        _log.info(
+            CLAUDE_CLI_EXIT,
+            exit_code=exit_code,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            stdout_bytes=0,
+            stderr_bytes=len(stderr_text.encode("utf-8")),
+        )
+        return _AttemptResult(exit_code=exit_code, events=attempt_events, stderr_text=stderr_text)
+
+    async def run_codex() -> _AttemptResult:
+        run_kind = _codex_run_kind(config)
+        if run_kind is CodexRunKind.AGENT_WRITE:
+            request_cwd = wiki_path
+            writable_wiki: Path | None = wiki_path
+        else:
+            codex.neutral_cwd.mkdir(parents=True, exist_ok=True)
+            request_cwd = codex.neutral_cwd
+            writable_wiki = None
+        system_prompt = prompt_path.read_text(encoding="utf-8")
+        prompt_parts = [system_prompt]
+        readable_paths: tuple[Path, ...] = ()
+        image_paths: tuple[Path, ...] = ()
+        if run_kind is not CodexRunKind.WEB:
+            additional_roots = tuple(extra_add_dirs or []) + tuple(media_dirs or [])
+            readable_paths = (wiki_path, *additional_roots)
+            image_paths = tuple(media_paths or [])
+            prompt_parts.extend(
+                [
+                    f"WORKSPACE_ROOT={wiki_path}",
+                    "ADDITIONAL_READ_ROOTS="
+                    + json.dumps([str(path) for path in additional_roots], ensure_ascii=False),
+                ]
+            )
+        prompt_parts.extend(["<user_input>", user_input, "</user_input>"])
+        codex_events = await codex.run_agent(
+            CodexRequest(
+                prompt="\n\n".join(prompt_parts),
+                model=codex.complex_model,
+                reasoning=codex.complex_reasoning,
+                run_kind=run_kind,
+                correlation_id=correlation_id,
+                timeout_s=effective_timeout_s,
+                cwd=request_cwd,
+                writable_wiki=writable_wiki,
+                readable_paths=readable_paths,
+                image_paths=image_paths,
+            )
+        )
+        attempt_events = [
+            StreamEvent(type=event.type, payload=event.payload) for event in codex_events
+        ]
+        transcript_events.extend(attempt_events)
+        for event in attempt_events:
+            await notify(event, track_primary=False)
+        return _AttemptResult(exit_code=0, events=attempt_events)
+
+    _log.info(
+        "wiki.run.start",
+        correlation_id=correlation_id,
+        wiki_id=wiki_id,
+        run_id=run_id,
+        model=config.model,
+        media_count=len(media_paths) if media_paths else 0,
+    )
+    lock_started = time.monotonic()
+    async with acquirer.acquire(wiki_id, wiki_path):
+        _log.info(
+            "wiki.lock.acquired",
+            wiki_id=wiki_id,
+            run_id=run_id,
+            latency_ms=int((time.monotonic() - lock_started) * 1000),
+        )
+        wiki_path.mkdir(parents=True, exist_ok=True)
+        try:
+            attempt = await policy.execute(
+                run_kind=_codex_run_kind(config).value,
+                correlation_id=correlation_id,
+                claude=run_claude,
+                codex=run_codex,
+            )
+        except BaseException:
+            _persist_transcript(transcript_events, transcript_path)
+            raise
+
+    _persist_transcript(transcript_events, transcript_path)
+    permission_denials = extract_permission_denials(attempt.events)
+    latency_ms = int((time.monotonic() - started) * 1000)
+    _log.info(
+        "wiki.run.finish",
+        correlation_id=correlation_id,
+        wiki_id=wiki_id,
+        run_id=run_id,
+        exit_code=attempt.exit_code,
+        n_events=len(attempt.events),
+        latency_ms=latency_ms,
+        permission_denied_count=len(permission_denials),
+    )
+    return WikiRunResult(
+        run_id=run_id,
+        exit_code=attempt.exit_code,
+        events=attempt.events,
         transcript_path=transcript_path,
         latency_ms=latency_ms,
         permission_denials=permission_denials,

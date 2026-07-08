@@ -1,5 +1,5 @@
 # FILE: src/ai_steward_wiki/classifier/__init__.py
-# VERSION: 0.0.2
+# VERSION: 0.1.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Public surface of the Stage-0 classifier module (M-CLASSIFIER-STAGE0, chunk 5).
 #   SCOPE: Re-export schema, backends, classify, parse_time, errors.
@@ -20,6 +20,7 @@
 #   Spawner - Protocol for subprocess spawn primitive (chunk 16 systemd-run seam)
 #   AsyncioSpawner - default Spawner using asyncio.create_subprocess_exec
 #   ClaudeCliBackend - default subprocess backend (Haiku CLI)
+#   FailoverClassifierBackend - Claude-first structured Codex fallback backend
 #   AnthropicApiBackend - optional API backend (chunk 16 wires call())
 #   FakeClaudeRunner - deterministic test double
 #   classify - Stage-0 orchestrator
@@ -32,7 +33,8 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.2 - aisw-xi8 (Phase-A): re-export WikiSlots/JobSlots/parse_slots.
+#   LAST_CHANGE: v0.1.0 - aisw-8gw: export FailoverClassifierBackend.
+#   PREVIOUS:    v0.0.2 - aisw-xi8 (Phase-A): re-export WikiSlots/JobSlots/parse_slots.
 #   PREVIOUS:    v0.0.1 - initial barrel for chunk 5
 # END_CHANGE_SUMMARY
 
@@ -41,6 +43,7 @@ from ai_steward_wiki.classifier.backend import (
     AsyncioSpawner,
     ClassifierBackend,
     ClaudeCliBackend,
+    FailoverClassifierBackend,
     FakeClaudeRunner,
     Spawner,
 )
@@ -67,6 +70,7 @@ __all__ = [
     "ClassifierSchemaError",
     "ClassifierTimeoutError",
     "ClaudeCliBackend",
+    "FailoverClassifierBackend",
     "FakeClaudeRunner",
     "Intent",
     "JobSlots",

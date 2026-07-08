@@ -1,7 +1,17 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
+
+from ai_steward_wiki.llm.codex import CodexRequest
+from ai_steward_wiki.llm.failover import (
+    AttemptEvidence,
+    EvidenceKind,
+    FailoverPolicy,
+    ProviderLimitError,
+)
 from ai_steward_wiki.wiki.migration import (
     MANAGED_START,
     USER_START,
@@ -10,7 +20,9 @@ from ai_steward_wiki.wiki.migration import (
 from ai_steward_wiki.wiki.schema_gen import (
     GENERATED_TEMPLATE_ID,
     ClaudeCliSchemaGenerator,
+    FailoverSchemaGenerator,
     FakeSchemaGenerator,
+    SchemaGenError,
     apply_generated_schema,
     validate_schema,
 )
@@ -21,6 +33,47 @@ _GOOD = (
     "## Inbox hint\nintents: append_data\n"
     "## Персонажи\nкарточка на персонажа\n"
 )
+
+
+class _StubSpawner:
+    def __init__(self, *, rc: int, stdout: bytes, stderr: bytes = b"") -> None:
+        self.result = (rc, stdout, stderr)
+
+    async def spawn(
+        self,
+        argv: list[str],
+        *,
+        env: dict[str, str],
+        stdin: bytes,
+        timeout_s: float,
+        cwd: str | None = None,
+    ) -> tuple[int, bytes, bytes]:
+        return self.result
+
+
+class _StubCodex:
+    complex_model = "gpt-5.5"
+    complex_reasoning = "medium"
+    neutral_cwd = Path("/tmp/codex-runtime")
+
+    def __init__(self, *, result: str = _GOOD, error: Exception | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[CodexRequest] = []
+
+    async def run_text(self, request: CodexRequest) -> str:
+        self.calls.append(request)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _limit() -> ProviderLimitError:
+    return ProviderLimitError(
+        provider="claude",
+        reset_at=None,
+        evidence=AttemptEvidence(EvidenceKind.READ_ONLY),
+    )
 
 
 def _v2_default(path: Path) -> None:
@@ -109,16 +162,114 @@ async def test_apply_returns_false_on_generator_failure(tmp_path: Path) -> None:
 # ---------- ClaudeCliSchemaGenerator argv ----------
 
 
-def test_cli_generator_argv_is_toolless_text_turn(tmp_path: Path) -> None:
+def test_cli_generator_argv_is_toolless_json_envelope_turn(tmp_path: Path) -> None:
     prompt = tmp_path / "schema-gen.md"
     prompt.write_text("semver: 1.0.0\n# schema gen system prompt\n", encoding="utf-8")
     gen = ClaudeCliSchemaGenerator(claude_config_dir=tmp_path / "cfg", prompt_path=prompt)
     argv = gen._argv()
     assert "-p" in argv
-    assert "--output-format" not in argv  # text mode (print), not json
+    assert argv[argv.index("--output-format") + 1] == "json"
     assert argv[argv.index("--tools") + 1] == ""  # no tools — pure generation
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
     assert argv[argv.index("--model") + 1] == "claude-sonnet-4-5"
+
+
+async def test_cli_generator_unwraps_success_envelope(tmp_path: Path) -> None:
+    prompt = tmp_path / "schema-gen.md"
+    prompt.write_text("system prompt", encoding="utf-8")
+    envelope = json.dumps(
+        {"type": "result", "subtype": "success", "is_error": False, "result": _GOOD}
+    ).encode()
+    generator = ClaudeCliSchemaGenerator(
+        claude_config_dir=tmp_path / "cfg",
+        prompt_path=prompt,
+        spawner=_StubSpawner(rc=0, stdout=envelope),  # type: ignore[arg-type]
+    )
+
+    assert (
+        await generator.generate(
+            wiki_name="Anime-WIKI",
+            first_content="source",
+            correlation_id="corr-1",
+        )
+        == _GOOD.strip()
+    )
+
+
+async def test_cli_generator_raises_typed_limit(tmp_path: Path) -> None:
+    prompt = tmp_path / "schema-gen.md"
+    prompt.write_text("system prompt", encoding="utf-8")
+    envelope = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error",
+            "is_error": True,
+            "api_error_status": 429,
+            "result": "subscription limit reached",
+        }
+    ).encode()
+    generator = ClaudeCliSchemaGenerator(
+        claude_config_dir=tmp_path / "cfg",
+        prompt_path=prompt,
+        spawner=_StubSpawner(rc=1, stdout=envelope),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ProviderLimitError):
+        await generator.generate(
+            wiki_name="Anime-WIKI",
+            first_content="source",
+            correlation_id="corr-2",
+        )
+
+
+async def test_schema_limit_uses_complex_codex_before_apply(tmp_path: Path) -> None:
+    primary = FakeSchemaGenerator(raises=_limit())
+    codex = _StubCodex()
+    prompt = tmp_path / "schema-gen.md"
+    prompt.write_text("SCHEMA SYSTEM", encoding="utf-8")
+    generator = FailoverSchemaGenerator(
+        primary=primary,
+        codex=codex,  # type: ignore[arg-type]
+        policy=FailoverPolicy(cooldown_s=900.0),
+        prompt_path=prompt,
+        timeout_s=60.0,
+    )
+
+    result = await generator.generate(
+        wiki_name="Anime-WIKI",
+        first_content="source",
+        correlation_id="corr-3",
+    )
+
+    assert result == _GOOD
+    request = codex.calls[0]
+    assert request.model == "gpt-5.5"
+    assert request.reasoning == "medium"
+    assert "SCHEMA SYSTEM" in request.prompt
+    assert "Anime-WIKI" in request.prompt
+
+
+async def test_schema_generic_failure_does_not_use_codex(tmp_path: Path) -> None:
+    primary = FakeSchemaGenerator(raises=SchemaGenError("generic"))
+    codex = _StubCodex()
+    prompt = tmp_path / "schema-gen.md"
+    prompt.write_text("SCHEMA SYSTEM", encoding="utf-8")
+    generator = FailoverSchemaGenerator(
+        primary=primary,
+        codex=codex,  # type: ignore[arg-type]
+        policy=FailoverPolicy(cooldown_s=900.0),
+        prompt_path=prompt,
+        timeout_s=60.0,
+    )
+
+    with pytest.raises(SchemaGenError, match="generic"):
+        await generator.generate(
+            wiki_name="Anime-WIKI",
+            first_content="source",
+            correlation_id="corr-4",
+        )
+
+    assert codex.calls == []
 
 
 def test_required_sections_are_the_contract() -> None:

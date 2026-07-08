@@ -1,17 +1,18 @@
 # FILE: src/ai_steward_wiki/settings.py
-# VERSION: 0.0.14
+# VERSION: 0.1.0
 # START_MODULE_CONTRACT
 #   PURPOSE: Runtime configuration loaded from environment via pydantic-settings.
-#   SCOPE: Settings BaseSettings (frozen). Initial fields cover Chunk 1 only;
-#          subsequent chunks extend with their own fields.
+#   SCOPE: Settings BaseSettings (frozen), including provider enablement, pinned
+#          Codex runtime, model mapping, reasoning effort, and failover cooldown.
 #   DEPENDS: pydantic, pydantic-settings
-#   LINKS: M-FOUNDATION-LOGGING (consumes log_level), M-CLASSIFIER-STAGE0 (chunk 5)
+#   LINKS: M-FOUNDATION-LOGGING, M-CLASSIFIER-STAGE0, M-LLM-FAILOVER, M-LLM-CODEX, aisw-8gw
 #   ROLE: CONFIG
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
 #   LogLevel - Literal alias for accepted log levels
+#   ReasoningEffort - Literal alias for supported Codex reasoning levels
 #   Stage0Backend - Literal alias for Stage-0 classifier backends (D-009)
 #   TenancyMode - Literal alias for single|multi admin tenancy (chunk 12)
 #   Env - Literal alias for runtime profile (local|vps)
@@ -20,7 +21,10 @@
 # END_MODULE_MAP
 #
 # START_CHANGE_SUMMARY
-#   LAST_CHANGE: v0.0.14 - aisw-d3h (ADR-009 final): removed the claude_config_dir
+#   LAST_CHANGE: v0.1.0 - aisw-8gw: add subscription-backed Codex enablement,
+#                pinned runtime, model mapping, reasoning, and cooldown settings.
+#   PREVIOUS:    v0.0.15 - aisw-8gw: contract-only plan for Codex fallback settings.
+#   PREVIOUS:    v0.0.14 - aisw-d3h (ADR-009 final): removed the claude_config_dir
 #                field + AISW_CLAUDE_CONFIG_DIR entirely; bot uses the run user's
 #                default ~/.claude. INV-6 now compares against ~/.claude.
 #   PREVIOUS:    v0.0.13 - aisw-wt5 (ADR-009): claude_config_dir is now a single
@@ -42,12 +46,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = [
     "Env",
     "LogLevel",
+    "ReasoningEffort",
     "Settings",
     "Stage0Backend",
     "TenancyMode",
@@ -56,6 +61,7 @@ __all__ = [
 
 Env = Literal["local", "vps"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+ReasoningEffort = Literal["low", "medium", "high"]
 Stage0Backend = Literal["claude_cli", "anthropic_api"]
 TenancyMode = Literal["single", "multi"]
 
@@ -95,6 +101,18 @@ class Settings(BaseSettings):
     classifier_stage0_timeout_s: float = 30.0
     classifier_haiku_fallback_timeout_s: float = 15.0
     prompts_dir: Path = Path("/opt/ai-steward-wiki/prompts")
+
+    # aisw-8gw: Codex CLI fallback uses ChatGPT subscription authentication.
+    # No API-key setting exists by design (ADR-035).
+    llm_codex_enabled: bool = True
+    llm_failover_cooldown_s: float = Field(default=900.0, gt=0)
+    codex_cli_binary: str = "codex"
+    codex_cli_version: str = "0.142.5"
+    codex_home: Path = Path("/var/lib/ai-steward-wiki/codex")
+    codex_light_model: str = "gpt-5.4-mini"
+    codex_light_reasoning: ReasoningEffort = "low"
+    codex_complex_model: str = "gpt-5.5"
+    codex_complex_reasoning: ReasoningEffort = "medium"
 
     # aisw-378: debounce window for aggregating a burst of split text messages
     # into one classify/route (Telegram splits a long paste across messages).

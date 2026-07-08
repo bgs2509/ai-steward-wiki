@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<DevelopmentPlan VERSION="0.0.9">
+<DevelopmentPlan VERSION="0.0.16">
   <ArchitectureNotes>
     <objective>Multi-user Telegram → Claude Code CLI WIKI assistant (Karpathy LLM Wiki method). MVP delivers: foundation (settings/logging/three-DB SQLite), auth + onboarding + admin, scheduler core, Stage-0 Haiku classifier, Stage-1 Sonnet wiki runner + lifecycle, inbox materialise + idempotency, ops (PII/retention, backup/git), Telegram I/O text layer + voice STT + photo ingest, ingest pipeline (classifier + streaming), runtime wiring, integration E2E.</objective>
     <non-goal>No i18n catalog (ru-only, D-032); off-site backup deferred; web UI / non-Telegram channels out of scope.</non-goal>
     <risk-1>users.toml drift between SSoT file and sessions.db cache — mitigated by SIGHUP+watchdog reload + sha256 short-circuit (D-031).</risk-1>
     <risk-2>SQLite three-DB topology requires per-engine PRAGMAs; missed PRAGMA = silent corruption — mitigated by shared apply_sqlite_pragmas listener.</risk-2>
     <risk-3>Claude CLI subprocess invocation drift between Stage-0 and Stage-1 (system prompt, cwd, stdin, --verbose) — mitigated by shared M-CLAUDE-CLI-COMMON primitives + integration test against the real CLI.</risk-3>
+    <risk-4>Fallback after a partially-mutating Claude run can duplicate writes — mitigated by typed mutation evidence and fail-closed replay policy in M-LLM-FAILOVER.</risk-4>
   </ArchitectureNotes>
 
   <Phases>
@@ -73,7 +74,7 @@
       <description>Adds a one-tap user confirmation between the Stage-1a router decision and the Stage-1b move+ingest (epic aisw-t2r). DefaultPipeline._run_text_pipeline no longer ingests a ROUTE/CREATE_WIKI RouterDecision immediately — it builds a route_ingest confirm draft (RouterDecision + user_text + source + media_paths + correlation_id, via inbox.route.route_action_to_payload) and proposes it through ConfirmationService.request_explicit with a 2-button keyboard (tg.confirm.build_route_confirm_keyboard); on_confirm_callback dispatches route_ingest pending rows to _handle_route_confirm — resolve race-safely, on "confirmed" replay the decision through Librarian.ingest (the Phase-B path) + deliver the reply, else send a ru cancelled/stale notice; cancel/TTL leaves the staged raw in Inbox (D-022). Reuses pending_confirms (no migration); no proposed_actions field on RouterDecision; no toggle (replace, not flag). New inbox/route.py RouteAction + route_action_to/from_payload; new tg/confirm.py build_route_confirm_keyboard + request_explicit keyboard_factory; new tg/pipeline.py ROUTE_CONFIRM_* constants + build_route_recap + _handle_route_confirm; new anchors tg.pipeline.route.confirm_requested|confirm_executed|confirm_cancelled|confirm_stale + tg.pipeline.confirm.route_dispatched. ADR-005. Cron bridge + hint fast-path remain later (aisw-kcz/12t). Discovery/design/plan: docs/superpowers/specs|plans/20260512-inbox-wiki-route-confirm-*.md.</description>
     </Phase-C>
     <Phase-D.a NAME="Inbox-WIKI Phase-D.a — reminder_job: Stage-0 fast-path → confirm → APScheduler DateTrigger → TG deliver" STATUS="done" bd_id="aisw-kcz">
-      <description>Cron bridge for one-shot reminders (epic aisw-t2r). DefaultPipeline._run_text_pipeline gains a reminder fast-path BEFORE the Stage-1a router: ClassifierResult.intent==REMINDER & confidence≥THRESHOLD → parse_time(text, prefer_future=True, user_tz from UserRecord.tz | Settings.default_user_tz) → on escalate→ru clarification, on explicitly-past absolute date→ru rejection, on recurring-digest phrasing→ru "not yet" (→aisw-19o), else build a category='reminder' confirm draft (when_utc, message=distilled_payload['reminder_text']|raw, lead_time_min) + recap and ConfirmationService.request_explicit(..., keyboard_factory=build_route_confirm_keyboard); on_confirm_callback dispatches reminder rows to _handle_reminder_confirm → on 'confirmed': scheduler.firing.create_reminder_job (INSERT jobs.Job(kind='reminder_job', status='pending', scheduled_at_utc, payload=ReminderPayload); commit; scheduler.add_job(firing.fire_job, DateTrigger(when_utc, UTC), args=[job_id], id='reminder:&lt;id&gt;', misfire_grace_time=None)) + ack; cancel/stale → ru notice. New scheduler/firing.py (set_firing_context/create_reminder_job/fire_job — picklable int args, module-level (TgSender, jobs sessionmaker) registry; fire_job guards status, sends '🔔 Напоминание: …', marks done/failed). Extend storage/jobs/payloads.py (+ReminderPayload), classifier/time_parse.py (+prefer_future), settings.py (+default_user_tz='Europe/Moscow'), __main__.py (firing.set_firing_context after scheduler.start; add_listener(_on_job_missed, EVENT_JOB_MISSED); pass jobs sessionmaker + scheduler into DefaultPipeline). No new dep, no new table, no new migration. New anchors tg.pipeline.reminder.* + scheduler.reminder.*. ADR-006. digest_job/recurring is aisw-19o (Phase-D.b). Discovery/design: docs/superpowers/specs/20260512-inbox-wiki-cron-bridge-{discovery,design}.md; plan: docs/superpowers/plans/20260512-inbox-wiki-cron-bridge-plan.md.</description>
+      <description>Cron bridge for one-shot reminders (epic aisw-t2r). DefaultPipeline._run_text_pipeline gains a reminder fast-path BEFORE the Stage-1a router: ClassifierResult.intent==REMINDER &amp; confidence≥THRESHOLD → parse_time(text, prefer_future=True, user_tz from UserRecord.tz | Settings.default_user_tz) → on escalate→ru clarification, on explicitly-past absolute date→ru rejection, on recurring-digest phrasing→ru "not yet" (→aisw-19o), else build a category='reminder' confirm draft (when_utc, message=distilled_payload['reminder_text']|raw, lead_time_min) + recap and ConfirmationService.request_explicit(..., keyboard_factory=build_route_confirm_keyboard); on_confirm_callback dispatches reminder rows to _handle_reminder_confirm → on 'confirmed': scheduler.firing.create_reminder_job (INSERT jobs.Job(kind='reminder_job', status='pending', scheduled_at_utc, payload=ReminderPayload); commit; scheduler.add_job(firing.fire_job, DateTrigger(when_utc, UTC), args=[job_id], id='reminder:&lt;id&gt;', misfire_grace_time=None)) + ack; cancel/stale → ru notice. New scheduler/firing.py (set_firing_context/create_reminder_job/fire_job — picklable int args, module-level (TgSender, jobs sessionmaker) registry; fire_job guards status, sends '🔔 Напоминание: …', marks done/failed). Extend storage/jobs/payloads.py (+ReminderPayload), classifier/time_parse.py (+prefer_future), settings.py (+default_user_tz='Europe/Moscow'), __main__.py (firing.set_firing_context after scheduler.start; add_listener(_on_job_missed, EVENT_JOB_MISSED); pass jobs sessionmaker + scheduler into DefaultPipeline). No new dep, no new table, no new migration. New anchors tg.pipeline.reminder.* + scheduler.reminder.*. ADR-006. digest_job/recurring is aisw-19o (Phase-D.b). Discovery/design: docs/superpowers/specs/20260512-inbox-wiki-cron-bridge-{discovery,design}.md; plan: docs/superpowers/plans/20260512-inbox-wiki-cron-bridge-plan.md.</description>
     </Phase-D.a>
     <Phase-D.b NAME="Inbox-WIKI Phase-D.b — digest_job: recurring aggregator (cron) → Claude with --add-dir into relevant WIKIs" STATUS="planned" bd_id="aisw-19o">
       <description>Umbrella (epic aisw-t2r) — split out of aisw-kcz, then re-split (too large for one context window per Plan Sizing) into Phase-D.b.1 (aisw-oqq) + Phase-D.b.2 (aisw-w3k). The asyncio.PriorityQueue worker-loop consumer (tech-spec §3 producer/consumer) the original description bundled in is DE-SCOPED out of aisw-19o (YAGNI — no consumer today; digest_job MVP direct-fires under Semaphore+WikiLockManager like maintenance jobs already do) → its own future bd issue. Done when aisw-oqq + aisw-w3k close.</description>
@@ -400,5 +401,150 @@
       </target>
       <verification-ref>V-M-CLASSIFIER-REGRESS</verification-ref>
     </M-CLASSIFIER-REGRESS>
+    <M-LLM-FAILOVER NAME="LLM provider failover policy" TYPE="CORE_LOGIC" LAYER="0" ORDER="1" STATUS="done" bd_id="aisw-8gw">
+      <contract>
+        <purpose>Select Claude, Codex, or one Claude probe and allow fallback only after a typed limit with proven-safe replay.</purpose>
+        <inputs>
+          <input-primary-attempt TYPE="async callable">Claude execution for the requested mode.</input-primary-attempt>
+          <input-fallback-attempt TYPE="async callable">Codex execution preserving the same consumer contract.</input-fallback-attempt>
+          <input-evidence TYPE="AttemptEvidence">Observed side-effect evidence from the primary attempt.</input-evidence>
+        </inputs>
+        <outputs>
+          <output-result TYPE="generic result">Successful primary or fallback result.</output-result>
+          <output-state TYPE="ProviderState">Atomic claude, codex, or probe state.</output-state>
+        </outputs>
+        <errors>
+          <error-provider-limit>A typed provider limit with optional reset time.</error-provider-limit>
+          <error-replay-blocked>Fallback rejected because evidence is mutating or unknown.</error-replay-blocked>
+          <error-dual-provider>Both configured providers failed.</error-dual-provider>
+        </errors>
+      </contract>
+      <interface>
+        <type-ProviderState PURPOSE="Fixed enum with claude, codex, and probe values."/>
+        <type-ProviderLimitError PURPOSE="Typed subscription-limit error carrying provider and optional reset time."/>
+        <type-AttemptEvidence PURPOSE="Fail-closed classification of read-only, mutating, unknown, or delivered effects."/>
+        <type-FailoverPolicy PURPOSE="Process-local atomic selection, transition, probe, and replay orchestration."/>
+      </interface>
+      <depends>none</depends>
+      <target>
+        <source>src/ai_steward_wiki/llm/failover.py</source>
+        <tests>tests/unit/llm/test_failover.py</tests>
+      </target>
+      <observability>
+        <log-prefix>llm</log-prefix>
+        <critical-block>BLOCK_SELECT_PROVIDER</critical-block>
+        <critical-block>BLOCK_REPLAY_GUARD</critical-block>
+      </observability>
+      <verification-ref>V-M-LLM-FAILOVER</verification-ref>
+    </M-LLM-FAILOVER>
+    <M-LLM-CODEX NAME="Codex CLI subscription adapter" TYPE="INTEGRATION" LAYER="1" ORDER="1" STATUS="done" bd_id="aisw-8gw">
+      <contract>
+        <purpose>Execute Codex through ChatGPT subscription auth under explicit capability profiles and normalize outputs.</purpose>
+        <inputs>
+          <input-request TYPE="Codex request">Prompt, model, reasoning, run kind, sandbox, and working paths.</input-request>
+          <input-config TYPE="Codex settings">Binary, pinned version, CODEX_HOME, model mapping, and timeout.</input-config>
+        </inputs>
+        <outputs>
+          <output-structured TYPE="dict">JSON Schema result for Stage-0 consumers.</output-structured>
+          <output-events TYPE="provider-neutral events">Normalized agent JSONL events.</output-events>
+          <output-text TYPE="str">Final text for schema and cron consumers.</output-text>
+          <output-readiness TYPE="CodexReadiness">Non-model startup diagnostics.</output-readiness>
+        </outputs>
+        <errors>
+          <error-codex-unavailable>Binary, version, auth, or invocation is unavailable.</error-codex-unavailable>
+          <error-codex-output>Structured or JSONL output violates the adapter contract.</error-codex-output>
+        </errors>
+      </contract>
+      <interface>
+        <type-CodexCliAdapter PURPOSE="Structured, agent, text, and readiness entry points."/>
+        <type-CodexReadiness PURPOSE="Binary, version, authentication, and non-interactive readiness result."/>
+        <fn-normalize_codex_event PURPOSE="Map Codex JSONL into provider-neutral events and mutation evidence."/>
+      </interface>
+      <depends>M-LLM-FAILOVER</depends>
+      <target>
+        <source>src/ai_steward_wiki/llm/codex.py</source>
+        <tests>tests/unit/llm/test_codex.py</tests>
+      </target>
+      <observability>
+        <log-prefix>llm.provider</log-prefix>
+        <critical-block>BLOCK_CODEX_INVOKE</critical-block>
+        <critical-block>BLOCK_CODEX_NORMALIZE</critical-block>
+      </observability>
+      <verification-ref>V-M-LLM-CODEX</verification-ref>
+    </M-LLM-CODEX>
+    <M-WIKI-MIGRATION NAME="WIKI schema generation" TYPE="INTEGRATION" LAYER="2" ORDER="3" STATUS="partial" bd_id="aisw-b50">
+      <contract>
+        <purpose>Generate, validate, and apply a tailored managed WIKI schema with Claude and safe Codex text fallback.</purpose>
+      </contract>
+      <depends>M-WIKI-LIFECYCLE, M-CLAUDE-CLI-COMMON, M-LLM-FAILOVER, M-LLM-CODEX</depends>
+      <target>
+        <source>src/ai_steward_wiki/wiki/schema_gen.py</source>
+        <tests>tests/unit/wiki/test_schema_gen.py</tests>
+      </target>
+      <verification-ref>V-M-WIKI-MIGRATION</verification-ref>
+    </M-WIKI-MIGRATION>
   </Modules>
+
+  <DataFlow>
+    <DF-LLM-SAFE-FAILOVER NAME="Safe same-operation failover" TRIGGER="Typed Claude subscription limit">
+      <step-1>M-LLM-FAILOVER selects Claude while state is claude.</step-1>
+      <step-2>The mode adapter maps a confirmed limit to ProviderLimitError.</step-2>
+      <step-3>M-LLM-FAILOVER atomically moves the circuit to codex.</step-3>
+      <step-4>AttemptEvidence must prove replay is read-only and undelivered.</step-4>
+      <step-5>M-LLM-CODEX executes the matching model and returns the existing consumer contract.</step-5>
+      <evidence>llm.failover.triggered, llm.circuit.changed, llm.provider.selected, and one final consumer result.</evidence>
+    </DF-LLM-SAFE-FAILOVER>
+    <DF-LLM-CIRCUIT-RECOVERY NAME="Automatic Claude recovery" TRIGGER="Probe time reached">
+      <step-1>One request atomically changes codex to probe.</step-1>
+      <step-2>Concurrent requests continue through Codex.</step-2>
+      <step-3>A successful Claude probe changes probe to claude.</step-3>
+      <step-4>A limit or transient probe failure returns to codex with a bounded next probe.</step-4>
+      <evidence>Exactly one probe execution plus llm.provider.recovered or llm.circuit.changed.</evidence>
+    </DF-LLM-CIRCUIT-RECOVERY>
+    <DF-LLM-REPLAY-GUARD NAME="Unsafe replay prevention" TRIGGER="Claude limit after provider events">
+      <step-1>The Claude adapter records tool, file, command, and delivery evidence.</step-1>
+      <step-2>Write, Edit, file-change, mutating command, delivery, or unknown evidence blocks replay.</step-2>
+      <step-3>The circuit remains codex for later requests while the current result uses existing partial-failure handling.</step-3>
+      <evidence>llm.replay.blocked with reason category and no Codex process for the blocked operation.</evidence>
+    </DF-LLM-REPLAY-GUARD>
+    <DF-LLM-READINESS NAME="Codex readiness and deployment smoke" TRIGGER="Service startup or deployment">
+      <step-1>Startup checks binary, exact version, CODEX_HOME readability, saved ChatGPT login, and non-interactive support.</step-1>
+      <step-2>Failure disables fallback without blocking Claude startup.</step-2>
+      <step-3>Deployment smoke invokes both configured models and validates structured, JSONL, read-only, and workspace-write modes.</step-3>
+      <evidence>runtime Codex readiness diagnostic plus operator-recorded smoke results.</evidence>
+    </DF-LLM-READINESS>
+  </DataFlow>
+
+  <ImplementationOrder>
+    <Phase-G.1 name="Codex fallback core circuit and typed errors" status="done" bd_id="aisw-8gw">
+      <goal>Prove deterministic provider state, typed limit handling, replay safety, and one probe under concurrency.</goal>
+      <step-1 module="M-LLM-FAILOVER" status="done" verification="V-M-LLM-FAILOVER">Implement provider state, typed errors, evidence, and generic policy through TDD.</step-1>
+      <step-2 module="M-LLM-FAILOVER" status="done" verification="V-M-LLM-FAILOVER">Verify reset parsing, bounded cooldown, single-flight probe, replay blocking, and selection overhead.</step-2>
+    </Phase-G.1>
+    <Phase-G.2 name="Codex CLI adapter, readiness, and settings" status="done" bd_id="aisw-8gw">
+      <goal>Provide one isolated Codex adapter with explicit models, capabilities, auth location, and output modes.</goal>
+      <step-1 module="M-FOUNDATION-SETTINGS" status="done" verification="V-M-FOUNDATION-SETTINGS">Add validated fallback settings without API-key configuration.</step-1>
+      <step-2 module="M-LLM-CODEX" status="done" verification="V-M-LLM-CODEX">Implement restricted argv, environment, structured, agent, text, cancellation, and timeout paths.</step-2>
+      <step-3 module="M-LLM-CODEX" status="done" verification="V-M-LLM-CODEX">Implement non-model readiness and deterministic fake-CLI containment checks.</step-3>
+    </Phase-G.2>
+    <Phase-G.3 name="Structured and text failover integration" status="done" bd_id="aisw-8gw">
+      <goal>Preserve existing Stage-0, schema, and cron consumer contracts under safe fallback.</goal>
+      <step-1 module="M-CLASSIFIER-STAGE0" status="done" verification="V-M-CLASSIFIER-STAGE0">Add typed Claude limit parsing and gpt-5.4-mini structured fallback.</step-1>
+      <step-2 module="M-WIKI-MIGRATION" status="done" verification="V-M-WIKI-MIGRATION">Add gpt-5.5 medium text fallback before schema mutation.</step-2>
+      <step-3 module="M-SCHEDULER-CONSUMER" status="done" verification="V-M-SCHEDULER-CONSUMER">Add gpt-5.5 medium text fallback before Telegram delivery.</step-3>
+    </Phase-G.3>
+    <Phase-G.4 name="WIKI agent failover and replay safety" status="done" bd_id="aisw-8gw">
+      <goal>Preserve WIKI locking, streaming, transcript, cancellation, and capability boundaries across a safe fallback.</goal>
+      <step-1 module="M-WIKI-RUNNER" status="done" verification="V-M-WIKI-RUNNER">Move provider attempts under one existing WIKI lock and capture Claude evidence.</step-1>
+      <step-2 module="M-LLM-CODEX" status="done" verification="V-M-LLM-CODEX">Normalize Codex JSONL into current WIKI events and mutation evidence.</step-2>
+      <step-3 module="M-WIKI-RUNNER" status="done" verification="V-M-WIKI-RUNNER">Verify read-only, write, media, web, digest, streaming, and blocked replay paths.</step-3>
+    </Phase-G.4>
+    <Phase-G.5 name="Runtime wiring, observability, and deployment" status="pending" bd_id="aisw-8gw">
+      <goal>Wire one shared circuit and make readiness, recovery, failure, and deployment verifiable.</goal>
+      <step-1 module="M-RUNTIME-WIRING" status="done" verification="V-M-RUNTIME-WIRING">Construct and inject one circuit and one Codex adapter; keep Claude startup independent.</step-1>
+      <step-2 module="M-LLM-FAILOVER" status="done" verification="V-M-LLM-FAILOVER">Complete structured logs and metrics without sensitive fields.</step-2>
+      <step-3 module="M-LLM-CODEX" status="pending" verification="V-M-LLM-CODEX">Update deployment and operations runbooks, then execute operator subscription smoke tests.</step-3>
+      <step-4 module="M-RUNTIME-WIRING" status="pending" verification="V-M-RUNTIME-WIRING">Run full regression, lint, GRACE review, and completion evidence.</step-4>
+    </Phase-G.5>
+  </ImplementationOrder>
 </DevelopmentPlan>

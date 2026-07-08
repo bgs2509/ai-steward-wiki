@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<VerificationPlan VERSION="0.0.11">
+<VerificationPlan VERSION="0.0.19">
   <GlobalPolicy>
     <log-format>[ModuleName][functionName][BLOCK_NAME] message with structured fields</log-format>
     <log-examples>
@@ -11,9 +11,132 @@
       <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration -q</cmd>
       <cmd>make lint</cmd>
     </commands>
+    <deterministic-first>true</deterministic-first>
+    <wave-level-focus>Run touched module tests after every validated implementation wave.</wave-level-focus>
+    <phase-level-focus>Run make lint, relevant integration tests, and full unit regression before phase completion.</phase-level-focus>
+    <redaction>Never log credentials, session identifiers, prompts, user content, or provider authentication payloads.</redaction>
   </GlobalPolicy>
 
+  <CriticalFlows>
+    <VF-LLM-SAFE-FAILOVER NAME="Safe same-operation failover" USE_CASES="UC-LLM-FAILOVER-1" DATA_FLOW="DF-LLM-SAFE-FAILOVER" PRIORITY="high">
+      <scenario>A confirmed Claude subscription limit occurs before any side effect.</scenario>
+      <expected-outcome>The same operation completes once through the mapped Codex model.</expected-outcome>
+      <required-signals>
+        <log-marker-1>llm.failover.triggered</log-marker-1>
+        <log-marker-2>llm.circuit.changed</log-marker-2>
+        <trace-sequence>Claude limit -&gt; safe evidence -&gt; codex -&gt; one consumer result</trace-sequence>
+      </required-signals>
+    </VF-LLM-SAFE-FAILOVER>
+    <VF-LLM-CIRCUIT-RECOVERY NAME="Automatic Claude recovery" USE_CASES="UC-LLM-FAILOVER-2" DATA_FLOW="DF-LLM-CIRCUIT-RECOVERY" PRIORITY="high">
+      <scenario>The codex interval expires while concurrent requests arrive.</scenario>
+      <expected-outcome>Exactly one Claude probe runs; other requests continue through Codex.</expected-outcome>
+      <required-signals>
+        <log-marker-1>llm.provider.recovered</log-marker-1>
+        <trace-sequence>codex -&gt; one probe -&gt; claude or bounded codex retry</trace-sequence>
+      </required-signals>
+    </VF-LLM-CIRCUIT-RECOVERY>
+    <VF-LLM-REPLAY-GUARD NAME="Unsafe replay prevention" USE_CASES="UC-LLM-FAILOVER-3" DATA_FLOW="DF-LLM-REPLAY-GUARD" PRIORITY="high">
+      <scenario>Claude reaches its limit after mutating, unknown, or delivered evidence.</scenario>
+      <expected-outcome>No Codex process starts for that operation and existing partial-failure handling remains active.</expected-outcome>
+      <required-signals>
+        <log-marker-1>llm.replay.blocked</log-marker-1>
+        <trace-sequence>mutation evidence -&gt; replay blocked -&gt; zero fallback attempts</trace-sequence>
+      </required-signals>
+    </VF-LLM-REPLAY-GUARD>
+    <VF-LLM-READINESS NAME="Subscription fallback readiness" USE_CASES="UC-LLM-FAILOVER-4" DATA_FLOW="DF-LLM-READINESS" PRIORITY="high">
+      <scenario>Service startup and deployment verify the Codex fallback.</scenario>
+      <expected-outcome>Startup never consumes quota; deployment smoke verifies both models and capability profiles.</expected-outcome>
+      <required-signals>
+        <log-marker-1>llm.provider.failed</log-marker-1>
+        <trace-sequence>binary -&gt; version -&gt; login -&gt; non-blocking readiness; deployment model smoke</trace-sequence>
+      </required-signals>
+    </VF-LLM-READINESS>
+  </CriticalFlows>
+
   <Modules>
+    <V-M-LLM-FAILOVER MODULE="M-LLM-FAILOVER" PRIORITY="high">
+      <test-files>
+        <file-1>tests/unit/llm/test_failover.py</file-1>
+        <file-2>tests/integration/llm/test_fake_provider_chain.py</file-2>
+      </test-files>
+      <module-checks>
+        <check-1>uv run pytest tests/unit/llm/test_failover.py -q</check-1>
+        <check-2>RUN_INTEGRATION=1 uv run pytest tests/integration/llm/test_fake_provider_chain.py -q</check-2>
+      </module-checks>
+      <scenarios>
+        <scenario-1 kind="success">Claude success stays in claude and never starts Codex.</scenario-1>
+        <scenario-2 kind="failure">Only typed subscription limits transition claude to codex.</scenario-2>
+        <scenario-3 kind="concurrency">Concurrent requests observe one state and at most one probe.</scenario-3>
+        <scenario-4 kind="safety">Mutation, delivery, and unknown evidence block replay.</scenario-4>
+        <scenario-5 kind="performance">Provider selection remains below the approved 100 ms p95 budget.</scenario-5>
+      </scenarios>
+      <required-log-markers>
+        <marker-1>llm.provider.selected</marker-1>
+        <marker-2>llm.failover.triggered</marker-2>
+        <marker-3>llm.circuit.changed</marker-3>
+        <marker-4>llm.provider.failed</marker-4>
+        <marker-5>llm.provider.recovered</marker-5>
+        <marker-6>llm.replay.blocked</marker-6>
+      </required-log-markers>
+      <required-trace-assertions>
+        <assertion-1>A blocked replay records zero fallback calls.</assertion-1>
+        <assertion-2>One Telegram operation yields at most one successful provider result.</assertion-2>
+      </required-trace-assertions>
+      <wave-follow-up>Run Stage-0, WIKI runner, schema generation, and cron consumer failover tests.</wave-follow-up>
+      <phase-follow-up>Run all unit tests, make lint, and the fake-CLI integration matrix.</phase-follow-up>
+      <evidence>Deterministic fake clocks and async barriers prove state transitions, cooldown, reset parsing, single-flight probe, replay safety, and overhead. The fake provider-chain integration spawns separate Claude and Codex executables, observes typed 429, and returns one structured fallback result.</evidence>
+    </V-M-LLM-FAILOVER>
+
+    <V-M-LLM-CODEX MODULE="M-LLM-CODEX" PRIORITY="high">
+      <test-files>
+        <file-1>tests/unit/llm/test_codex.py</file-1>
+        <file-2>tests/integration/llm/test_fake_codex_cli.py</file-2>
+      </test-files>
+      <module-checks>
+        <check-1>uv run pytest tests/unit/llm/test_codex.py -q</check-1>
+        <check-2>RUN_INTEGRATION=1 uv run pytest tests/integration/llm/test_fake_codex_cli.py -q</check-2>
+      </module-checks>
+      <scenarios>
+        <scenario-1 kind="configuration">Every argv pins model, reasoning, sandbox, neutral cwd, ephemeral mode, ignored config, and ignored rules.</scenario-1>
+        <scenario-2 kind="structured">gpt-5.4-mini output conforms to JSON Schema and existing Pydantic validation.</scenario-2>
+        <scenario-3 kind="agent">gpt-5.5 medium JSONL normalizes text, usage, commands, file changes, and failures.</scenario-3>
+        <scenario-4 kind="security">Read-only cannot write; workspace-write reaches only the selected WIKI.</scenario-4>
+        <scenario-5 kind="readiness">Binary, exact version, login, and non-interactive checks never invoke a model.</scenario-5>
+      </scenarios>
+      <required-log-markers>
+        <marker-1>llm.provider.selected</marker-1>
+        <marker-2>llm.provider.failed</marker-2>
+      </required-log-markers>
+      <required-trace-assertions>
+        <assertion-1>No API key, auth payload, prompt, user content, or provider session identifier enters logs.</assertion-1>
+        <assertion-2>Structured and text modes emit no mutation evidence.</assertion-2>
+      </required-trace-assertions>
+      <wave-follow-up>Run classifier and WIKI adapter compatibility tests against the fake Codex CLI.</wave-follow-up>
+      <phase-follow-up>Run deployment smoke for both subscription models and all capability profiles.</phase-follow-up>
+      <evidence>Unit and executable fake-CLI subprocess fixtures validate exact argv, environment allowlist, ChatGPT-only auth readiness (login status accepted from stdout or stderr, as codex-cli 0.142.5 reports on stderr), output parsing, cancellation, timeout, provider-local event normalization, and selected-WIKI-only write containment.</evidence>
+    </V-M-LLM-CODEX>
+
+    <V-M-WIKI-MIGRATION MODULE="M-WIKI-MIGRATION" PRIORITY="high">
+      <test-files>
+        <file-1>tests/unit/wiki/test_schema_gen.py</file-1>
+      </test-files>
+      <module-checks>
+        <check-1>uv run pytest tests/unit/wiki/test_schema_gen.py -q</check-1>
+      </module-checks>
+      <scenarios>
+        <scenario-1 kind="success">Claude schema generation remains unchanged while healthy.</scenario-1>
+        <scenario-2 kind="fallback">A typed pre-write limit uses Codex text mode and validates before mutation.</scenario-2>
+        <scenario-3 kind="failure">Dual failure preserves the existing default schema.</scenario-3>
+      </scenarios>
+      <required-log-markers>
+        <marker-1>wiki.schema_gen.failed</marker-1>
+        <marker-2>wiki.schema_gen.invalid</marker-2>
+        <marker-3>wiki.schema_gen.applied</marker-3>
+      </required-log-markers>
+      <wave-follow-up>Run M-LLM-FAILOVER and M-LLM-CODEX module checks.</wave-follow-up>
+      <phase-follow-up>Run the WIKI unit suite and full lint gate.</phase-follow-up>
+      <evidence>Claude output is unwrapped from JSON and only structured HTTP 429 raises ProviderLimitError. FailoverSchemaGenerator maps to gpt-5.5 medium. Generation remains side-effect free until validate_schema succeeds and apply_generated_schema writes once.</evidence>
+    </V-M-WIKI-MIGRATION>
     <V-M-FOUNDATION-SETTINGS MODULE="M-FOUNDATION-SETTINGS">
       <tests>
         <test path="tests/unit/test_settings.py"/>
@@ -22,7 +145,7 @@
         <cmd>uv run pytest tests/unit/test_settings.py -q</cmd>
       </commands>
       <log-markers/>
-      <evidence>Settings frozen, env-prefix AISW_, defaults for log_level/workspace/db URLs.</evidence>
+      <evidence>Settings remain frozen with AISW_ prefix. Tests cover Codex enablement, positive cooldown, binary, pinned version, CODEX_HOME, model and reasoning overrides, and absence of an OpenAI API-key field.</evidence>
     </V-M-FOUNDATION-SETTINGS>
 
     <V-M-FOUNDATION-LOGGING MODULE="M-FOUNDATION-LOGGING">
@@ -53,7 +176,7 @@
         <marker>inbox.staging.done</marker>
         <marker>inbox.staging.error</marker>
       </log-markers>
-      <evidence>structlog JSON renderer, ISO UTC timestamps, correlation_id contextvar bound/reset (chunk-1). @traced decorator emits &lt;prefix&gt;.{start,done,error} with duration_ms; never inspects args/kwargs/return (PII-safe). logging_events.py SSoT catalog of snake_case dotted event keys covers chunk-1 entrypoints and chunk-2 anchors (scheduler.job.*, storage.slow_query, claude_cli.*). CorrelationMiddleware binds correlation_id + telegram_id + chat_id + update_id into structlog.contextvars for one Update lifetime; autouse contextvars cleanup fixture between tests. PII redactor passes through chunk-2 metadata fields unchanged while still redacting free-text fields on the same record (idempotent).</evidence>
+      <evidence>structlog JSON renderer, ISO UTC timestamps, correlation_id contextvar bound/reset (chunk-1). @traced decorator emits &lt;prefix&gt;.{start,done,error} with duration_ms; never inspects args/kwargs/return (PII-safe). logging_events.py is the SSoT catalog for chunk-1, chunk-2, and stable llm.provider, llm.failover, llm.circuit, and llm.replay anchors. CorrelationMiddleware binds correlation_id + telegram_id + chat_id + update_id into structlog.contextvars for one Update lifetime. Provider events expose only provider, optional model, run kind, correlation, outcome, state, reason, evidence, and latency fields.</evidence>
     </V-M-FOUNDATION-LOGGING>
 
     <V-M-AUTH-USERS MODULE="M-AUTH-USERS">
@@ -127,6 +250,7 @@
     <V-M-RUNTIME-WIRING MODULE="M-RUNTIME-WIRING">
       <tests>
         <test path="tests/unit/test_runtime_wiring.py"/>
+        <test path="tests/unit/test_llm_runtime_wiring.py"/>
         <test path="tests/unit/test_router_adapter.py"/>
         <test path="tests/unit/test_librarian_adapter.py"/>
         <test path="tests/unit/test_main_hint_catalog.py"/>
@@ -134,7 +258,7 @@
         <test path="tests/unit/test_main_digest_adapter.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/test_runtime_wiring.py tests/unit/test_router_adapter.py tests/unit/test_librarian_adapter.py tests/unit/test_main_hint_catalog.py tests/unit/test_main_runner_adapter.py tests/unit/test_main_digest_adapter.py -q</cmd>
+        <cmd>uv run pytest tests/unit/test_runtime_wiring.py tests/unit/test_llm_runtime_wiring.py tests/unit/test_router_adapter.py tests/unit/test_librarian_adapter.py tests/unit/test_main_hint_catalog.py tests/unit/test_main_runner_adapter.py tests/unit/test_main_digest_adapter.py -q</cmd>
         <cmd>uv run python -m ai_steward_wiki  # manual smoke with AISW_TG_BOT_TOKEN_LOCAL</cmd>
       </commands>
       <log-markers>
@@ -164,10 +288,11 @@
         <marker>inbox.route.ingest_failed</marker>
         <marker>wiki.run.scope</marker>
         <marker>wiki.run.scope.degraded</marker>
+        <marker>llm.provider.failed</marker>
+        <marker>llm.provider.ready</marker>
       </log-markers>
       <evidence>Unit tests cover sync-URL derivation, data-dir creation, users.toml load fallbacks, signal handler wiring, _amain composition with mocks, missing-token fail-fast, main → asyncio.run. aisw-o6m (ADR-034): test_main_runner_adapter.py — a confident WIKI_QUERY match runs wiki_path/wiki_id scoped to the matched WIKI with no layouts block in the overlay (CLAUDE.md arrives via assemble_prompt); an ambiguous match runs cross-root at the user root with "Карта WIKI пользователя" + every WIKI's Data-layout excerpt in the overlay; a hint_catalog_resolver raising degrades to cross-root with the legacy placeholder overlay (no exception propagates); WEB_TASK never calls either resolver and keeps legacy behaviour; an adapter constructed without the two resolvers (back-compat) also keeps legacy cross-root behaviour. test_main_digest_adapter.py — a full-digest call (section=None) with extra_add_dirs appends the layouts block (header + one "## &lt;stem&gt;" section per extra WIKI) to planner_context before user_input; a section-expand call (/expand) with the same extra_add_dirs never injects layouts. aisw-5sd: make_hint_catalog_resolver — telegram_id → {wiki_stem: hint_text} via surrogate_id_of + owner_wikis_resolver + get_or_refresh_hint per domain CLAUDE.md; unknown sender (surrogate None) → {} (fast-path falls through); a domain with no '## Inbox hint' → omitted; no domain WIKIs → {} without touching the cache (get_or_refresh_hint monkeypatched in the unit). aisw-hcl: VoiceHandler/PhotoIngestor wired into DefaultPipeline; media _staging sweep job registered; _WikiRunnerAdapter.run promotes staged media into &lt;wiki&gt;/raw/media after a successful run. aisw-dsg: _RouterAdapter — ensure_inbox_wiki, _render_raw_sidecar, run_wiki_session in Inbox-WIKI/ with prompts/inbox.md, parse_router_reply, WikiRunnerError→RouterError, inbox.router.* markers. aisw-zd9: _LibrarianAdapter — resolve_target_wiki (create new dir; ROUTE-missing → create + warning; cap → rejected; bad name → rejected), stage_raw_into_wiki (raw/&lt;ts&gt;_text.md + promote media), run_wiki_session with wiki_id=f"{tid}/&lt;Name&gt;" + overlay=domain-default.md + timeout_s=None, IngestOutcome(ok|run_failed|rejected), WikiRunnerError→run_failed keeps the raw, inbox.route.* markers via capsys. Manual smoke: `python -m ai_steward_wiki` starts, logs runtime.media_pipeline.wired + polling.start, Ctrl-C → shutdown.done, exit 0.
-      aisw-xi8 (classifier v2, Phase-C.1, DEC-5): test_main_runner_adapter.py's confident/ambiguous/degraded/WEB_TASK/back-compat cases (aisw-o6m) are re-expressed against the new taxonomy — a confident (intent=WIKI, action="query") match still runs scoped with no layouts block; an ambiguous (intent=WIKI, action="query") match still runs cross-root with the layouts block; (intent=WEB) still keeps legacy behaviour and never calls either resolver; the back-compat case (adapter constructed without the two resolvers) is UNCHANGED. All assertions on the OLD `Intent.WIKI_QUERY`/`Intent.WEB_TASK` enum members are migrated per the DEC-14 mapping table (Phase-C.4) to the (intent, action) tuple form.</evidence>
-    </V-M-RUNTIME-WIRING>
+      aisw-xi8 (classifier v2, Phase-C.1, DEC-5): test_main_runner_adapter.py's confident/ambiguous/degraded/WEB_TASK/back-compat cases (aisw-o6m) are re-expressed against the new taxonomy — a confident (intent=WIKI, action="query") match still runs scoped with no layouts block; an ambiguous (intent=WIKI, action="query") match still runs cross-root with the layouts block; (intent=WEB) still keeps legacy behaviour and never calls either resolver; the back-compat case (adapter constructed without the two resolvers) is UNCHANGED. All assertions on the OLD `Intent.WIKI_QUERY`/`Intent.WEB_TASK` enum members are migrated per the DEC-14 mapping table (Phase-C.4) to the (intent, action) tuple form. test_llm_runtime_wiring proves one shared policy reaches classifier, schema, and WIKI configs; disabled, unready, and setup-failing Codex all preserve Claude startup; successful readiness emits the positive llm.provider.ready fallback-enabled anchor. Existing runtime tests cover migrations, scheduling, adapters, scope resolution, media promotion, and clean shutdown. The extended Telegram, classifier, WIKI, and cron regression suite passes.</evidence>    </V-M-RUNTIME-WIRING>
 
     <V-M-TG-HANDLERS-WIRING MODULE="M-TG-HANDLERS-WIRING">
       <tests>
@@ -213,6 +338,7 @@
 
     <V-M-TG-PIPELINE-CLASSIFIER MODULE="M-TG-PIPELINE-CLASSIFIER">
       <tests>
+        <test path="tests/unit/tg/test_pipeline_failover.py"/>
         <test path="tests/unit/tg/test_pipeline_classifier_wiring.py"/>
         <test path="tests/unit/tg/test_pipeline_router.py"/>
         <test path="tests/unit/tg/test_pipeline_hint_fastpath.py"/>
@@ -232,6 +358,7 @@
         <test path="tests/integration/test_e2e_pipeline.py"/>
       </tests>
       <commands>
+        <cmd>uv run pytest tests/unit/tg/test_pipeline_failover.py -q</cmd>
         <cmd>uv run pytest tests/unit/tg/test_pipeline_classifier_wiring.py tests/unit/tg/test_pipeline_router.py tests/unit/tg/test_pipeline_hint_fastpath.py tests/unit/tg/test_pipeline_route_ingest.py tests/unit/tg/test_pipeline_route_confirm.py tests/unit/tg/test_pipeline_confirm_callback.py tests/unit/tg/test_pipeline_chat_log.py tests/unit/tg/test_pipeline_active_wiki.py tests/unit/tg/test_pipeline_subthreshold.py tests/unit/tg/test_pipeline_catalog_routing.py tests/unit/tg/test_pipeline_protocol_widening.py tests/unit/tg/test_pipeline_job_manage.py tests/unit/tg/test_pipeline_job_create.py tests/unit/tg/test_pipeline_no_classifying_regex.py tests/unit/wiki/test_runner_aggregate.py -q</cmd>
         <cmd>RUN_INTEGRATION=1 uv run pytest tests/integration/test_pipeline_classifier_e2e.py tests/integration/test_e2e_pipeline.py -q</cmd>
       </commands>
@@ -268,9 +395,10 @@
         <marker>tg.pipeline.job.confirm_created</marker>
         <marker>tg.pipeline.job.confirm_cancelled</marker>
         <marker>tg.pipeline.job.confirm_stale</marker>
+        <marker>tg.pipeline.providers_unavailable</marker>
       </log-markers>
       <evidence>Unit tests cover text happy path, L1 dup short-circuit, L2 dedup hit, classifier error → ACK_CLASSIFY_ERR_RU, runner error → ACK_RUNNER_ERR_RU, empty runner output → ACK_TEXT_RU via deliver, back-compat None injection, voice happy/empty/back-compat, structlog markers via capsys; aggregate_text across stream-json payload shapes. aisw-dsg: routable intents with a wired Router go through router.route(); router=None / non-routable use the legacy path; RouterError → ACK_RUNNER_ERR_RU; tg.pipeline.router.* markers. aisw-zd9: the ROUTE/CREATE_WIKI librarian.ingest() path (now reached via the confirm callback). aisw-e45 (Phase-C): a ROUTE/CREATE_WIKI decision (wired librarian + output) → no immediate ingest; ConfirmationService.request_explicit called with category="route_ingest" + build_route_confirm_keyboard + a draft round-trippable via route_action_from_payload; recap mentions target + notes; CLARIFY/REJECT and librarian=None → send_message(decision.notes), no confirm row. on_confirm_callback: route_ingest row + resolve→"confirmed" → ROUTE_CONFIRM_ACK_RU then librarian.ingest() with the reconstructed decision + media Paths → status="ok" → output.deliver(reply) else send_message(reply); resolve→"cancelled" → ROUTE_CONFIRM_CANCELLED_RU, no ingest; resolve→None → ROUTE_CONFIRM_STALE_RU, no ingest; non-route_ingest or missing row → legacy resolve path (tg.pipeline.confirm); tg.pipeline.route.confirm_* + confirm.route_dispatched markers via capsys. Integration (RUN_INTEGRATION=1): test_e2e_pipeline.py scenario 6 — routable text → recap + route_ingest pending row (no domain WIKI yet) → on_confirm_callback("confirm") → real Stage-1b librarian writes into the target &lt;Domain&gt;-WIKI/raw/, ROUTE_CONFIRM_ACK_RU sent, reply via output.deliver; tolerant of CLARIFY/REJECT. aisw-269 (Phase-D.b.2b — named-subset WIKI in the digest fast-path): after parse_recurrence, _extract_wiki_names(turn_text, owner_wiki_stems) — whole-token, case-insensitive intersection with the owner's *-WIKI/ dir-stems; all mentioned names resolve → list[str], none mentioned → 'all', a name-shaped token that does not resolve → return None → ru clarification (lists the owner's WIKI names), NO confirm draft built, NO job created (tg.pipeline.digest.wiki_unknown); the category='digest' confirm draft carries wiki_scope (the new shape) and the recap/ack names the chosen WIKIs when scoped; on confirm → create_digest_job(... wiki_scope=...). Unit: «сводка по Health каждый день в 9» with the owner having Health-WIKI/ → draft.wiki_scope==['Health'], recap names it; «сводка по Money …» with no Money-WIKI/ → clarification, no draft; no names mentioned → wiki_scope=='all' (today's behaviour). aisw-5sd (Phase-E.b — '## Inbox hint' router-bypass): a new pre-router block (between the reminder fast-path and the routable branch) guarded on intent ∈ _ROUTABLE_INTENTS ∧ router ∧ hint_catalog_resolver ∧ librarian ∧ output — builds the sender's hint catalog (hint_catalog_resolver), score_catalog(text, catalog); on is_confident → RouterDecision(intent=ROUTE, target_wiki=&lt;stem&gt;, raw="", parsed_ok=True), WITHOUT awaiting router.route; not confident → tg.pipeline.hint_fastpath.miss(reason=ambiguous if top_score≥MIN_SCORE else no_match) + fallthrough → heavy router runs; empty catalog → miss(reason=empty_catalog) + fallthrough, scorer not consulted; hint_catalog_resolver=None or librarian=None ⇒ block skipped, heavy router runs. aisw-2ra (silent auto-route): a confident match now routes SILENTLY (D-023 'auto') — _ingest_and_deliver(decision) runs the Stage-1b librarian.ingest immediately (no Confirm/Cancel keyboard); on status=="ok" the active-WIKI pointer is set, the reply delivered, then either ConfirmationService.request_explicit(category="route_ingest", build_route_redirect_keyboard) posts a "✅ Записал в &lt;WIKI&gt;" ack with a one-tap redirect picker of the owner's OTHER WIKIs (tapping reuses on_wikipick_callback) OR — when there is no other WIKI — ConfirmationService.auto_ack(ROUTE_SILENT_ACK_NOREDIR_RU); a non-ok ingest sends the composed reply via send_message and offers no redirect. _ingest_and_deliver is the single Stage-1b ingest+deliver tail shared with _handle_route_confirm. tg.pipeline.hint_fastpath.silent_route marker carries target_wiki/score/margin/status/run_id. Unit (test_pipeline_hint_fastpath.py, capsys for markers): confident hit routes silently with a redirect picker (target WIKI excluded), no-other-WIKI → plain auto_ack, failed ingest → error send + no redirect; ambiguous/no_match/empty/disabled all fall through to router.route; hint_fastpath.{catalog,silent_route,miss,fallthrough} markers asserted on their paths. Loader label (FR-2) deferred to aisw-05k.
-      aisw-xi8 (classifier v2, Phase-C.1..C.3 — supersedes the v1 REMINDER/DIGEST/SMALLTALK-shaped tests above per the DEC-14 mapping, migrated in Phase-C.4): _run_text_pipeline is now a flat ordered if/elif over 6 intents (wiki|job|web|chat|admin|unknown), each a thin call into _handle_&lt;intent&gt; (DEC-1). test_pipeline_subthreshold.py: immediately after tg.pipeline.classify.done, confidence&lt;CLASSIFIER_CONFIDENCE_THRESHOLD(0.85) on intent∈{job,admin} → ru clarification sent + tg.pipeline.subthreshold.clarify logged + handler returns WITHOUT reaching any handler/runner (asserted via a spy — the generic root runner is never invoked, closing #78/#96 structurally, DEC-2/FR-10); the SAME low confidence on intent∈{wiki,web,chat,unknown} proceeds normally (non-destructive intents are exempt); confidence≥threshold on job/admin proceeds normally. test_pipeline_catalog_routing.py: wiki/catalog with action=None or action='catalog' → routed to the existing Stage-1a RouterIntent.LIST_WIKIS path (zero router changes, FR-11 — closes the measured 99/100 "Покажи мои вики" miss); wiki/query and wiki/lint → the generic answer runner (streaming tail); the routable predicate is asserted as a function over (intent, action), not a static frozenset membership test (DEC-3). test_pipeline_protocol_widening.py: a WikiRunner/StreamingDelivery double constructed WITHOUT threading `action` still satisfies the Protocol (action defaults to None) — proves the DEC-5 widening is backward-compatible; a double asserting on the received `action` value confirms wiki/query threads action='query' and all other intents thread action=None (or their own action value, e.g. job/web/chat/admin/unknown pass through whatever JobSlots/WikiSlots resolved, if any). test_pipeline_job_manage.py (DEC-9/DEC-10, Phase-C.2): job/list renders scheduler.manage.list_owner_jobs' output (tg.pipeline.job.list); job/cancel and job/reschedule with EXACTLY 1 needle match build a destructive 'job_cancel' Confirm/Cancel draft (FR-8) or a validated reschedule draft; &gt;1 match builds a 'job_pick' numbered inline keyboard (jobpick:&lt;pending_id&gt;:&lt;idx&gt;) with tg.pipeline.job.pick_requested; 0 matches → ru "not found" + rendered list, NO pending row (tg.pipeline.job.not_found); confirming a job_cancel/job_pick draft calls scheduler.manage.cancel_job/reschedule_once/reschedule_recurring + ru ack (tg.pipeline.job.cancel / tg.pipeline.job.reschedule); cancel/stale → ru notice, no mutation. test_pipeline_job_create.py (DEC-11, Phase-C.3): job/create kind=once and kind=digest reach the EXACT SAME reminder/digest confirm-draft builders and on_confirm_callback handlers as before aisw-xi8 (regression-asserted byte-identical downstream behaviour — only the entry point changed from regex-detected intent to classifier slots, FR-4/FR-7); kind=recurring and kind=check_in build NEW 'job_recurring'/'job_checkin' confirm drafts via parse_recurrence + humanize_recurrence, and on confirm call scheduler.firing.create_recurring_job / scheduler.cron_user.create_check_in_job respectively. All 4 new confirm categories (job_cancel, job_pick, job_recurring, job_checkin) share ONE _handle_job_confirm dispatch disambiguated by draft.category (one anchor family tg.pipeline.job.confirm_{requested,created,cancelled,stale} — KISS/SSoT over 4 near-duplicate handlers, per _code-quality review); the pre-existing categories route_ingest|reminder|digest keep their exact strings and handlers so in-flight pending rows survive the deploy restart (R-3, unit-tested with a persisted old-category row still dispatching correctly). The classifying Python forks (_RECURRING_KEYWORDS + punt, _DIGEST_DISABLE_RE/_DIGEST_RESCHEDULE_RE/_detect_digest_action, plus the renamed REMINDER_CONFIDENCE_THRESHOLD) are asserted ABSENT from the module by a dedicated grep-based regression smoke test, test_pipeline_no_classifying_regex.py (Phase-C.4, FR-2) — fails loudly if any of these symbols are re-introduced; a sibling test in the same file asserts the FR-3-protected validators (_extract_hhmm, _extract_lead_minutes, CLASSIFIER_CONFIDENCE_THRESHOLD) are NOT deleted alongside their classifying siblings. Phase-C.4 also migrated the remaining ~13 pinned test_pipeline_*.py/test_*_e2e.py files (DEC-14 mapping) and dropped 3 tests in test_pipeline_digest.py (test_digest_disable_disables_existing_job, test_digest_disable_without_job_replies_none, test_digest_reschedule_moves_existing_job) whose target constants (DIGEST_DISABLED_RU/DIGEST_NONE_RU/DIGEST_RESCHEDULED_RU) were already deleted in Phase-C.1 — _handle_digest_intent is a pure create-flow builder now; digest disable/reschedule coverage lives on generically in test_pipeline_job_manage.py.</evidence>
+      aisw-xi8 (classifier v2, Phase-C.1..C.3 — supersedes the v1 REMINDER/DIGEST/SMALLTALK-shaped tests above per the DEC-14 mapping, migrated in Phase-C.4): _run_text_pipeline is now a flat ordered if/elif over 6 intents (wiki|job|web|chat|admin|unknown), each a thin call into _handle_&lt;intent&gt; (DEC-1). test_pipeline_subthreshold.py: immediately after tg.pipeline.classify.done, confidence&lt;CLASSIFIER_CONFIDENCE_THRESHOLD(0.85) on intent∈{job,admin} → ru clarification sent + tg.pipeline.subthreshold.clarify logged + handler returns WITHOUT reaching any handler/runner (asserted via a spy — the generic root runner is never invoked, closing #78/#96 structurally, DEC-2/FR-10); the SAME low confidence on intent∈{wiki,web,chat,unknown} proceeds normally (non-destructive intents are exempt); confidence≥threshold on job/admin proceeds normally. test_pipeline_catalog_routing.py: wiki/catalog with action=None or action='catalog' → routed to the existing Stage-1a RouterIntent.LIST_WIKIS path (zero router changes, FR-11 — closes the measured 99/100 "Покажи мои вики" miss); wiki/query and wiki/lint → the generic answer runner (streaming tail); the routable predicate is asserted as a function over (intent, action), not a static frozenset membership test (DEC-3). test_pipeline_protocol_widening.py: a WikiRunner/StreamingDelivery double constructed WITHOUT threading `action` still satisfies the Protocol (action defaults to None) — proves the DEC-5 widening is backward-compatible; a double asserting on the received `action` value confirms wiki/query threads action='query' and all other intents thread action=None (or their own action value, e.g. job/web/chat/admin/unknown pass through whatever JobSlots/WikiSlots resolved, if any). test_pipeline_job_manage.py (DEC-9/DEC-10, Phase-C.2): job/list renders scheduler.manage.list_owner_jobs' output (tg.pipeline.job.list); job/cancel and job/reschedule with EXACTLY 1 needle match build a destructive 'job_cancel' Confirm/Cancel draft (FR-8) or a validated reschedule draft; &gt;1 match builds a 'job_pick' numbered inline keyboard (jobpick:&lt;pending_id&gt;:&lt;idx&gt;) with tg.pipeline.job.pick_requested; 0 matches → ru "not found" + rendered list, NO pending row (tg.pipeline.job.not_found); confirming a job_cancel/job_pick draft calls scheduler.manage.cancel_job/reschedule_once/reschedule_recurring + ru ack (tg.pipeline.job.cancel / tg.pipeline.job.reschedule); cancel/stale → ru notice, no mutation. test_pipeline_job_create.py (DEC-11, Phase-C.3): job/create kind=once and kind=digest reach the EXACT SAME reminder/digest confirm-draft builders and on_confirm_callback handlers as before aisw-xi8 (regression-asserted byte-identical downstream behaviour — only the entry point changed from regex-detected intent to classifier slots, FR-4/FR-7); kind=recurring and kind=check_in build NEW 'job_recurring'/'job_checkin' confirm drafts via parse_recurrence + humanize_recurrence, and on confirm call scheduler.firing.create_recurring_job / scheduler.cron_user.create_check_in_job respectively. All 4 new confirm categories (job_cancel, job_pick, job_recurring, job_checkin) share ONE _handle_job_confirm dispatch disambiguated by draft.category (one anchor family tg.pipeline.job.confirm_{requested,created,cancelled,stale} — KISS/SSoT over 4 near-duplicate handlers, per _code-quality review); the pre-existing categories route_ingest|reminder|digest keep their exact strings and handlers so in-flight pending rows survive the deploy restart (R-3, unit-tested with a persisted old-category row still dispatching correctly). The classifying Python forks (_RECURRING_KEYWORDS + punt, _DIGEST_DISABLE_RE/_DIGEST_RESCHEDULE_RE/_detect_digest_action, plus the renamed REMINDER_CONFIDENCE_THRESHOLD) are asserted ABSENT from the module by a dedicated grep-based regression smoke test, test_pipeline_no_classifying_regex.py (Phase-C.4, FR-2) — fails loudly if any of these symbols are re-introduced; a sibling test in the same file asserts the FR-3-protected validators (_extract_hhmm, _extract_lead_minutes, CLASSIFIER_CONFIDENCE_THRESHOLD) are NOT deleted alongside their classifying siblings. Phase-C.4 also migrated the remaining ~13 pinned test_pipeline_*.py/test_*_e2e.py files (DEC-14 mapping) and dropped 3 tests in test_pipeline_digest.py (test_digest_disable_disables_existing_job, test_digest_disable_without_job_replies_none, test_digest_reschedule_moves_existing_job) whose target constants (DIGEST_DISABLED_RU/DIGEST_NONE_RU/DIGEST_RESCHEDULED_RU) were already deleted in Phase-C.1 — _handle_digest_intent is a pure create-flow builder now; digest disable/reschedule coverage lives on generically in test_pipeline_job_manage.py. aisw-8gw: dual provider failures from classifier or WIKI execution yield exactly one LLM_PROVIDERS_UNAVAILABLE_RU message and no automatic retry (test_pipeline_failover.py).</evidence>
     </V-M-TG-PIPELINE-CLASSIFIER>
 
     <V-M-TG-PIPELINE-STREAMING MODULE="M-TG-PIPELINE-STREAMING">
@@ -299,7 +427,7 @@
         <cmd>uv run pytest tests/unit/claude_cli/test_common.py -q</cmd>
       </commands>
       <log-markers/>
-      <evidence>resolve_binary (/-path short-circuit + shutil.which), build_env (CLAUDE_CONFIG_DIR + minimal PATH only), neutral_cwd (no project CLAUDE.md auto-discovery), system_prompt_argv (inlines prompt file content), truncate_stderr (UTF-8 decode + length cap).</evidence>
+      <evidence>resolve_binary (/-path short-circuit + shutil.which), build_env (CLAUDE_CONFIG_DIR + minimal PATH only), neutral_cwd (no project CLAUDE.md auto-discovery), system_prompt_argv (inlines prompt file content), truncate_stderr (UTF-8 decode + length cap), and structured Claude HTTP 429 recognition with optional ISO 8601 reset time.</evidence>
     </V-M-CLAUDE-CLI-COMMON>
 
     <V-M-ONBOARD-ADMIN MODULE="M-ONBOARD-ADMIN">
@@ -402,7 +530,7 @@
         <marker>scheduler.reminder.skipped</marker>
         <marker>scheduler.reminder.misfired</marker>
       </log-markers>
-      <evidence>Pipeline reminder fast-path (BEFORE the Stage-1a router): intent==REMINDER & confidence≥THRESHOLD + future time → ConfirmationService.request_explicit with category='reminder' draft (when_utc, message, lead_time_min) + 2-button keyboard, no Job row yet; message resolution = distilled_payload['reminder_text'] if non-empty str else raw text; prefer_future=True rolls a bare past wall-clock time forward; explicitly-past absolute date → ru rejection, no confirm; escalate → ru clarification, no confirm; recurring-digest phrasing → ru "not yet", no confirm. on_confirm_callback category=='reminder' + resolve→'confirmed' → create_reminder_job writes a jobs.Job(kind='reminder_job', payload round-trips through parse_job_payload, scheduled_at_utc==when_utc) + scheduler.add_job once with a DateTrigger at when_utc, id=='reminder:&lt;id&gt;', misfire_grace_time is None; ack sent. cancel→ru cancelled, no Job row; resolve→None→ru stale; double-confirm idempotent. firing.fire_job: context set + Job pending → sender.send_message(chat_id, '🔔 Напоминание: &lt;message&gt;') + row done; Job not pending → skipped, no send; send raises → row failed + last_error + scheduler.reminder.deliver_failed; context not set → RuntimeError. ReminderPayload in parse_job_payload: valid → ReminderPayload, extra key → ValidationError. Integration: reminder message → request_explicit → simulate confirm → jobs.jobs row with kind='reminder_job' & matching scheduled_at_utc → invoke fire_job(job_id) with a fake sender → one send_message + row done. Known limitation (documented, no MVP reconciliation): a crash between the Job commit and scheduler.add_job leaves a pending row with no trigger → silent miss. (aisw-kcz; D-002/D-010/D-022; tech-spec §3/§6; ADR-006.)
+      <evidence>Pipeline reminder fast-path (BEFORE the Stage-1a router): intent==REMINDER &amp; confidence≥THRESHOLD + future time → ConfirmationService.request_explicit with category='reminder' draft (when_utc, message, lead_time_min) + 2-button keyboard, no Job row yet; message resolution = distilled_payload['reminder_text'] if non-empty str else raw text; prefer_future=True rolls a bare past wall-clock time forward; explicitly-past absolute date → ru rejection, no confirm; escalate → ru clarification, no confirm; recurring-digest phrasing → ru "not yet", no confirm. on_confirm_callback category=='reminder' + resolve→'confirmed' → create_reminder_job writes a jobs.Job(kind='reminder_job', payload round-trips through parse_job_payload, scheduled_at_utc==when_utc) + scheduler.add_job once with a DateTrigger at when_utc, id=='reminder:&lt;id&gt;', misfire_grace_time is None; ack sent. cancel→ru cancelled, no Job row; resolve→None→ru stale; double-confirm idempotent. firing.fire_job: context set + Job pending → sender.send_message(chat_id, '🔔 Напоминание: &lt;message&gt;') + row done; Job not pending → skipped, no send; send raises → row failed + last_error + scheduler.reminder.deliver_failed; context not set → RuntimeError. ReminderPayload in parse_job_payload: valid → ReminderPayload, extra key → ValidationError. Integration: reminder message → request_explicit → simulate confirm → jobs.jobs row with kind='reminder_job' &amp; matching scheduled_at_utc → invoke fire_job(job_id) with a fake sender → one send_message + row done. Known limitation (documented, no MVP reconciliation): a crash between the Job commit and scheduler.add_job leaves a pending row with no trigger → silent miss. (aisw-kcz; D-002/D-010/D-022; tech-spec §3/§6; ADR-006.)
       Digest path (aisw-oqq, Phase-D.b.1): pipeline digest fast-path (replaces the reminder branch's recurring-keyword stub): recurring-digest phrasing → parse_recurrence; on escalate → ru clarification, no confirm; else → ConfirmationService.request_explicit with category='digest' draft (recurrence serialised, wiki_scope='all', window_hours=24) + 2-button keyboard, no Job row yet. on_confirm_callback category=='digest' + resolve→'confirmed' → create_digest_job writes a jobs.Job(kind='digest_job', status='scheduled', priority==Lane.DIGEST, payload round-trips through parse_job_payload) + scheduler.add_job once with a CronTrigger (kwargs == recurrence.to_cron(), timezone == recurrence.tz), id=='digest:&lt;id&gt;', replace_existing=True; ack sent. cancel→ru cancelled, no Job row; resolve→None→ru stale; double-confirm idempotent. firing.fire_digest_job: context set + Job 'scheduled' → resolve owner WIKI set (minus Inbox-WIKI) → run_wiki_session called once with extra_add_dirs == the non-primary WIKI paths, under the Semaphore + WikiLockManager(primary), timeout_s==600 → assistant text (or the ru empty-digest line) delivered via tg/output (send_message or send_document); row stays status='scheduled', retry_count==0, finished_at_utc set. Job not 'scheduled' → skipped, no run. Owner has no *-WIKI → friendly ru line, finished, no strike. run_wiki_session raises (WikiRunnerError / WikiRunnerTimeoutError) → retry_count++; third consecutive failure → status='disabled' + scheduler.remove_job('digest:&lt;id&gt;') called + jobs_dlq row written; scheduler.digest.failed logged with error_class/retry_count/disabled. Bad/parse-failing payload → status='disabled' + DLQ immediately. context not set → DigestNotInitialisedError. DigestPayload in parse_job_payload: valid (with a Recurrence) → DigestPayload, extra key → ValidationError. run_wiki_session: extra_add_dirs paths appear in argv immediately after the primary '--add-dir &lt;wiki_path&gt;'; None → unchanged argv. e2e (in-process slow unit, mirrors the reminder e2e): recurring-digest text → request_explicit → simulate confirm → jobs.jobs row kind='digest_job' status='scheduled' + add_job with a CronTrigger → set_digest_context + fire_digest_job(job_id) with a fake runner-adapter (canned assistant events) → one delivery through tg/output → row still 'scheduled', retry_count==0. (aisw-oqq; D-002/D-019/D-024/D-025; tech-spec §3; ADR-007.)
       Digest interactive (aisw-269, Phase-D.b.2b): DigestRunner Protocol gains section:str|None=None — fire_digest_job still calls runner(...) with the default (full digest), byte-identical. fire_digest_job after resolving the owner WIKI set, when payload.wiki_scope is a list[str]: keep only (wid, path) whose wid (case-insensitive) ∈ the list → run_wiki_session gets the filtered set; scheduler.digest.scope_filter logged requested/kept/vanished; empty kept list → ru "all scoped WIKIs vanished" notice via send_message, finished_at_utc set, status stays 'scheduled' (NO strike — config drift, not a run failure), scheduler.digest.delivered logged empty='scope_vanished'. payload.wiki_scope=='all' → unchanged. create_digest_job accepts wiki_scope:str|list[str] and persists DigestPayload(wiki_scope=…); scheduler.digest.scheduled carries wiki_scope. Unit: fire_digest_job with wiki_scope=['health'] runs only that WIKI; vanished name → ru notice, no strike, status 'scheduled', scope_filter marker; create_digest_job(wiki_scope=['health','money']) persists a list shape round-trippable via parse_job_payload. (aisw-269; D-024; ADR-025.)
       Digest section toggles (aisw-pv8, Phase-D.b.2c): set_digest_context gains a sessions sessionmaker (the 7th context element). fire_digest_job, after building the planner context and before the runner call: get_digest_prefs(sessions_sm, owner_telegram_id) wrapped in try/except — any failure → scheduler.digest.prefs_read_failed + DigestPrefs(True,True) (degrade-to-all-on, never skip the digest); if prefs.disabled_keys is non-empty → planner_context += "\n\nНе включай разделы: &lt;ru labels&gt;." and scheduler.digest.sections_filtered{job_id, owner_telegram_id, disabled} logged; if empty → planner_context byte-identical to today (regression-guarded: no-prefs path calls the runner with the same string). runner(..., section=None) unchanged; the DigestRunner Protocol, _DigestRunnerAdapter, and run_section_expand are untouched (/expand ignores the toggle). get_owner_digest_prefs / set_owner_digest_section accessors (read the sessions sessionmaker from the digest context) → DigestNotInitialisedError when unwired; unit-tested in test_firing.py alongside the directive-injection cases (no-prefs byte-identical, trackers-off directive + sections_filtered marker, both-off lists both, prefs-read-failure degrades). (aisw-pv8; D-024; ADR-025/ADR-026.)
@@ -415,6 +543,7 @@
         <test path="tests/unit/classifier/test_schema.py"/>
         <test path="tests/unit/classifier/test_time_parse.py"/>
         <test path="tests/unit/classifier/test_cli_envelope.py"/>
+        <test path="tests/unit/classifier/test_failover_backend.py"/>
         <test path="tests/unit/classifier/test_fake_runner.py"/>
         <test path="tests/unit/classifier/test_settings_inv6.py"/>
         <test path="tests/unit/classifier/test_spawn_logging.py"/>
@@ -433,7 +562,7 @@
         <marker>claude_cli.error</marker>
         <marker>classifier.slots.invalid</marker>
       </log-markers>
-      <evidence>classify orchestrates backend call + Pydantic validation + audit prompt_versions upsert + structlog; PromptCache semver+sha256 with reload(); parse_time dateparser→Haiku-fallback→escalate (D-010); ClaudeCliBackend resolves binary + JSON-mode envelope; AnthropicApiBackend optional; FakeClaudeRunner deterministic; INV-6 settings guard; ClassifierTimeoutError/SchemaError taxonomy.
+      <evidence>classify orchestrates backend call + Pydantic validation + audit prompt_versions upsert + structlog; PromptCache semver+sha256 with reload(); parse_time dateparser→Haiku-fallback→escalate (D-010); ClaudeCliBackend resolves binary + JSON-mode envelope, and raises only structured HTTP 429 as ProviderLimitError; FailoverClassifierBackend maps safe limits to gpt-5.4-mini low while preserving name, model, and dict output (generic failures never fall back); AnthropicApiBackend optional; FakeClaudeRunner deterministic; INV-6 settings guard; ClassifierTimeoutError/SchemaError taxonomy.
       aisw-xi8 (classifier v2, Phase-A, FR-1/DEC-4): Intent is now the closed 6-member enum wiki|job|web|chat|admin|unknown (superseding the v1 9-member reminder/wiki_ingest/wiki_query/wiki_lint/digest/web_task/smalltalk/admin/unknown list per the DEC-14 mapping table); the "unknown" fallback value and stage0.py's retry-once-before-fallback policy (aisw-l3h) are unchanged by the rename. test_slots.py: WikiSlots(action=None) is the default and is valid (covers the measured 99/100 "Покажи мои вики" miss — an empty action still routes correctly downstream, DEC-3); WikiSlots(action='catalog'|'ingest'|'query'|'lint') all valid; JobSlots defaults to action='create'/kind='once' when the payload supplies neither; every JobSlots free-text slot (time_expr/schedule_expr/text/needle) round-trips verbatim — no whitespace/case normalisation, no translation (FR-12). parse_slots(model, distilled_payload): a well-formed dict validates into the model; an ill-formed dict (wrong-typed field, e.g. action=123) returns a DEFAULT instance (never raises) + logs classifier.slots.invalid with the offending model name — the caller never sees a ValidationError propagate to the user (Fail-Fast-with-graceful-default, DEC-4); unknown/extra keys in distilled_payload are silently ignored (forward-compatible with future slot additions). ClassifierResult shape is unchanged — distilled_payload stays dict[str,Any] (FR-1); no schema migration for the audit prompt_versions table.</evidence>
     </V-M-CLASSIFIER-STAGE0>
 
@@ -466,13 +595,14 @@
         <test path="tests/unit/wiki/test_runner.py"/>
         <test path="tests/unit/wiki/test_runner_aggregate.py"/>
         <test path="tests/unit/wiki/test_runner_on_event.py"/>
+        <test path="tests/unit/wiki/test_runner_failover.py"/>
         <test path="tests/unit/wiki/test_streaming.py"/>
         <test path="tests/unit/wiki/test_acquire.py"/>
         <test path="tests/unit/wiki/test_spawn_logging.py"/>
         <test path="tests/integration/classifier/test_real_cli.py"/>
       </tests>
       <commands>
-        <cmd>uv run pytest tests/unit/wiki/test_runner.py tests/unit/wiki/test_runner_aggregate.py tests/unit/wiki/test_runner_on_event.py tests/unit/wiki/test_streaming.py tests/unit/wiki/test_acquire.py -q</cmd>
+        <cmd>uv run pytest tests/unit/wiki -q</cmd>
       </commands>
       <log-markers>
         <marker>wiki.run.start</marker>
@@ -487,7 +617,7 @@
         <marker>claude_cli.exit</marker>
         <marker>claude_cli.error</marker>
       </log-markers>
-      <evidence>run_wiki_session: assemble_prompt (base+overlay+per-WIKI CLAUDE.md atomic write), WikiLockAdapter acquire, spawn `claude --output-format stream-json`, parse_stream_json events, hard timeout + kill-sequence (WikiRunnerTimeoutError), on_event callback (per-event delivery, exception swallow); aggregate_text across stream-json shapes; classify_line pure mapping; AsyncioSpawner default.</evidence>
+      <evidence>131 unit tests pass. Failover tests prove one WIKI lock spans Claude and Codex, typed limits alone trigger fallback, mutation, delivered output, unknown tools, and callback failures block replay, generic failures remain on Claude, cancellation propagates, and read, write, web, media, and additional-WIKI paths preserve capability boundaries. Existing transcript, streaming, timeout, aggregation, acquisition, and spawn behavior remains covered.</evidence>
     </V-M-WIKI-RUNNER>
 
     <V-M-WIKI-LIFECYCLE MODULE="M-WIKI-LIFECYCLE">
@@ -572,7 +702,7 @@
         <marker>inbox.route.raw_moved</marker>
         <marker>inbox.route.media_missing</marker>
       </log-markers>
-      <evidence>resolve_target_wiki: CREATE_WIKI → new dir, created=True; idempotent second call → created=False; ROUTE existing → created=False; ROUTE missing → create + on_route_missing callback; AntiSpamCapError → RouteRejection("cap"); WikiNameError → RouteRejection("bad_name"). stage_raw_into_wiki: text → raw/&lt;ts&gt;_text.md body verbatim, media_rel=[]; voice/photo → .md sidecar with YAML front-matter + promote_path_to_raw into raw/media/ (StagedRaw.media_abs absolute & exists, source moved); already-gone media → skipped. pick_domain_overlay: domain-&lt;slug&gt;.md if present else domain-default.md. build_ingest_prompt references the raw path(s) + the user text (aisw-zd9; D-004). aisw-e45 (Phase-C): route_action_to_payload ∘ route_action_from_payload is identity for ROUTE and CREATE_WIKI decisions with/without media (RouterIntent/RouterDecision/Path reconstructed by type; missing media → []); from_payload raises ValueError on a missing 'decision' or a bad 'source'.</evidence>
+      <evidence>resolve_target_wiki: CREATE_WIKI → new dir, created=True; idempotent second call → created=False; ROUTE existing → created=False; ROUTE missing → create + on_route_missing callback; AntiSpamCapError → RouteRejection("cap"); WikiNameError → RouteRejection("bad_name"). stage_raw_into_wiki: text → raw/&lt;ts&gt;_text.md body verbatim, media_rel=[]; voice/photo → .md sidecar with YAML front-matter + promote_path_to_raw into raw/media/ (StagedRaw.media_abs absolute &amp; exists, source moved); already-gone media → skipped. pick_domain_overlay: domain-&lt;slug&gt;.md if present else domain-default.md. build_ingest_prompt references the raw path(s) + the user text (aisw-zd9; D-004). aisw-e45 (Phase-C): route_action_to_payload ∘ route_action_from_payload is identity for ROUTE and CREATE_WIKI decisions with/without media (RouterIntent/RouterDecision/Path reconstructed by type; missing media → []); from_payload raises ValueError on a missing 'decision' or a bad 'source'.</evidence>
     </V-M-INBOX-ROUTE>
 
     <V-M-INGEST-IDEM MODULE="M-INGEST-IDEM">
@@ -730,8 +860,8 @@
         <marker>scheduler.consumer.unexpected</marker>
         <marker>scheduler.check_in.fallback</marker>
       </log-markers>
-      <evidence>CronConsumer.run() drains PriorityJobQueue.get() in a single async loop (NFR-1 concurrency=1, at-most-once); per item: CronUserQueueMsg.model_validate raises ValidationError → log+continue; UPDATE jobs.Job status='running' + started_at_utc=now_utc; spawn subprocess via asyncio.create_subprocess_exec(*argv, stdout=PIPE, stderr=PIPE, cwd=neutral_cwd(claude_config_dir), env=build_env(claude_config_dir)) where argv = [resolve_binary(claude_binary), *system_prompt_argv(prompt_path), '--setting-sources','','--disable-slash-commands','--permission-mode','dontAsk','--disallowedTools','WebFetch','--', command] — the Claude CLI runs DIRECTLY, NO systemd-run wrapper (aisw-abc/ADR-010 simple single-user model; CLAUDE_CONFIG_DIR via build_env, parity with M-WIKI-RUNNER); asyncio.wait_for(proc.communicate(), timeout=600); TimeoutError → kill_with_sequence(proc, grace_seconds=DEFAULT_TERM_GRACE_SECONDS) → status='failed' + reply '❌ Тайм-аут 10 минут.'; exit_code==0 → ChainSplitter().split(stdout.decode('utf-8','replace')) chunked bot.send_message * n_chunks + status='finished'; exit_code!=0 → '❌ Ошибка ({code}): '+truncate_stderr(stderr, limit=512) + status='failed'; TelegramAPIError on send → log scheduler.consumer.deliver_failed + status='failed' (no re-raise — loop survives). Cancellation: CancelledError propagates out of .run() so __main__ shutdown can await the task. CronUserQueueMsg Pydantic v2 discriminated union with discriminator='kind' (NFR-5) round-trips via model_dump_json. Runner-parity hardening (aisw-o3m): _build_argv now inserts --setting-sources "" / --disable-slash-commands / --permission-mode dontAsk / --disallowedTools WebFetch after system_prompt_argv and before the aisw-0j4 literal '--' + command separator (positional-prompt invocation model kept — no -p/stream-json switch); test_consumer.py asserts the flags are present and that the '--' guard still precedes a '-'-prefixed command, and that argv[0] is the claude binary with no systemd-run/--scope/--slice present (aisw-abc). (aisw-02v; aisw-abc; ADR-010; R-1 R-2 R-6 mitigations; D-011 §3; D-021).
-      Check-in execution (aisw-xi8, Phase-B, DEC-8): CronUserQueueMsg.model_validate is replaced by parse_queue_msg (the widened QueueMsg discriminated union) so the SAME drain loop dispatches both kinds by their 'kind' discriminator — a per-kind branch on CheckInQueueMsg builds a Claude CLI invocation whose system prompt is assembled from prompts/check_in.md + msg.question_topic, instructing the model to generate exactly ONE ru question about that topic; happy path → the generated question sent via bot.send_message, status='finished'. On exit_code!=0 OR asyncio.TimeoutError (the same 600s wait_for/kill_with_sequence path as the cron_user branch) the consumer does NOT send the generic "❌ Ошибка (...)" line for this kind — instead it sends a deterministic ru fallback "Хотел спросить: {question_topic}" verbatim, logs scheduler.check_in.fallback (error_class, job_id), and still marks the row 'finished' (a delivered fallback is a completed check-in from the user's perspective, not a failure state — FR-6, R-5 mitigation: an elderly user is never left without the scheduled question). test_consumer_check_in.py: happy path asserts the sent text is the model's question (not the fallback line); CLI exit≠0 and CLI timeout both assert the exact fallback string + scheduler.check_in.fallback logged + status='finished' (not 'failed'); parse_queue_msg round-trips both CronUserQueueMsg and CheckInQueueMsg from the same PriorityJobQueue.get() call site (no separate queues, no consumer-side branching on queue identity — only on the validated message's discriminator).</evidence>
+      <evidence>CronConsumer.run() drains PriorityJobQueue.get() in a single async loop (NFR-1 concurrency=1, at-most-once); per item: parse_queue_msg raises ValidationError → log+continue; UPDATE jobs.Job status='running' + started_at_utc=now_utc; spawn subprocess via asyncio.create_subprocess_exec(*argv, stdout=PIPE, stderr=PIPE, cwd=neutral_cwd(claude_config_dir), env=build_env(claude_config_dir)) where argv = [resolve_binary(claude_binary), *system_prompt_argv(prompt_path), '--setting-sources','','--disable-slash-commands','--permission-mode','dontAsk','--disallowedTools','WebFetch','--', command] — the Claude CLI runs DIRECTLY, NO systemd-run wrapper (aisw-abc/ADR-010 simple single-user model; CLAUDE_CONFIG_DIR via build_env, parity with M-WIKI-RUNNER); asyncio.wait_for(proc.communicate(), timeout=600); TimeoutError → kill_with_sequence(proc, grace_seconds=DEFAULT_TERM_GRACE_SECONDS) → status='failed' + reply '❌ Тайм-аут 10 минут.'; exit_code==0 → ChainSplitter().split(stdout.decode('utf-8','replace')) chunked bot.send_message * n_chunks + status='finished' (cron_user kind — one-off arc, unchanged); exit_code!=0 → '❌ Ошибка ({code}): '+truncate_stderr(stderr, limit=512) + status='failed'; TelegramAPIError on send → log scheduler.consumer.deliver_failed + status='failed' (no re-raise — loop survives). Cancellation: CancelledError propagates out of .run() so __main__ shutdown can await the task. aisw-8gw: cron_user text generation goes through the shared FailoverPolicy first — a structured HTTP 429 falls back to gpt-5.5 medium before delivery; generic failures do not fall back; a dual-provider failure sends one recoverable Russian message (_PROVIDERS_UNAVAILABLE_RU) instead of raising. QueueMsg is a Pydantic v2 discriminated union with discriminator='kind' (NFR-5) round-trips via model_dump_json. Runner-parity hardening (aisw-o3m): _build_argv now inserts --setting-sources "" / --disable-slash-commands / --permission-mode dontAsk / --disallowedTools WebFetch after system_prompt_argv and before the aisw-0j4 literal '--' + command separator (positional-prompt invocation model kept — no -p/stream-json switch); test_consumer.py asserts the flags are present and that the '--' guard still precedes a '-'-prefixed command, and that argv[0] is the claude binary with no systemd-run/--scope/--slice present (aisw-abc). (aisw-02v; aisw-abc; ADR-010; R-1 R-2 R-6 mitigations; D-011 §3; D-021).
+      Check-in execution (aisw-xi8, Phase-B/DEC-8, status-lifecycle corrected Step-12 review fix b8d9057): parse_queue_msg (the widened QueueMsg discriminated union) lets the SAME drain loop dispatch both kinds by their 'kind' discriminator — a per-kind branch on CheckInQueueMsg builds a Claude CLI invocation whose system prompt is assembled from prompts/check_in.md + msg.question_topic, instructing the model to generate exactly ONE ru question about that topic; happy path → the generated question sent via bot.send_message. On exit_code!=0 OR asyncio.TimeoutError (the same 600s wait_for/kill_with_sequence path as the cron_user branch) the consumer does NOT send the generic "❌ Ошибка (...)" line for this kind — instead it sends a deterministic ru fallback "Хотел спросить: {question_topic}" verbatim and logs scheduler.check_in.fallback (error_class, job_id) (a delivered fallback is a completed check-in from the user's perspective, not a failure state — FR-6, R-5 mitigation: an elderly user is never left without the scheduled question). CRITICALLY, unlike cron_user's one-off terminal arc, BOTH the happy path and the fallback path call the new _finish_check_in helper, which rewinds Job.status back to 'scheduled' (keeping finished_at_utc/last_error for observability) rather than leaving it at a terminal 'finished'/'failed' — check_in's whole point is a RECURRING CronTrigger, and fire_check_in_job's `row.status != "scheduled"` guard would otherwise silently no-op every fire after the first, so the feature could never ask its question more than once (this was a real, measured defect found and fixed by Step-12 review, mirroring fire_recurring_job's DEC-7 "no terminal status transition on success" shape). test_consumer_check_in.py: happy path asserts the sent text is the model's question (not the fallback line) AND row.status=='scheduled' after completion; CLI exit≠0 and CLI timeout both assert the exact fallback string + scheduler.check_in.fallback logged + row.status=='scheduled' (never 'failed'); a dedicated two-fire test drives fire_check_in_job/consumer twice in sequence and asserts the SECOND fire is not silently skipped (the core regression guard for the fixed bug); parse_queue_msg round-trips both CronUserQueueMsg and CheckInQueueMsg from the same PriorityJobQueue.get() call site (no separate queues, no consumer-side branching on queue identity — only on the validated message's discriminator).</evidence>
     </V-M-SCHEDULER-CONSUMER>
 
     <V-M-TG-CRON-ADD MODULE="M-TG-CRON-ADD">
@@ -775,4 +905,61 @@
     </V-M-DIGEST-CARDS>
 
   </Modules>
+
+  <PhaseGates>
+    <Gate-Phase-G.1 PHASE="Phase-G.1">
+      <goal>Provider circuit, typed limits, replay evidence, and concurrency are deterministic.</goal>
+      <commands>
+        <command-1>uv run pytest tests/unit/llm/test_failover.py -q</command-1>
+        <command-2>grace lint --path . --profile standard</command-2>
+      </commands>
+      <required-evidence>
+        <evidence-1>claude, codex, and probe transitions match every approved path.</evidence-1>
+        <evidence-2>Unsafe replay starts no fallback process.</evidence-2>
+      </required-evidence>
+    </Gate-Phase-G.1>
+    <Gate-Phase-G.2 PHASE="Phase-G.2">
+      <goal>Codex invocation, readiness, output parsing, and capability profiles are isolated and deterministic.</goal>
+      <commands>
+        <command-1>uv run pytest tests/unit/llm/test_codex.py -q</command-1>
+        <command-2>RUN_INTEGRATION=1 uv run pytest tests/integration/llm/test_fake_codex_cli.py -q</command-2>
+      </commands>
+      <required-evidence>
+        <evidence-1>Every invocation uses dedicated CODEX_HOME and explicit flags.</evidence-1>
+        <evidence-2>No readiness check invokes a model.</evidence-2>
+      </required-evidence>
+    </Gate-Phase-G.2>
+    <Gate-Phase-G.3 PHASE="Phase-G.3">
+      <goal>Structured and text consumers preserve their existing public contracts.</goal>
+      <commands>
+        <command-1>uv run pytest tests/unit/classifier tests/unit/wiki/test_schema_gen.py tests/unit/scheduler/test_consumer.py -q</command-1>
+      </commands>
+      <required-evidence>
+        <evidence-1>Stage-0 Pydantic validation remains unchanged.</evidence-1>
+        <evidence-2>Schema and cron paths perform external effects only after successful generation.</evidence-2>
+      </required-evidence>
+    </Gate-Phase-G.3>
+    <Gate-Phase-G.4 PHASE="Phase-G.4">
+      <goal>WIKI failover preserves locking, transcript, streaming, cancellation, and replay safety.</goal>
+      <commands>
+        <command-1>uv run pytest tests/unit/wiki -q</command-1>
+      </commands>
+      <required-evidence>
+        <evidence-1>One WIKI lock spans both safe attempts.</evidence-1>
+        <evidence-2>Normalized Codex events satisfy current aggregation and delivery consumers.</evidence-2>
+      </required-evidence>
+    </Gate-Phase-G.4>
+    <Gate-Phase-G.5 PHASE="Phase-G.5">
+      <goal>Runtime wiring, documentation, deployment smoke, and project-wide regression are complete.</goal>
+      <commands>
+        <command-1>make lint</command-1>
+        <command-2>uv run pytest tests/unit -q</command-2>
+        <command-3>RUN_INTEGRATION=1 uv run pytest tests/integration -q</command-3>
+      </commands>
+      <required-evidence>
+        <evidence-1>Startup remains available when Codex readiness fails.</evidence-1>
+        <evidence-2>Operator smoke verifies both configured subscription models and containment.</evidence-2>
+      </required-evidence>
+    </Gate-Phase-G.5>
+  </PhaseGates>
 </VerificationPlan>

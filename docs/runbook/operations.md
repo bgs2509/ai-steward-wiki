@@ -124,6 +124,54 @@ scheduler jobs). The built-in diagnostics (diagnostics-only — no auto-restart)
 | State-DB writable | last `audit.db` insert via `journalctl -u aisw-bot -g 'audit.write'` | recent (≤ user activity) |
 | Snapshot job | `journalctl -u aisw-bot -g 'db_snapshot' --since "26 hours ago"` | exactly one success line |
 
+## 7. Provider failover operations
+
+Codex fallback is supported only on the trusted private VPS. It uses the ChatGPT
+subscription login stored under `/var/lib/ai-steward-wiki/codex`.
+
+### 7.1. Diagnostics
+
+```bash
+journalctl -u aisw-bot -o cat | grep -E 'llm\.(provider|failover|circuit|replay)'
+sudo -u bgs env CODEX_HOME=/var/lib/ai-steward-wiki/codex codex login status
+pgrep -a -P "$(systemctl show aisw-bot -p MainPID --value)"
+```
+
+Expected state transitions:
+
+1. `claude -> codex` occurs only after a typed Claude subscription limit.
+2. Requests stay on Codex until the configured recovery window.
+3. `codex -> probe -> claude` occurs after one successful Claude probe.
+4. Generic Claude errors do not change provider state.
+5. Unsafe replay is blocked after a mutation, delivery, or unknown side effect.
+
+### 7.2. Common provider incidents
+
+**Codex login expired:**
+
+1. Claude-backed startup and normal Claude requests remain available.
+2. Re-run the operator device login from `deploy.md` §7.1.
+3. Restart `aisw-bot` so readiness can enable Codex again.
+
+**Both providers unavailable:**
+
+1. The bot sends one recoverable message without automatic replay.
+2. The original Telegram message remains the source for a manual retry.
+3. Check provider events and Codex login status before asking the user to retry.
+
+**Circuit remains on Codex:**
+
+1. Inspect `llm.circuit.changed` and `llm.provider.failed` events.
+2. Confirm the Claude subscription limit reset time has passed.
+3. Wait for the single automatic probe. Do not force concurrent probes.
+
+**Workspace-write reports a `bwrap` or user-namespace error:**
+
+1. Run `sudo -u bgs bwrap --ro-bind / / --proc /proc --dev /dev /bin/true`.
+2. Verify `/etc/apparmor.d/bwrap-userns-restrict` is loaded with `aa-status`.
+3. Reapply the Ubuntu 24.04 profile from `deploy.md` §7.1.
+4. Never disable the global AppArmor user-namespace restriction as a workaround.
+
 
 ## Integration testing (chunk 23 — M-INTEGRATION-E2E)
 
