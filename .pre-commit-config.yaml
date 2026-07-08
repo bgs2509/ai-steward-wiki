@@ -25,6 +25,12 @@ repos:
         pass_filenames: false
         types: [python]
 
+      - id: classifier-regress-stamp
+        name: classifier-regress stamp (DEC-13/FR-13 mandatory gate)
+        entry: uv run python scripts/check_classifier_regress_stamp.py
+        language: system
+        files: ^prompts/classifier\.md$
+
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.2
     hooks:
